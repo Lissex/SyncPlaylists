@@ -284,6 +284,9 @@ class Settings(BaseSettings):
 - `Duration` — миллисекунды, `is_close_to(other, tolerance_ms=3000)`
 - `ExternalTrackRef(platform, external_id)`, `PlaylistRef(platform, external_id)`
 - `MatchScore` — float 0..1 с порогами `AUTO ≥ 0.90`, `UNCERTAIN ≥ 0.70`
+- `TrackQuery`, `TrackCandidate` — DTO сигнатуры `MusicPlatformGateway` (см. раздел 8); лежат в
+  `shared_kernel`, а не в контексте, который их первым использует (`matching`), потому что `catalog`
+  и `transfers` будут использовать их на этапах 3-4 — см. правило размещения портов в разделе 8.
 
 ### Источник и назначение (value objects)
 ```
@@ -331,6 +334,25 @@ CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrat
 ---
 
 ## 8. Порты (интерфейсы) — главное для расширяемости
+
+**Правило размещения.** Порт, который доменный сервис использует напрямую (например,
+`MatchingPipeline`/стратегии зовут `MusicPlatformGateway` или `TrackMatchRepository`), обязан сам
+лежать в `domain`-пакете — `import-linter` (контракт «Domain purity — no inner layers») запрещает
+любому `domain` импортировать `application` любого модуля, в том числе свой собственный. Выбор
+конкретного `domain`-пакета зависит от того, кто ещё использует порт:
+- нужен нескольким контекстам (сейчас или на следующих этапах) → `shared_kernel/domain` — он
+  единственный исключён из правила независимости контекстов, поэтому доступен любому домену;
+- нужен только одному контексту → `domain`-пакет этого контекста (например,
+  `modules/matching/domain/ports.py` для `TrackMatchRepository`).
+
+Порт, которым пользуется только `application`-слой (его реализацию подставляют через конструктор
+use case, а не вызывают из домена напрямую), можно оставлять в `application/ports.py` того же модуля.
+
+Так, с этапа 2: `MusicPlatformGateway` (пока только `platform`/`search`/`search_by_isrc` — остальные
+методы ниже добавятся на этапах 3-4 вместе с `transfers`/адаптерами площадок) и его DTO `TrackQuery`/
+`TrackCandidate` лежат в `shared_kernel/domain`; `TrackMatchRepository`, а также заглушки
+`AudioRecognizer`/`FingerprintComparer` (ещё не подключены к пайплайну, задел под этап 6) — в
+`modules/matching/domain/ports.py`.
 
 ```python
 class MusicPlatformGateway(Protocol):
