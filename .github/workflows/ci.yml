@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: postgres:17-bookworm
         env:
           POSTGRES_USER: syncplaylists
           POSTGRES_PASSWORD: syncplaylists

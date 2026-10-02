@@ -1,8 +1,11 @@
 name: syncplaylists
 
 services:
+  # postgres:17 временно без сборки под linux/amd64 (переход базового образа
+  # на Debian trixie) — пока amd64-сборка не появится, используем 17-bookworm.
   postgres:
-    image: postgres:17
+    image: postgres:17-bookworm
+    platform: linux/amd64
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -34,7 +37,7 @@ services:
   # Dev-режим без аутентификации (-s3 без -s3.config) — не для прод.
   s3:
     image: chrislusf/seaweedfs:latest
-    command: ["server", "-dir=/data", "-s3", "-s3.port=8333"]
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-ip.bind=0.0.0.0"]
     ports:
       - "8333:8333"
       - "9333:9333"

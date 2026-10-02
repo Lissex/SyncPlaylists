@@ -468,7 +468,7 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 
 | Сервис | Образ | Профиль |
 |---|---|---|
-| `postgres` | `postgres:17` (+ pg_trgm, unaccent; позже pgvector-образ) | default |
+| `postgres` | `postgres:17-bookworm` (+ pg_trgm, unaccent; позже pgvector-образ) | default |
 | `redis` | `redis:7` | default |
 | `s3` | `chrislusf/seaweedfs` (`server -s3`, S3-совместимое хранилище) | default |
 | `api` | `backend/Dockerfile` → uvicorn | `app` |
@@ -477,6 +477,10 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 | `frontend` | `frontend/Dockerfile` → nginx | `app` |
 | `caddy` | `caddy:2` (только прод) | `prod` |
 
+- `postgres:17-bookworm`, а не плавающий `postgres:17`: на момент написания (окт. 2026) тег `17`
+  перешёл на Debian trixie и временно не собран под `linux/amd64` (в manifest list только
+  arm/386/ppc64le/riscv64/s390x + attestation-записи) — `docker pull`/`run` падает с
+  `exec format error`. Как появится amd64-сборка под `17`, можно вернуться на плавающий тег.
 - Один backend-образ на три роли; роль задаётся командой запуска.
 - Healthchecks у всех сервисов; `depends_on: condition: service_healthy`.
 - dev: `docker-compose.override.yml` монтирует исходники, включает `--reload`.
