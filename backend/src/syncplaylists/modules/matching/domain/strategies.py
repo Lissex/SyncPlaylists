@@ -76,13 +76,13 @@ class FuzzySearchStrategy:
         if not candidates:
             return MatchAttempt(status=MatchStatus.NOT_FOUND)
 
-        source_track = self._normalizer.normalize(source.title, source.artist)
+        source_variants = self._normalizer.variants(source.title, source.artist)
         scored = [
             (
-                self._scorer.score(
-                    source_track,
+                self._scorer.best_score(
+                    source_variants,
                     source.duration,
-                    self._normalizer.normalize(candidate.title, candidate.artist),
+                    self._normalizer.variants(candidate.title, candidate.artist),
                     candidate.duration,
                 ),
                 candidate,
