@@ -64,7 +64,7 @@
   **CSV**, **XLSX**, **M3U8** (`#EXTINF` с длительностью), **XSPF**, **TXT** («Артист — Трек»).
   Опционально в архив добавляются обложки.
 - Бэкап **вручную** или **по расписанию** (ARQ cron); файлы — в S3-совместимом хранилище
-  (MinIO локально), отдаются по временной ссылке.
+  (SeaweedFS локально), отдаются по временной ссылке.
 - **Импорт из файла** любого из этих форматов — ещё один вид источника (`FileSource`) для переноса.
 
 ### Поддерживаемые источники/назначения
@@ -94,13 +94,13 @@
 | Матчинг | **rapidfuzz**, транслитерация (кириллица ↔ латиница) |
 | Аудио | **ffmpeg**, **shazamio**, **ACRCloud** (fallback), **chromaprint / pyacoustid** (проверка) |
 | Обогащение | **Genius API**, **LRCLIB**, **Deezer API**, **iTunes Search API**, **Cover Art Archive** |
-| Файлы | **MinIO** / S3 (aioboto3), экспорт: `openpyxl` (XLSX), stdlib (CSV/JSON/M3U8/XSPF) |
+| Файлы | **SeaweedFS** (dev) / любой S3 (aioboto3), экспорт: `openpyxl` (XLSX), stdlib (CSV/JSON/M3U8/XSPF) |
 | Площадки | `spotipy`/свой клиент, `yandex-music`, `vkpymusic`, `ytmusicapi`, `soundcloud-v2` / официальный API |
 | Качество | **uv**, **ruff**, **mypy --strict**, **pytest**, pytest-asyncio, **respx**, **testcontainers**, **import-linter**, pre-commit |
 | Наблюдаемость | **structlog**, **Sentry** |
 | Фронтенд | **React 19 + Vite + TS**, TanStack Query/Router, Tailwind + shadcn/ui, **Feature-Sliced Design** |
 | Расширение | **WXT + TypeScript**, Manifest V3 (Chrome + Firefox) |
-| Инфра | **Docker Compose** (+ MinIO), Caddy (HTTPS); прод: VPS в ЕС + воркер в РФ через WireGuard/Tailscale |
+| Инфра | **Docker Compose** (+ SeaweedFS S3), Caddy (HTTPS); прод: VPS в ЕС + воркер в РФ через WireGuard/Tailscale |
 
 ---
 
@@ -431,7 +431,7 @@ cleanup_reports     id, user_id, kind (duplicates|diff|unavailable), payload jso
 backups             id, user_id, source (playlist|library), platform, format, storage_key, tracks_count, created_at
 backup_schedules    id, user_id, source, platform, formats text[], cron, enabled, last_run_at
 ```
-Файлы бэкапов — в S3-совместимом хранилище (MinIO в dev).
+Файлы бэкапов — в S3-совместимом хранилище (SeaweedFS в dev; MinIO не используем — с конца 2025 его образы не публикуются).
 - Расширения: `pg_trgm` (GIN-индексы на `title_norm`, `artist_norm`), `unaccent`.
 - `track_matches` — глобальный кэш соответствий; `confirmations` растёт от ручных подтверждений.
 - Миграции только через Alembic, автогенерация + ручная проверка.
@@ -470,7 +470,7 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 |---|---|---|
 | `postgres` | `postgres:17` (+ pg_trgm, unaccent; позже pgvector-образ) | default |
 | `redis` | `redis:7` | default |
-| `minio` | `minio/minio` | default |
+| `s3` | `chrislusf/seaweedfs` (`server -s3`, S3-совместимое хранилище) | default |
 | `api` | `backend/Dockerfile` → uvicorn | `app` |
 | `worker` | тот же образ → `arq ...WorkerSettings` (очереди transfer/match/write) | `app` |
 | `worker-recognize` | тот же образ, очередь `recognize`; ffmpeg + chromaprint внутри | `app` |
@@ -501,7 +501,7 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).
-8. **backups**: экспорт во все форматы, импорт из файла, расписания, MinIO/S3.
+8. **backups**: экспорт во все форматы, импорт из файла, расписания, S3 (SeaweedFS).
 9. **library_tools**: дубли, слияние, сравнение площадок, недоступные треки.
 10. **Расширение**: запись в Spotify, fallback для VK/Яндекса.
 11. **Прод**: Caddy, РФ-воркер, Sentry, бэкапы Postgres.

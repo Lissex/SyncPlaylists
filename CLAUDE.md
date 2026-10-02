@@ -8,7 +8,7 @@
 ## Стек
 - Backend: Python 3.12, FastAPI, pydantic-settings, dishka (DI), SQLAlchemy 2.0 async + asyncpg, Alembic,
   PostgreSQL 17, Redis + ARQ, httpx, Authlib, rapidfuzz, ffmpeg, shazamio, ACRCloud, chromaprint,
-  MinIO/S3; обогащение: Genius API, LRCLIB, Deezer API, iTunes Search API, Cover Art Archive.
+  S3 (SeaweedFS в dev); обогащение: Genius API, LRCLIB, Deezer API, iTunes Search API, Cover Art Archive.
 - Frontend: React 19 + Vite + TS, TanStack Query/Router, Tailwind + shadcn/ui, Feature-Sliced Design.
 - Extension: WXT + TS, Manifest V3.
 - Инструменты: uv, ruff, mypy --strict, pytest, testcontainers, respx, import-linter, pre-commit.
@@ -28,11 +28,12 @@
 
 ## Docker (обязательно)
 Проект работает в Docker. Разработка идёт на Windows с Docker Desktop.
-- **Инфраструктура только в Docker**: PostgreSQL 17, Redis 7, MinIO. Ничего из этого не ставим на хост.
+- **Docker запускает пользователь вручную.** Claude НЕ выполняет `docker`/`docker compose` (up, down, build, run, prune и т.п.). Вместо этого: пишет готовые команды для PowerShell, просит пользователя запустить их и прислать вывод, затем продолжает по результату. Проверки без Docker (ruff, mypy, unit-тесты, lint-imports) Claude запускает сам.
+- **Инфраструктура только в Docker**: PostgreSQL 17, Redis 7, SeaweedFS (S3). Ничего из этого не ставим на хост.
 - **У каждого приложения свой Dockerfile**: `backend/Dockerfile` (multi-stage на uv; в образе есть
   ffmpeg и chromaprint (`libchromaprint-tools`)) — один образ для `api`, `worker` и `worker-recognize`;
   `frontend/Dockerfile` (сборка Vite → nginx).
-- **`docker-compose.yml` в корне** описывает сервисы `postgres`, `redis`, `minio`, `api`, `worker`,
+- **`docker-compose.yml` в корне** описывает сервисы `postgres`, `redis`, `s3`, `api`, `worker`,
   `worker-recognize`, `frontend`. У каждого есть healthcheck, данные лежат в именованных volumes.
 - **Профили compose**: по умолчанию поднимается только инфраструктура; `--profile app` поднимает всё приложение.
 - **Аудио-инструменты** (ffmpeg, chromaprint, shazamio) запускаем и тестируем **только в контейнере**,
@@ -47,7 +48,7 @@
 - Тесты: `uv run pytest`
 - Линт/типы: `uv run ruff check . && uv run ruff format --check . && uv run mypy src && uv run lint-imports`
 - Миграции: `uv run alembic revision --autogenerate -m "..."`, `uv run alembic upgrade head`
-- Инфраструктура: `docker compose up -d` (postgres, redis, minio)
+- Инфраструктура: `docker compose up -d` (postgres, redis, s3)
 - Всё приложение: `docker compose --profile app up -d --build`
 - Логи: `docker compose logs -f api worker`
 - Миграции в контейнере: `docker compose run --rm api alembic upgrade head`

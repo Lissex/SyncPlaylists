@@ -29,22 +29,19 @@ services:
       timeout: 5s
       retries: 10
 
-  # Примечание: образ minio/minio требует авторизованного docker login
-  # (Docker Hub и quay.io отдают 401 на анонимный pull с конца 2025 года) —
-  # перед `docker compose up` нужно залогиниться под аккаунтом с доступом к образу.
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+  # SeaweedFS вместо MinIO: образы minio/minio не публикуются анонимно
+  # с конца 2025 года (Docker Hub и quay.io отдают 401 на pull).
+  # Dev-режим без аутентификации (-s3 без -s3.config) — не для прод.
+  s3:
+    image: chrislusf/seaweedfs:latest
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333"]
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "8333:8333"
+      - "9333:9333"
     volumes:
-      - minio_data:/data
+      - s3_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9333/cluster/status || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -91,4 +88,4 @@ services:
 volumes:
   pg_data:
   redis_data:
-  minio_data:
+  s3_data:
