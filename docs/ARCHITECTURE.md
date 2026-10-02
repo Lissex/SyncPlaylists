@@ -359,22 +359,26 @@ acoustic | sped_up | slowed | cover | instrumental | karaoke | extended | radio_
 Порт, которым пользуется только `application`-слой (его реализацию подставляют через конструктор
 use case, а не вызывают из домена напрямую), можно оставлять в `application/ports.py` того же модуля.
 
-Так, с этапа 2: `MusicPlatformGateway` (пока только `platform`/`search`/`search_by_isrc` — остальные
-методы ниже добавятся на этапах 3-4 вместе с `transfers`/адаптерами площадок) и его DTO `TrackQuery`/
-`TrackCandidate` лежат в `shared_kernel/domain`; `TrackMatchRepository`, а также заглушки
-`AudioRecognizer`/`FingerprintComparer` (ещё не подключены к пайплайну, задел под этап 6) — в
-`modules/matching/domain/ports.py`.
+Так, с этапа 2: `MusicPlatformGateway` и его DTO `TrackQuery`/`TrackCandidate` лежат в
+`shared_kernel/domain`; `TrackMatchRepository`, а также заглушки `AudioRecognizer`/
+`FingerprintComparer` (ещё не подключены к пайплайну, задел под этап 6) — в
+`modules/matching/domain/ports.py`. С этапа 3 `MusicPlatformGateway` дополнен методами
+`get_playlist`/`create_playlist`/`add_tracks`/`get_library`/`add_to_library`/
+`library_insert_order` (раздел ниже — актуальные сигнатуры, реализованные в коде).
 
 ```python
 class MusicPlatformGateway(Protocol):
     platform: Platform
-    async def get_playlist(self, ref: PlaylistRef) -> PlaylistSnapshot: ...
     async def search(self, query: TrackQuery, limit: int = 10) -> list[TrackCandidate]: ...
     async def search_by_isrc(self, isrc: ISRC) -> list[TrackCandidate]: ...
+    async def get_playlist(self, ref: PlaylistRef) -> PlaylistSnapshot: ...
     async def create_playlist(self, title: str, description: str | None) -> PlaylistRef: ...
     async def add_tracks(self, playlist: PlaylistRef, tracks: Sequence[ExternalTrackRef]) -> AddResult: ...
-    # медиатека («Любимые», «Мне нравится», «Моя музыка», Likes)
-    async def get_library(self) -> AsyncIterator[TrackSnapshot]: ...      # постранично, от новых к старым
+    # Не async def: это asynchronous generator, а не корутина, возвращающая итератор —
+    # вызывающий код сразу делает `async for ... in gateway.get_library()`, без await
+    # перед циклом. TrackSnapshot из раздела 7/8 (черновик) — на практике это тот же
+    # TrackCandidate, отдельный тип не завели.
+    def get_library(self) -> AsyncIterator[TrackCandidate]: ...
     async def add_to_library(self, tracks: Sequence[ExternalTrackRef]) -> AddResult: ...
     def library_insert_order(self) -> InsertOrder: ...                     # TOP | BOTTOM — для сохранения порядка
 
@@ -402,6 +406,15 @@ class FileStorage(Protocol):
 class GatewayFactory(Protocol):
     def for_account(self, account: ConnectedAccount) -> MusicPlatformGateway: ...
     # выбирает транспорт: official / unofficial / extension
+    #
+    # ДОЛГ С ЭТАПА 3: пока нет модуля accounts (ConnectedAccount), реализованный порт —
+    # for_platform(platform: Platform) -> MusicPlatformGateway, упрощённый (без
+    # account/credentials). Живёт в shared_kernel/application/ports.py вместе с
+    # UnitOfWork/TaskQueue/EventPublisher — application-порт (вызывается из use case,
+    # не из домена), нужен нескольким контекстам. Когда появится accounts (этап 4):
+    # сигнатуру НЕЛЬЗЯ чинить импортом modules.accounts.domain.ConnectedAccount в
+    # shared_kernel — это обратная зависимость. Либо порт переезжает в accounts, либо
+    # принимает уже собранный вызывающей стороной VO (platform + credentials).
 
 class AudioSource(Protocol):
     async def fetch_fragment(self, ref: ExternalTrackRef, seconds: int) -> AudioFragment: ...
@@ -413,9 +426,22 @@ class FingerprintComparer(Protocol):
     async def similarity(self, a: AudioFragment, b: AudioFragment) -> float: ...
 
 class TokenCipher(Protocol): ...
-class TaskQueue(Protocol): ...
-class EventPublisher(Protocol): ...
-class UnitOfWork(Protocol): ...   # async context manager, commit/rollback, сбор событий
+
+# TaskQueue/EventPublisher/UnitOfWork — реализованы с этапа 3 в
+# shared_kernel/application/ports.py (нужны нескольким контекстам, вызываются из
+# application, не из домена):
+class TaskQueue(Protocol):
+    async def enqueue(self, task_name: str, *args: Any, **kwargs: Any) -> None: ...
+class EventPublisher(Protocol):
+    async def publish(self, topic: str, payload: Mapping[str, Any]) -> None: ...
+class UnitOfWork(Protocol):
+    # __aexit__ — только защитный rollback при исключении, НЕ авто-коммит на чистом
+    # выходе из `async with`; commit() вызывается явно use case'ом.
+    async def __aenter__(self) -> "UnitOfWork": ...
+    async def __aexit__(self, exc_type, exc, tb) -> None: ...
+    def track(self, aggregate: AggregateRoot) -> None: ...   # какие агрегаты собрать события с на commit()
+    async def commit(self) -> None: ...
+    async def rollback(self) -> None: ...
 ```
 
 Новая площадка = новый пакет в `integrations/platforms/` + регистрация в DI.
@@ -485,6 +511,97 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 - Капча VK → `CaptchaRequired` → фронт показывает картинку → `resume`.
 - Аудио-фрагменты не храним: скачали → распознали → удалили. Результаты кэшируем в `recognitions`.
 
+**Реализация с этапа 3:** `transfer`/`match`/`write` — три ARQ-таска
+(`modules/transfers/presentation/tasks.py`: `run_transfer`/`run_match`/`run_write`), физически один
+воркер-процесс (как сейчас и в `docker-compose.yml` — один сервис `worker`). Разные
+concurrency/rate-limit по площадкам, описанные в таблице выше, НЕ обеспечены на этом этапе —
+единственный реальный ограничитель сейчас отсутствует (token bucket появится вместе с реальными
+адаптерами, этап 4). Разнесение по отдельным процессам/`queue_name` — вопрос конфигурации
+(`TaskQueue`-порт это абстрагирует), не переписывания кода, когда дойдёт очередь.
+
+Плюс cron-таск `sweep_stale_transfers` (каждые 5 минут, `WorkerSettings.cron_jobs`) —
+`SweepStaleTransfersUseCase` подбирает переносы в `QUEUED`/`RUNNING`, которые не обновлялись
+дольше 10 минут, и переставляет их в очередь заново (детали и границы — ниже в 11a).
+
+### 11a. Этап 3 — что сделано и какой долг оставлен
+
+- **`catalog` — опережающий минимальный срез**, хотя у контекста нет своего номера в разделе 14:
+  `CanonicalTrack`/`PlatformTrack` (домен), `EnsurePlatformTrackUseCase` (application) — единственная
+  публичная точка, через которую `matching` и `transfers` резолвят `ExternalTrackRef → platform_track.id`
+  (идемпотентный get-or-create через `INSERT ... ON CONFLICT DO NOTHING` + `SELECT`, без
+  find-затем-save — несколько `run_match`-джоб одновременно резолвят один и тот же трек).
+  Без presentation/HTTP — только то, что нужно другим контекстам.
+- **`transfer_items.match_id` (FK на `track_matches`) не реализован** — вместо него
+  `transfer_items` хранит результат матчинга денормализованно (`match_target_platform`,
+  `match_target_external_id`, `match_method`, `match_score`). Причина: при ручном разрешении
+  (`resolve_item`, `method="manual"`) строки в `track_matches` не существует, а создавать её
+  специально ради FK было бы искусственно. Восстановить связь можно на этапе `library_tools`,
+  когда появится осмысленный сценарий её использования.
+- **`Transfer.user_id`, `LibrarySource.account_id`, `LibraryDestination.account_id` — просто
+  `UUID`, без FK.** Модули `identity` (`User`) и `accounts` (`ConnectedAccount`) не построены.
+  FK на `users`/`connected_accounts` — отдельной миграцией, когда эти модули появятся.
+- **`LinkResolver`/`UrlExpander` (раздел 7, разбор ссылки плейлиста) не реализованы** —
+  осмысленны только с реальными адаптерами площадок (этап 4). `POST /transfers` на этом этапе
+  принимает структурированный `source`/`destination` (`platform` + `external_id`/`account_id`),
+  не сырую ссылку; тело запроса — дискриминированный union 1:1 с `TrackSource`/`TrackDestination`,
+  чтобы этап 4 добавил только ветку "raw URL" без переформатирования контракта.
+- **Нет transactional outbox.** `SqlUnitOfWork.commit()`: `session.commit()` → публикация событий
+  в Redis. Если `EventPublisher.publish()` упадёт уже после успешного `session.commit()`, событие
+  теряется безвозвратно (at-most-once). Для live-прогресса по SSE это осознанно приемлемо — клиент
+  при реконнекте получает снэпшот текущего состояния через `GetTransferUseCase` первым сообщением
+  (`event: snapshot`) до перехода в live-подписку на канал `transfer:{id}`. **Sweeper (ниже) outbox
+  не заменяет**: он восстанавливает застывшую *обработку* переноса (переставляет джобы в очередь),
+  но не восстанавливает потерянные *события* — SSE-клиент, который был подключён в момент потери
+  события, его не увидит; следующий снэпшот при реконнекте покажет актуальное состояние, но без
+  промежуточного шага.
+- **Sweeper застывших переносов** (`SweepStaleTransfersUseCase`, cron `sweep_stale_transfers`,
+  каждые 5 минут). Покрывает только `QUEUED`/`RUNNING` дольше 10 минут без обновления:
+  `QUEUED` → повторный `run_transfer` (idempotent — `ProcessTransferUseCase` увидит статус не
+  `QUEUED` и выйдет no-op, если его всё же обработали); `RUNNING` → `run_match` на каждый item
+  в статусе `PENDING` (idempotent тем же локом/проверкой статуса, что и обычная повторная
+  доставка ARQ). `REVIEW` не трогаем — это легитимное ожидание ручного решения, не "застывание".
+  `WRITING` тоже не трогаем — вне объёма этого этапа.
+- **`MatchingPipelineFactory`** (`modules/matching/application/ports.py`,
+  реализация — `DefaultMatchingPipelineFactory` в `pipeline_factory.py` того же пакета).
+  `MatchTransferItemUseCase` просит у фабрики готовый `MatchingPipeline` под конкретную
+  `target_platform`, не собирая его сам из `GatewayFactory`/`TrackNormalizer`/`MatchScorer` —
+  это внутренняя забота `matching`, не `transfers`. Порт в `matching.application`, а не
+  `shared_kernel`: пока единственный потребитель — `transfers`, через публичный application-слой
+  `matching` (тот же канал, что и `ResolveTrackMatchUseCase`/`EnsurePlatformTrackUseCase`).
+- **ARQ at-least-once и идемпотентность.** Повторная доставка одной и той же джобы не должна
+  задвоить работу: `ProcessTransferUseCase`/`MatchTransferItemUseCase`/`ResolveUncertainItemUseCase`
+  читают `Transfer` через `TransferRepository.get_for_update()` (`SELECT ... FOR UPDATE` на строке
+  `transfers`) — конкурентная доставка блокируется на этом локе до коммита первой попытки, затем
+  видит уже изменённый статус и либо ловит `InvalidTransferTransitionError` от доменного метода
+  (`ProcessTransferUseCase.start()`), либо явно проверяет статус item'а перед мутацией
+  (`MatchTransferItemUseCase`) и выходит no-op.
+- **Побочный эффект до commit.** `WriteTransferUseCase.create_playlist` на реальной площадке —
+  вызов вовне; если транзакция после него упадёт и откатится, повторная доставка `run_write`
+  создаст плейлист повторно (нет саги/outbox). Для фейковой площадки на этом этапе не критично,
+  для реальных адаптеров (этап 4) — нужно будет решать.
+- **`StartTransferUseCase`/`ProcessTransferUseCase`/`MatchTransferItemUseCase`/
+  `ResolveUncertainItemUseCase`: `TaskQueue.enqueue(...)` вызывается строго после успешного
+  `uow.commit()`**, не внутри транзакции — иначе воркер может схватить джобу для записи, которую
+  откатившаяся транзакция не создала/не изменила.
+- **In-memory фейк-площадка** (`integrations/platforms/fake/`) — единственная реализация
+  `MusicPlatformGateway`/`GatewayFactory` до этапа 4. Общий статический демо-каталог (3 трека) с
+  одним ISRC на все площадки (разные `external_id`), чтобы перенос между двумя инстансами фейка
+  находил совпадения через `IsrcStrategy`. `add_tracks`/`add_to_library` ничего не персистируют —
+  только отвечают "успех".
+- **Грабли при подписке на Redis pub/sub**: `redis.asyncio.Redis` без `decode_responses=True`
+  (как собран `ArqRedis` через `create_pool`) отдаёт `message["data"]` из `pubsub.listen()` как
+  `bytes`, не `str`. Если это передать дальше как есть (например, в `sse_starlette` — он
+  сериализует через `str(...)`), получится буквальный Python-репр `b'...'` вместо самого JSON.
+  `transfer_events` (`modules/transfers/presentation/api.py`) явно делает `.decode("utf-8")` —
+  тот же паттерн нужен будет любому будущему подписчику на Redis pub/sub (enrichment/recognition).
+- **`backend/Dockerfile` — раздельные таргеты `prod`/`dev`.** `prod` (последний стейдж — то, что
+  соберёт `docker build .` без `--target`) без dev-зависимостей и без `tests/`. `dev` — с
+  dev-группой (`pytest`, `testcontainers`, ...) и скопированным `tests/`; его использует
+  `docker-compose.override.yml` (`build.target: dev`), который compose подхватывает автоматически.
+  Докер-сокет (нужен testcontainers внутри `api`/`worker` для `docker compose run --rm api pytest
+  tests/integration`) — тоже только в `docker-compose.override.yml`, не в основном
+  `docker-compose.yml`: прод-конфигурация не должна знать про тестовую обвязку.
+
 ---
 
 ## 12. Фронтенд и расширение
@@ -516,7 +633,10 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
   `exec format error`. Как появится amd64-сборка под `17`, можно вернуться на плавающий тег.
 - Один backend-образ на три роли; роль задаётся командой запуска.
 - Healthchecks у всех сервисов; `depends_on: condition: service_healthy`.
-- dev: `docker-compose.override.yml` монтирует исходники, включает `--reload`.
+- dev: `docker-compose.override.yml` (создан на этапе 3) переключает `api`/`worker` на таргет
+  `dev` образа (dev-зависимости + `tests/`, см. 11a) и даёт `api` доступ к докер-сокету для
+  `docker compose run --rm api pytest tests/integration` (testcontainers). Монтирование исходников
+  и `--reload` в нём пока не реализованы — остаётся долгом.
 - Прод: тот же compose + профиль `prod`; РФ-воркер запускается тем же образом на отдельном сервере.
 
 ## 13. Тестирование
@@ -533,7 +653,8 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 
 1. **Скелет**: uv-проект, settings, dishka, FastAPI app factory, Postgres + Alembic, docker-compose, CI-линтеры.
 2. **shared_kernel + matching**: VO, нормализатор, скорер, пайплайн, корпус тестов.
-3. **transfers**: агрегат, use cases, репозитории, ARQ, SSE.
+3. **transfers** (сделано): агрегат, use cases, репозитории, ARQ, SSE; попутно —
+   минимальный срез `catalog` и персистентность `matching` (детали и долги — раздел 11a).
 4. **Адаптеры**: Яндекс → SoundCloud → YT Music → VK → Spotify (чтение).
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.

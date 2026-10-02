@@ -53,6 +53,7 @@ services:
     profiles: ["app"]
     build:
       context: ./backend
+      target: prod
     environment:
       DB__DSN: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS__DSN: redis://redis:6379/0
@@ -73,6 +74,7 @@ services:
     profiles: ["app"]
     build:
       context: ./backend
+      target: prod
     command: ["arq", "syncplaylists.bootstrap.worker.WorkerSettings"]
     environment:
       DB__DSN: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}

@@ -74,9 +74,6 @@ lerna-debug.log*
 *.sqlite3
 *.db
 
-# --- Docker ---
-docker-compose.override.yml
-
 # --- Editors / OS ---
 .idea/
 .vscode/

@@ -29,7 +29,11 @@ class Entity:
 
 @dataclass(eq=False, slots=True)
 class AggregateRoot(Entity):
-    _domain_events: list[DomainEvent] = field(default_factory=list, repr=False, compare=False)
+    # kw_only=True — иначе любой наследник с собственными обязательными полями после
+    # этого (дефолтного) поля не собрался бы как dataclass ("non-default after default").
+    _domain_events: list[DomainEvent] = field(
+        default_factory=list, repr=False, compare=False, kw_only=True
+    )
 
     def record_event(self, event: DomainEvent) -> None:
         self._domain_events.append(event)

@@ -13,7 +13,7 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     MatchScore,
     Platform,
 )
-from tests.unit.matching.fakes import FakeMusicPlatformGateway, FakeTrackMatchRepository
+from tests.fakes import FakeMusicPlatformGateway, FakeTrackMatchRepository
 
 _SOURCE_REF = ExternalTrackRef(Platform.VK, "src-1")
 

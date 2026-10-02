@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+from syncplaylists.modules.catalog.application.use_cases import EnsurePlatformTrackUseCase
 from syncplaylists.modules.matching.application.use_cases import ResolveTrackMatchUseCase
 from syncplaylists.modules.matching.domain.entities import MatchMethod, TrackMatch
 from syncplaylists.modules.matching.domain.normalization import TrackNormalizer
@@ -13,7 +14,12 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     MatchScore,
     Platform,
 )
-from tests.unit.matching.fakes import FakeMusicPlatformGateway, FakeTrackMatchRepository
+from tests.fakes import (
+    FakeCanonicalTrackRepository,
+    FakeMusicPlatformGateway,
+    FakePlatformTrackRepository,
+    FakeTrackMatchRepository,
+)
 
 _SOURCE_REF = ExternalTrackRef(Platform.VK, "src-1")
 
@@ -22,6 +28,10 @@ def _source() -> TrackCandidate:
     return TrackCandidate(
         ref=_SOURCE_REF, title="Starboy", artist="The Weeknd", duration=Duration(230_000)
     )
+
+
+def _ensure_platform_track() -> EnsurePlatformTrackUseCase:
+    return EnsurePlatformTrackUseCase(FakePlatformTrackRepository(), FakeCanonicalTrackRepository())
 
 
 async def test_use_case_persists_new_fuzzy_match() -> None:
@@ -38,7 +48,7 @@ async def test_use_case_persists_new_fuzzy_match() -> None:
         TrackNormalizer(),
         MatchScorer(TrackNormalizer()),
     )
-    use_case = ResolveTrackMatchUseCase(pipeline, repository)
+    use_case = ResolveTrackMatchUseCase(pipeline, repository, _ensure_platform_track())
 
     attempt = await use_case.execute(_source(), Platform.SPOTIFY)
 
@@ -63,7 +73,7 @@ async def test_use_case_does_not_resave_cache_hit() -> None:
     pipeline = build_default_pipeline(
         FakeMusicPlatformGateway(), repository, TrackNormalizer(), MatchScorer(TrackNormalizer())
     )
-    use_case = ResolveTrackMatchUseCase(pipeline, repository)
+    use_case = ResolveTrackMatchUseCase(pipeline, repository, _ensure_platform_track())
 
     attempt = await use_case.execute(_source(), Platform.SPOTIFY)
 

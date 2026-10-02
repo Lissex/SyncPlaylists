@@ -1,0 +1,18 @@
+# Dev-оверрайд — docker compose подхватывает этот файл автоматически, без флагов.
+# Сокет Docker и dev-таргет сюда, а не в docker-compose.yml: прод-образ/прод-команды
+# не должны знать про тестовую обвязку.
+services:
+  api:
+    build:
+      target: dev
+    # Сокет — чтобы "docker compose run --rm api pytest tests/integration" мог поднимать
+    # свои Postgres/Redis через testcontainers (sibling-контейнеры). На хосте сокет
+    # обычно принадлежит root — для тестового прогона запускай с "--user root"
+    # (docker compose run --rm --user root api pytest ...), иначе testcontainers
+    # упадёт на permission denied.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  worker:
+    build:
+      target: dev

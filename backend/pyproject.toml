@@ -18,6 +18,8 @@ dependencies = [
     "alembic>=1.14",
     "arq>=0.26",
     "rapidfuzz>=3.10",
+    "redis>=5.0",
+    "sse-starlette>=2.1",
 ]
 
 [dependency-groups]
@@ -93,7 +95,7 @@ source_modules = [
     "syncplaylists.modules.backups.domain",
 ]
 forbidden_modules = [
-    "fastapi", "starlette", "sqlalchemy", "redis", "httpx", "dishka",
+    "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
     "arq", "pydantic_settings", "authlib", "boto3", "aioboto3",
 ]
 
@@ -159,7 +161,7 @@ source_modules = [
     "syncplaylists.modules.backups.application",
 ]
 forbidden_modules = [
-    "fastapi", "starlette", "sqlalchemy", "redis", "httpx", "dishka",
+    "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
     "arq", "pydantic_settings", "authlib", "boto3", "aioboto3",
     "syncplaylists.modules.identity.infrastructure",
     "syncplaylists.modules.identity.presentation",
