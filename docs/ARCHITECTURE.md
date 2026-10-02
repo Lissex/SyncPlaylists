@@ -459,6 +459,24 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 
 ---
 
+## 12a. Docker
+
+| Сервис | Образ | Профиль |
+|---|---|---|
+| `postgres` | `postgres:17` (+ pg_trgm, unaccent; позже pgvector-образ) | default |
+| `redis` | `redis:7` | default |
+| `minio` | `minio/minio` | default |
+| `api` | `backend/Dockerfile` → uvicorn | `app` |
+| `worker` | тот же образ → `arq ...WorkerSettings` (очереди transfer/match/write) | `app` |
+| `worker-recognize` | тот же образ, очередь `recognize`; ffmpeg + chromaprint внутри | `app` |
+| `frontend` | `frontend/Dockerfile` → nginx | `app` |
+| `caddy` | `caddy:2` (только прод) | `prod` |
+
+- Один backend-образ на три роли; роль задаётся командой запуска.
+- Healthchecks у всех сервисов; `depends_on: condition: service_healthy`.
+- dev: `docker-compose.override.yml` монтирует исходники, включает `--reload`.
+- Прод: тот же compose + профиль `prod`; РФ-воркер запускается тем же образом на отдельном сервере.
+
 ## 13. Тестирование
 
 - **unit**: домен и use cases на in-memory фейках портов — быстрые, без Docker.

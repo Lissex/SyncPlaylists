@@ -26,12 +26,32 @@
 - Аудио-фрагменты не сохраняем на диск дольше распознавания.
 - Тексты песен не парсим со страниц Genius и не храним в Postgres — только через `LyricsProvider`, кэш с TTL.
 
+## Docker (обязательно)
+Проект работает в Docker. Разработка идёт на Windows с Docker Desktop.
+- **Инфраструктура только в Docker**: PostgreSQL 17, Redis 7, MinIO. Ничего из этого не ставим на хост.
+- **У каждого приложения свой Dockerfile**: `backend/Dockerfile` (multi-stage на uv; в образе есть
+  ffmpeg и chromaprint (`libchromaprint-tools`)) — один образ для `api`, `worker` и `worker-recognize`;
+  `frontend/Dockerfile` (сборка Vite → nginx).
+- **`docker-compose.yml` в корне** описывает сервисы `postgres`, `redis`, `minio`, `api`, `worker`,
+  `worker-recognize`, `frontend`. У каждого есть healthcheck, данные лежат в именованных volumes.
+- **Профили compose**: по умолчанию поднимается только инфраструктура; `--profile app` поднимает всё приложение.
+- **Аудио-инструменты** (ffmpeg, chromaprint, shazamio) запускаем и тестируем **только в контейнере**,
+  а не на Windows-хосте.
+- **Конфиг только через env.** `.env` (не в git) и `.env.example` (в git). Внутри compose сервисы
+  обращаются друг к другу по имени (`postgres`, `redis`), с хоста — через `localhost`.
+- **`docker-compose.override.yml`** для dev: монтирование исходников и `--reload`.
+- **Тесты** интеграционных слоёв ходят в Postgres и Redis через testcontainers или через compose-сервисы.
+
 ## Команды
 - Установка: `cd backend && uv sync`
 - Тесты: `uv run pytest`
 - Линт/типы: `uv run ruff check . && uv run ruff format --check . && uv run mypy src && uv run lint-imports`
 - Миграции: `uv run alembic revision --autogenerate -m "..."`, `uv run alembic upgrade head`
-- Окружение: `docker compose up -d postgres redis`
+- Инфраструктура: `docker compose up -d` (postgres, redis, minio)
+- Всё приложение: `docker compose --profile app up -d --build`
+- Логи: `docker compose logs -f api worker`
+- Миграции в контейнере: `docker compose run --rm api alembic upgrade head`
+- Тесты в контейнере (нужно для аудио): `docker compose run --rm api pytest`
 
 ## Как работаем
 - Работаем по этапам из раздела 14 `docs/ARCHITECTURE.md`, один этап — одна ветка/PR.
