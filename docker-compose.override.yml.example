@@ -1,0 +1,29 @@
+# Шаблон для dev-окружения. Скопируйте в docker-compose.override.yml
+# (файл в .gitignore — переопределения локальные, не коммитятся):
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Монтирует исходники backend и включает автоперезагрузку api/worker.
+
+services:
+  api:
+    volumes:
+      - ./backend/src:/app/src
+    command:
+      [
+        "uvicorn",
+        "syncplaylists.bootstrap.api:create_app",
+        "--factory",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app/src",
+      ]
+
+  worker:
+    volumes:
+      - ./backend/src:/app/src
+    command: ["arq", "syncplaylists.bootstrap.worker.WorkerSettings", "--watch", "/app/src"]
