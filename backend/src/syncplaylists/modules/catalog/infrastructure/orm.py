@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from syncplaylists.infrastructure.db.base import Base
@@ -8,6 +8,22 @@ from syncplaylists.infrastructure.db.base import Base
 
 class CanonicalTrackOrm(Base):
     __tablename__ = "canonical_tracks"
+    __table_args__ = (
+        # Нечёткий поиск по нормализованным названиям (pg_trgm) — созданы миграцией
+        # 042c8b813af6; объявлены здесь, чтобы ORM и схема не расходились (alembic check).
+        Index(
+            "ix_canonical_tracks_title_norm_trgm",
+            "title_norm",
+            postgresql_using="gin",
+            postgresql_ops={"title_norm": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_canonical_tracks_artist_norm_trgm",
+            "artist_norm",
+            postgresql_using="gin",
+            postgresql_ops={"artist_norm": "gin_trgm_ops"},
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     isrc: Mapped[str | None] = mapped_column(String(12), unique=True, nullable=True)

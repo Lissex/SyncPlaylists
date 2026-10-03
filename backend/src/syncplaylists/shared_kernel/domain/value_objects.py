@@ -16,6 +16,14 @@ class Platform(StrEnum):
     YTMUSIC = "ytmusic"
 
 
+class Transport(StrEnum):
+    """Через что идёт доступ к площадке от имени подключённого аккаунта."""
+
+    OFFICIAL = "official"  # официальный API (OAuth)
+    UNOFFICIAL = "unofficial"  # неофициальная библиотека по токену (yandex-music, vkpymusic, ...)
+    EXTENSION = "extension"  # браузерное расширение в сессии пользователя
+
+
 @dataclass(frozen=True, slots=True)
 class ISRC(ValueObject):
     value: str

@@ -80,3 +80,51 @@ async def test_use_case_does_not_resave_cache_hit() -> None:
     assert attempt.status is MatchStatus.MATCHED
     assert attempt.method is MatchMethod.CACHE
     assert repository.save_calls == []
+
+
+async def test_concurrently_cached_match_wins_over_own_candidate() -> None:
+    # Гонка: CacheStrategy не нашла матч, но пока шёл поиск, другой перенос записал
+    # соответствие в глобальный кэш. save() возвращает то, что в кэше, — его и берём.
+    source = TrackCandidate(
+        ref=ExternalTrackRef(Platform.VK, "race-src"),
+        title="Starboy",
+        artist="The Weeknd",
+        duration=Duration(230_000),
+    )
+    own_target = TrackCandidate(
+        ref=ExternalTrackRef(Platform.SPOTIFY, "own-target"),
+        title="Starboy",
+        artist="The Weeknd",
+        duration=Duration(230_000),
+    )
+    already_cached = TrackMatch(
+        id=uuid4(),
+        source_ref=source.ref,
+        target_platform=Platform.SPOTIFY,
+        target_ref=ExternalTrackRef(Platform.SPOTIFY, "cached-target"),
+        method=MatchMethod.ISRC,
+        score=MatchScore(1.0),
+    )
+
+    class _RacingRepository(FakeTrackMatchRepository):
+        async def find(
+            self, source_ref: ExternalTrackRef, target_platform: Platform
+        ) -> TrackMatch | None:
+            return None  # на момент CacheStrategy кэш пуст
+
+    repository = _RacingRepository()
+    repository._storage[(source.ref, Platform.SPOTIFY)] = already_cached
+    gateway = FakeMusicPlatformGateway(platform=Platform.SPOTIFY, search_results=[own_target])
+    normalizer = TrackNormalizer()
+    pipeline = build_default_pipeline(gateway, repository, normalizer, MatchScorer(normalizer))
+    use_case = ResolveTrackMatchUseCase(
+        pipeline,
+        repository,
+        EnsurePlatformTrackUseCase(FakePlatformTrackRepository(), FakeCanonicalTrackRepository()),
+    )
+
+    attempt = await use_case.execute(source, Platform.SPOTIFY)
+
+    assert attempt.match is not None
+    assert attempt.match.id == already_cached.id
+    assert attempt.match.target_ref == already_cached.target_ref

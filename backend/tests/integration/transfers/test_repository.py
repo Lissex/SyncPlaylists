@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,19 +20,19 @@ from syncplaylists.shared_kernel.domain.value_objects import (
 )
 
 
-def _transfer() -> Transfer:
+def _transfer(user_id: UUID) -> Transfer:
     return Transfer(
         id=uuid4(),
-        user_id=uuid4(),
+        user_id=user_id,
         source=PlaylistSource(ref=PlaylistRef(Platform.VK, f"src-{uuid4().hex[:8]}")),
         destination=ExistingPlaylist(ref=PlaylistRef(Platform.SPOTIFY, f"dst-{uuid4().hex[:8]}")),
     )
 
 
-async def test_round_trips_transfer_without_items(session: AsyncSession) -> None:
+async def test_round_trips_transfer_without_items(session: AsyncSession, user_id: UUID) -> None:
     platform_tracks = SqlPlatformTrackRepository(session)
     repo = SqlTransferRepository(session, platform_tracks)
-    transfer = _transfer()
+    transfer = _transfer(user_id)
 
     await repo.save(transfer)
     await session.flush()
@@ -47,10 +47,10 @@ async def test_round_trips_transfer_without_items(session: AsyncSession) -> None
     assert loaded.items == []
 
 
-async def test_round_trips_transfer_with_matched_item(session: AsyncSession) -> None:
+async def test_round_trips_transfer_with_matched_item(session: AsyncSession, user_id: UUID) -> None:
     platform_tracks = SqlPlatformTrackRepository(session)
     repo = SqlTransferRepository(session, platform_tracks)
-    transfer = _transfer()
+    transfer = _transfer(user_id)
     now = datetime.now(UTC)
     transfer.start(now)
     source_ref = ExternalTrackRef(Platform.VK, f"src-track-{uuid4().hex[:8]}")
@@ -86,10 +86,12 @@ async def test_round_trips_transfer_with_matched_item(session: AsyncSession) -> 
     assert item.match.method == "fuzzy"
 
 
-async def test_get_for_update_returns_same_data_as_get(session: AsyncSession) -> None:
+async def test_get_for_update_returns_same_data_as_get(
+    session: AsyncSession, user_id: UUID
+) -> None:
     platform_tracks = SqlPlatformTrackRepository(session)
     repo = SqlTransferRepository(session, platform_tracks)
-    transfer = _transfer()
+    transfer = _transfer(user_id)
     await repo.save(transfer)
     await session.flush()
 

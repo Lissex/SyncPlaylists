@@ -57,6 +57,10 @@ services:
     environment:
       DB__DSN: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS__DSN: redis://redis:6379/0
+      SECURITY__TOKEN_ENCRYPTION_KEY: ${SECURITY__TOKEN_ENCRYPTION_KEY}
+      SECURITY__COOKIE_SECURE: ${SECURITY__COOKIE_SECURE:-true}
+      CORS__ALLOWED_ORIGINS: '${CORS__ALLOWED_ORIGINS:-["http://localhost:5173"]}'
+      OAUTH__FAKE_PLATFORMS: '${OAUTH__FAKE_PLATFORMS:-[]}'
     ports:
       - "8000:8000"
     depends_on:
@@ -79,6 +83,10 @@ services:
     environment:
       DB__DSN: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS__DSN: redis://redis:6379/0
+      SECURITY__TOKEN_ENCRYPTION_KEY: ${SECURITY__TOKEN_ENCRYPTION_KEY}
+      SECURITY__COOKIE_SECURE: ${SECURITY__COOKIE_SECURE:-true}
+      CORS__ALLOWED_ORIGINS: '${CORS__ALLOWED_ORIGINS:-["http://localhost:5173"]}'
+      OAUTH__FAKE_PLATFORMS: '${OAUTH__FAKE_PLATFORMS:-[]}'
     depends_on:
       postgres:
         condition: service_healthy

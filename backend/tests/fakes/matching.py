@@ -12,9 +12,10 @@ class FakeTrackMatchRepository:
     ) -> TrackMatch | None:
         return self._storage.get((source_ref, target_platform))
 
-    async def save(self, match: TrackMatch) -> None:
+    async def save(self, match: TrackMatch) -> TrackMatch:
+        # Как SqlTrackMatchRepository: побеждает первая запись.
         self.save_calls.append(match)
-        self._storage[(match.source_ref, match.target_platform)] = match
+        return self._storage.setdefault((match.source_ref, match.target_platform), match)
 
     async def record_confirmation(
         self, source_ref: ExternalTrackRef, target_platform: Platform

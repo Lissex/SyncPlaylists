@@ -8,6 +8,7 @@ from syncplaylists.modules.transfers.domain.events import (
     TrackMatched,
     TrackNeedsReview,
     TrackNotFound,
+    TrackProcessingFailed,
     TransferCompleted,
     TransferFailed,
     TransferStarted,
@@ -18,6 +19,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     TrackDestination,
     TrackSource,
     TransferItemStatus,
+    TransferProgress,
     TransferStatus,
 )
 from syncplaylists.shared_kernel.domain.base import AggregateRoot, Entity
@@ -43,6 +45,35 @@ class TransferItem(Entity):
     status: TransferItemStatus = TransferItemStatus.PENDING
     match: MatchResult | None = None
     candidates: tuple[TrackCandidate, ...] = ()
+
+    # Переходы одного item из PENDING. Вызываются и агрегатом (Transfer.record_*), и
+    # run_match напрямую — там item сохраняется точечно, без загрузки всего переноса
+    # (см. Transfer.record_item_outcome).
+
+    def _ensure_pending(self) -> None:
+        if self.status is not TransferItemStatus.PENDING:
+            raise InvalidTransferTransitionError(
+                f"TransferItem {self.position} уже обработан (статус {self.status})"
+            )
+
+    def apply_match(self, result: MatchResult) -> None:
+        self._ensure_pending()
+        self.status = TransferItemStatus.MATCHED
+        self.match = result
+
+    def apply_uncertain(self, candidates: tuple[TrackCandidate, ...]) -> None:
+        self._ensure_pending()
+        self.status = TransferItemStatus.UNCERTAIN
+        self.candidates = candidates
+
+    def apply_not_found(self, candidates: tuple[TrackCandidate, ...]) -> None:
+        self._ensure_pending()
+        self.status = TransferItemStatus.NOT_FOUND
+        self.candidates = candidates
+
+    def apply_processing_failure(self) -> None:
+        self._ensure_pending()
+        self.status = TransferItemStatus.FAILED
 
 
 @dataclass(eq=False, slots=True)
@@ -88,49 +119,73 @@ class Transfer(AggregateRoot):
     def record_match(self, position: int, result: MatchResult, now: datetime) -> None:
         self._ensure_status(TransferStatus.RUNNING)
         item = self._item(position)
-        if item.status is not TransferItemStatus.PENDING:
-            raise InvalidTransferTransitionError(
-                f"TransferItem {position} уже обработан (статус {item.status})"
-            )
-        item.status = TransferItemStatus.MATCHED
-        item.match = result
-        self.record_event(
-            TrackMatched(occurred_at=now, transfer_id=self.id, position=position, match=result)
-        )
+        item.apply_match(result)
+        self.record_item_outcome(item, now)
 
     def record_uncertain(
         self, position: int, candidates: tuple[TrackCandidate, ...], now: datetime
     ) -> None:
         self._ensure_status(TransferStatus.RUNNING)
         item = self._item(position)
-        if item.status is not TransferItemStatus.PENDING:
-            raise InvalidTransferTransitionError(
-                f"TransferItem {position} уже обработан (статус {item.status})"
-            )
-        item.status = TransferItemStatus.UNCERTAIN
-        item.candidates = candidates
-        self.record_event(
-            TrackNeedsReview(
-                occurred_at=now, transfer_id=self.id, position=position, candidates=candidates
-            )
-        )
+        item.apply_uncertain(candidates)
+        self.record_item_outcome(item, now)
 
     def record_not_found(
         self, position: int, candidates: tuple[TrackCandidate, ...], now: datetime
     ) -> None:
         self._ensure_status(TransferStatus.RUNNING)
         item = self._item(position)
-        if item.status is not TransferItemStatus.PENDING:
-            raise InvalidTransferTransitionError(
-                f"TransferItem {position} уже обработан (статус {item.status})"
+        item.apply_not_found(candidates)
+        self.record_item_outcome(item, now)
+
+    def record_item_outcome(
+        self, item: TransferItem, now: datetime, failure_reason: str = ""
+    ) -> None:
+        """Событие о результате сопоставления одного item. Не требует загруженного
+        списка items: run_match работает с «шапкой» переноса и одним item, которые
+        сохраняются точечно (параллельные джобы не перетирают друг друга)."""
+        self._ensure_status(TransferStatus.RUNNING)
+        if item.transfer_id != self.id:
+            raise InvalidTransferTransitionError("item принадлежит другому переносу")
+        event: TrackMatched | TrackNeedsReview | TrackNotFound | TrackProcessingFailed
+        if item.status is TransferItemStatus.MATCHED:
+            assert item.match is not None
+            event = TrackMatched(
+                occurred_at=now, transfer_id=self.id, position=item.position, match=item.match
             )
-        item.status = TransferItemStatus.NOT_FOUND
-        item.candidates = candidates
-        self.record_event(
-            TrackNotFound(
-                occurred_at=now, transfer_id=self.id, position=position, candidates=candidates
+        elif item.status is TransferItemStatus.UNCERTAIN:
+            event = TrackNeedsReview(
+                occurred_at=now,
+                transfer_id=self.id,
+                position=item.position,
+                candidates=item.candidates,
             )
-        )
+        elif item.status is TransferItemStatus.NOT_FOUND:
+            event = TrackNotFound(
+                occurred_at=now,
+                transfer_id=self.id,
+                position=item.position,
+                candidates=item.candidates,
+            )
+        elif item.status is TransferItemStatus.FAILED:
+            event = TrackProcessingFailed(
+                occurred_at=now, transfer_id=self.id, position=item.position, reason=failure_reason
+            )
+        else:
+            raise InvalidTransferTransitionError(f"item {item.position} ещё не обработан")
+        self.record_event(event)
+
+    def finish_matching(self, progress: TransferProgress, now: datetime) -> TransferStatus:
+        """Все items сопоставлены (по счётчикам из БД — список items может быть не
+        загружен): REVIEW, если есть что решать вручную, иначе WRITING."""
+        self._ensure_status(TransferStatus.RUNNING)
+        next_status = progress.status_after_matching()
+        if next_status is None:
+            raise InvalidTransferTransitionError("есть необработанные items")
+        self.status = next_status
+        if next_status is TransferStatus.WRITING:
+            self.record_event(TransferWritingStarted(occurred_at=now, transfer_id=self.id))
+        return next_status
 
     def pause_for_captcha(self, reason: str, now: datetime) -> None:
         self._ensure_status(TransferStatus.RUNNING)

@@ -1,3 +1,5 @@
+import dataclasses
+
 from syncplaylists.modules.catalog.application.use_cases import EnsurePlatformTrackUseCase
 from syncplaylists.modules.matching.domain.entities import MatchMethod
 from syncplaylists.modules.matching.domain.pipeline import (
@@ -40,5 +42,9 @@ class ResolveTrackMatchUseCase:
             await self._ensure_platform_track.execute(
                 target.ref, target.title, target.artist, target.duration, target.isrc
             )
-            await self._repository.save(attempt.match)
+            stored = await self._repository.save(attempt.match)
+            if stored.id != attempt.match.id:
+                # Кэш уже содержал матч (записал другой перенос/параллельная джоба) —
+                # используем его, чтобы все переносы видели одно соответствие.
+                attempt = dataclasses.replace(attempt, match=stored)
         return attempt

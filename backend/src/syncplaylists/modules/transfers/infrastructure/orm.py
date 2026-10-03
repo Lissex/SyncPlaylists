@@ -10,6 +10,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -29,12 +30,18 @@ class TransferOrm(Base):
     __tablename__ = "transfers"
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
-    user_id: Mapped[UUID] = mapped_column(index=True, nullable=False)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
 
     source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
     source_platform: Mapped[str | None] = mapped_column(String(20), nullable=True)
     source_playlist_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_account_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    # RESTRICT: аккаунты физически не удаляются, только переводятся в DISCONNECTED —
+    # история переносов продолжает на них ссылаться.
+    source_account_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("connected_accounts.id", ondelete="RESTRICT"), nullable=True
+    )
     source_file_id: Mapped[UUID | None] = mapped_column(nullable=True)
     source_file_format: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
@@ -43,13 +50,25 @@ class TransferOrm(Base):
     target_playlist_id: Mapped[str | None] = mapped_column(String, nullable=True)
     new_playlist_title: Mapped[str | None] = mapped_column(String, nullable=True)
     new_playlist_description: Mapped[str | None] = mapped_column(String, nullable=True)
-    destination_account_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    destination_account_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("connected_accounts.id", ondelete="RESTRICT"), nullable=True
+    )
 
     resolved_target_platform: Mapped[str | None] = mapped_column(String(20), nullable=True)
     resolved_target_playlist_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     cursor: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # Счётчики items (TransferProgress). run_match меняет их атомарно
+    # (`SET matched = matched + 1`), полное сохранение агрегата — пересчитывает из items.
+    total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    pending: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    matched: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    uncertain: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    not_found: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    added: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    failed: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

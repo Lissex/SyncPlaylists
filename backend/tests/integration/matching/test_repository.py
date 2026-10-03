@@ -65,3 +65,38 @@ async def test_find_returns_none_when_source_platform_track_missing(session: Asy
     found = await repo.find(ExternalTrackRef(Platform.VK, "unknown"), Platform.SPOTIFY)
 
     assert found is None
+
+
+async def test_save_does_not_overwrite_existing_cached_match(session: AsyncSession) -> None:
+    platform_tracks = SqlPlatformTrackRepository(session)
+    suffix = uuid4().hex[:8]
+    source_ref = ExternalTrackRef(Platform.VK, f"src-{suffix}")
+    first_target = ExternalTrackRef(Platform.SPOTIFY, f"tgt-a-{suffix}")
+    second_target = ExternalTrackRef(Platform.SPOTIFY, f"tgt-b-{suffix}")
+    for ref in (source_ref, first_target, second_target):
+        await platform_tracks.get_or_create(
+            PlatformTrack(
+                id=uuid4(),
+                platform=ref.platform,
+                external_id=ref.external_id,
+                raw_title="Starboy",
+                raw_artist="The Weeknd",
+            )
+        )
+    repo = SqlTrackMatchRepository(session, platform_tracks)
+
+    def match_to(target: ExternalTrackRef) -> TrackMatch:
+        return TrackMatch(
+            id=uuid4(),
+            source_ref=source_ref,
+            target_platform=Platform.SPOTIFY,
+            target_ref=target,
+            method=MatchMethod.FUZZY,
+            score=MatchScore(0.95),
+        )
+
+    first = await repo.save(match_to(first_target))
+    second = await repo.save(match_to(second_target))  # раньше: UniqueViolation
+
+    assert second.id == first.id
+    assert second.target_ref == first_target  # побеждает первая запись

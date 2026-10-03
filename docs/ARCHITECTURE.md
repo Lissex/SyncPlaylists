@@ -228,9 +228,21 @@ class DatabaseSettings(BaseModel):
 class RedisSettings(BaseModel):
     dsn: RedisDsn
 
-class SecuritySettings(BaseModel):
-    token_encryption_key: SecretStr      # AES-GCM ключ (base64)
-    session_secret: SecretStr
+class SecuritySettings(BaseModel):         # реализовано на этапе 4a
+    token_encryption_key: SecretStr      # AES-256-GCM ключ: base64 от 32 байт (валидируется)
+    session_ttl_minutes: int = 60 * 24 * 7
+    cookie_secure: bool = True           # True → Secure + имя cookie с префиксом __Host-
+    auth_rate_limit_attempts: int = 5    # /auth/login и /auth/register, на (IP, email)
+    auth_rate_limit_window_seconds: int = 60
+
+class CorsSettings(BaseModel):           # этап 4a; "*" запрещён валидатором
+    allowed_origins: list[str] = ["http://localhost:5173"]
+
+class OAuthSettings(BaseModel):          # этап 4a
+    callback_base_url: str = "http://localhost:8000"
+    frontend_redirect_url: str = "http://localhost:5173/accounts"
+    state_ttl_seconds: int = 600
+    fake_platforms: list[Platform] = []  # FakeOAuthProvider для dev/тестов
 
 class SpotifySettings(BaseModel):
     client_id: str
@@ -259,6 +271,8 @@ class Settings(BaseSettings):
     db: DatabaseSettings
     redis: RedisSettings
     security: SecuritySettings
+    cors: CorsSettings = CorsSettings()
+    oauth: OAuthSettings = OAuthSettings()
     spotify: SpotifySettings
     soundcloud: SoundCloudSettings
     recognition: RecognitionSettings = RecognitionSettings()
@@ -403,18 +417,42 @@ class FileStorage(Protocol):
     async def put(self, key: str, data: bytes) -> None: ...
     async def presigned_url(self, key: str, ttl_s: int) -> str: ...
 
+# shared_kernel/application/ports.py (с этапа 4a). Фабрика принимает собранный VO
+# AccountAccess, а не ConnectedAccount: shared_kernel не импортирует accounts.domain
+# (была бы обратная зависимость). Собирает VO сам accounts — через AccountAccessProvider.
+@dataclass(frozen=True)
+class PlatformCredentials:           # расшифрованные токены, поля repr=False
+    access_token: str; refresh_token: str | None; expires_at: datetime | None
+@dataclass(frozen=True)
+class AccountAccess:
+    account_id: UUID; user_id: UUID; platform: Platform; transport: Transport
+    credentials: PlatformCredentials
+
 class GatewayFactory(Protocol):
-    def for_account(self, account: ConnectedAccount) -> MusicPlatformGateway: ...
-    # выбирает транспорт: official / unofficial / extension
-    #
-    # ДОЛГ С ЭТАПА 3: пока нет модуля accounts (ConnectedAccount), реализованный порт —
-    # for_platform(platform: Platform) -> MusicPlatformGateway, упрощённый (без
-    # account/credentials). Живёт в shared_kernel/application/ports.py вместе с
-    # UnitOfWork/TaskQueue/EventPublisher — application-порт (вызывается из use case,
-    # не из домена), нужен нескольким контекстам. Когда появится accounts (этап 4):
-    # сигнатуру НЕЛЬЗЯ чинить импортом modules.accounts.domain.ConnectedAccount в
-    # shared_kernel — это обратная зависимость. Либо порт переезжает в accounts, либо
-    # принимает уже собранный вызывающей стороной VO (platform + credentials).
+    def for_account(self, access: AccountAccess) -> MusicPlatformGateway: ...
+    # выбирает транспорт по access.transport: official / unofficial / extension
+
+class AccountAccessProvider(Protocol):   # реализация — accounts.application.AccountAccessService
+    async def get(self, user_id: UUID, account_id: UUID) -> AccountAccess: ...
+    async def for_platform(self, user_id: UUID, platform: Platform) -> AccountAccess: ...
+    async def update_credentials(self, account_id: UUID, credentials: PlatformCredentials) -> None: ...
+    # все методы бросают AccountNotAvailableError (нет / чужой / отключён / не та площадка)
+
+# accounts/application/ports.py
+class TokenCipher(Protocol):         # реализация — infrastructure/security/aes_gcm.py
+    def encrypt(self, plaintext: str, *, aad: bytes) -> bytes: ...
+    def decrypt(self, ciphertext: bytes, *, aad: bytes) -> str: ...
+class OAuthProvider(Protocol):       # пока только FakeOAuthProvider (integrations/platforms/fake)
+    platform: Platform
+    def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str: ...
+    async def exchange_code(self, *, code: str, code_verifier: str, redirect_uri: str) -> OAuthGrant: ...
+
+# identity/application/ports.py
+class SessionTokenService(Protocol): # реализация — RedisSessionStore
+    async def issue(self, user_id: UUID) -> str: ...
+    async def resolve(self, token: str) -> UUID | None: ...
+    async def revoke(self, token: str) -> None: ...
+    async def revoke_all(self, user_id: UUID) -> None: ...
 
 class AudioSource(Protocol):
     async def fetch_fragment(self, ref: ExternalTrackRef, seconds: int) -> AudioFragment: ...
@@ -424,8 +462,6 @@ class AudioRecognizer(Protocol):
 
 class FingerprintComparer(Protocol):
     async def similarity(self, a: AudioFragment, b: AudioFragment) -> float: ...
-
-class TokenCipher(Protocol): ...
 
 # TaskQueue/EventPublisher/UnitOfWork — реализованы с этапа 3 в
 # shared_kernel/application/ports.py (нужны нескольким контекстам, вызываются из
@@ -468,9 +504,15 @@ class UnitOfWork(Protocol):
 ## 10. База данных (PostgreSQL)
 
 ```
-users               id, email, created_at
-connected_accounts  id, user_id, platform, external_user_id, access_token_enc, refresh_token_enc,
-                    expires_at, transport, status
+users               id, email UNIQUE (нормализован: lower), password_hash (argon2id), created_at
+connected_accounts  id, user_id → users ON DELETE CASCADE, platform, transport, external_user_id,
+                    display_name, access_token_enc, refresh_token_enc (bytea, AES-GCM),
+                    expires_at, status (active|expired|disconnected), connected_at,
+                    UNIQUE(user_id, platform, external_user_id),
+                    UNIQUE(user_id, platform) WHERE status = 'active'
+-- transfers.user_id → users ON DELETE CASCADE; transfers.source_account_id/destination_account_id
+-- → connected_accounts ON DELETE RESTRICT (аккаунты не удаляются, только DISCONNECTED)
+-- Сессии — не в Postgres, а в Redis: session:<sha256(token)> → user_id, user_sessions:<user_id>
 canonical_tracks    id, isrc, title_norm, artist_norm, duration_ms, mbid
 platform_tracks     id, platform, external_id, canonical_id, raw_title, raw_artist, duration_ms, isrc,
                     raw jsonb, UNIQUE(platform, external_id)
@@ -481,7 +523,8 @@ transfers           id, user_id,
                     source_kind (playlist|library), source_platform, source_playlist_id,
                     destination_kind (existing|new|library), target_platform, target_playlist_id,
                     new_playlist_title, cursor jsonb (для возобновления),
-                    status, total, matched, recognized, uncertain, not_found, created_at, updated_at
+                    status, total, pending, matched, uncertain, not_found, added, failed
+                    (счётчики — 11c; recognized — этап 6), created_at, updated_at (NOT NULL)
 transfer_items      id, transfer_id, position, source_pt_id, match_id, status, candidates jsonb
 artworks            canonical_id, provider, url, width, height, dominant_color, fetched_at
 lyrics_refs         canonical_id, provider, page_url, has_synced, cached_until
@@ -537,9 +580,8 @@ concurrency/rate-limit по площадкам, описанные в табли
   (`resolve_item`, `method="manual"`) строки в `track_matches` не существует, а создавать её
   специально ради FK было бы искусственно. Восстановить связь можно на этапе `library_tools`,
   когда появится осмысленный сценарий её использования.
-- **`Transfer.user_id`, `LibrarySource.account_id`, `LibraryDestination.account_id` — просто
-  `UUID`, без FK.** Модули `identity` (`User`) и `accounts` (`ConnectedAccount`) не построены.
-  FK на `users`/`connected_accounts` — отдельной миграцией, когда эти модули появятся.
+- ~~**`Transfer.user_id`, `LibrarySource.account_id`, `LibraryDestination.account_id` — просто
+  `UUID`, без FK.**~~ Закрыто на этапе 4a (миграция `7c1e4a9b2d30`, см. 11b).
 - **`LinkResolver`/`UrlExpander` (раздел 7, разбор ссылки плейлиста) не реализованы** —
   осмысленны только с реальными адаптерами площадок (этап 4). `POST /transfers` на этом этапе
   принимает структурированный `source`/`destination` (`platform` + `external_id`/`account_id`),
@@ -569,12 +611,11 @@ concurrency/rate-limit по площадкам, описанные в табли
   `shared_kernel`: пока единственный потребитель — `transfers`, через публичный application-слой
   `matching` (тот же канал, что и `ResolveTrackMatchUseCase`/`EnsurePlatformTrackUseCase`).
 - **ARQ at-least-once и идемпотентность.** Повторная доставка одной и той же джобы не должна
-  задвоить работу: `ProcessTransferUseCase`/`MatchTransferItemUseCase`/`ResolveUncertainItemUseCase`
+  задвоить работу: `ProcessTransferUseCase`/`ResolveUncertainItemUseCase`/`WriteTransferUseCase`
   читают `Transfer` через `TransferRepository.get_for_update()` (`SELECT ... FOR UPDATE` на строке
   `transfers`) — конкурентная доставка блокируется на этом локе до коммита первой попытки, затем
-  видит уже изменённый статус и либо ловит `InvalidTransferTransitionError` от доменного метода
-  (`ProcessTransferUseCase.start()`), либо явно проверяет статус item'а перед мутацией
-  (`MatchTransferItemUseCase`) и выходит no-op.
+  видит уже изменённый статус и выходит no-op. `MatchTransferItemUseCase` с этапа 4a работает
+  иначе — точечно, см. 11c.
 - **Побочный эффект до commit.** `WriteTransferUseCase.create_playlist` на реальной площадке —
   вызов вовне; если транзакция после него упадёт и откатится, повторная доставка `run_write`
   создаст плейлист повторно (нет саги/outbox). Для фейковой площадки на этом этапе не критично,
@@ -601,6 +642,124 @@ concurrency/rate-limit по площадкам, описанные в табли
   Докер-сокет (нужен testcontainers внутри `api`/`worker` для `docker compose run --rm api pytest
   tests/integration`) — тоже только в `docker-compose.override.yml`, не в основном
   `docker-compose.yml`: прод-конфигурация не должна знать про тестовую обвязку.
+
+### 11b. Этап 4a (identity + accounts) — что сделано и какой долг оставлен
+
+**Сделано**
+- **identity**: `User` (email + argon2id), `/auth/register|login|logout|logout-all|me`.
+  Регистрация сразу логинит.
+- **Сессии — непрозрачный id в Redis, не JWT.** Токен `secrets.token_urlsafe(32)` лежит в
+  httpOnly cookie. В Redis хранится `session:<sha256(token)>` → `user_id` с TTL (сырой токен в
+  Redis не пишем) и индекс `user_sessions:<user_id>` для «выйти со всех устройств».
+  Logout удаляет ключ на сервере, т.е. сессию можно отозвать.
+- **Cookie**: `HttpOnly`, `SameSite=Lax`, `Path=/`, без `Domain`. В проде (`cookie_secure=true`)
+  — `Secure` и имя `__Host-sp_session`, в dev по http — `sp_session`.
+  **CORS** — только allowlist из `Settings.cors`, `allow_credentials=True`, `"*"` запрещён.
+- **Rate limit** `/auth/login` и `/auth/register`: 5 попыток в минуту на (IP, sha256(email)),
+  фиксированное окно в Redis (`infrastructure/ratelimit`), при превышении 429 + `Retry-After`.
+  Неизвестный email при входе всё равно проходит `verify` по хешу-пустышке, чтобы время ответа
+  не выдавало, есть ли такой email.
+- **accounts**: `ConnectedAccount` (platform, transport, external_user_id, статус
+  active/expired/disconnected). `/accounts` — список, ручное подключение токеном,
+  отключение. Отключение стирает токены и оставляет строку: на неё ссылаются FK из `transfers`.
+- **Токены зашифрованы AES-256-GCM** (`TokenCipher`, ключ из `Settings.security`). Формат:
+  `версия(1) | nonce(12) | ciphertext+tag`. AAD = `connected_account:<id>:<access|refresh>`,
+  поэтому шифротекст нельзя переставить в другую строку или поле. Домен видит только `EncryptedToken`.
+- **OAuth-каркас**: `/accounts/{platform}/oauth/start` → площадка →
+  `/accounts/{platform}/oauth/callback` → редирект на фронт. state одноразовый (Redis `GETDEL`,
+  TTL 10 мин) и привязан к пользователю, начавшему поток (защита от login-CSRF); PKCE S256.
+  Сейчас есть только `FakeOAuthProvider` для `settings.oauth.fake_platforms`. Настоящие клиенты
+  Spotify, SoundCloud и Google подключаются вместе с адаптерами (4b) реализацией `OAuthProvider`.
+- **`GatewayFactory.for_account(AccountAccess)`** вместо `for_platform`. transfers получает доступ
+  через `AccountAccessProvider` (порт `shared_kernel`) и не импортирует `accounts`. Явный `account_id`
+  (медиатека) берётся как есть, иначе берётся единственный активный аккаунт пользователя на
+  площадке. `StartTransferUseCase` проверяет аккаунты до постановки в очередь (422). Если аккаунт
+  отключили посреди переноса, `run_transfer`/`run_match`/`run_write` переводят перенос в
+  `FAILED("account_unavailable")` без исключения из таска.
+- **Правило: в ARQ-задачи, события и логи — только `account_id`/`transfer_id`, никогда токены.**
+  `AccountAccess` резолвится заново внутри воркера; поля с токенами объявлены `repr=False`.
+- **`AccountAccessProvider.update_credentials`** — для адаптеров, обновивших OAuth-токены.
+  Повторно шифрует и пишет через `AccountCredentialsWriter` в **отдельной транзакции** (своя сессия
+  из `async_sessionmaker`), поэтому откат переноса не теряет новый refresh_token. Вызывающая
+  транзакция не должна сама держать лок на этой строке `connected_accounts`.
+- `SqlUnitOfWork` переехал в `infrastructure/db/uow.py`: им пользуются три контекста.
+- Presentation других контекстов получает пользователя через
+  `identity.presentation.dependencies.CurrentUserId`. Это публичная точка identity для HTTP-слоя.
+  `user_id` больше не принимается в теле `POST /transfers`. Чужой перенос — 404.
+
+**Долги**
+- **Перебор email через 409** на `/auth/register`. Rate limit делает перебор дорогим, но не
+  невозможным. Вариант на будущее — подтверждение email с одинаковым ответом.
+- **Один активный аккаунт на площадку** (частичный UNIQUE). Нельзя перенести VK→VK между двумя
+  своими аккаунтами. Для этого нужен явный `account_id` у `ExistingPlaylist`/`NewPlaylist`/`PlaylistSource`.
+- Сессии с фиксированным TTL, без sliding-продления при активности.
+- Сам refresh OAuth-токенов (по `expires_at`) — задача адаптеров 4b; порт `update_credentials` готов.
+- Нет ротации ключа AES; под неё оставлен байт версии в формате шифротекста.
+- `external_user_id` при ручном подключении токеном не проверяется у площадки. Проверка через
+  профиль площадки появится с адаптерами.
+- CSRF закрывается сочетанием SameSite=Lax, JSON-тел (cross-origin JSON требует preflight) и CORS-allowlist.
+  Отдельного CSRF-токена нет.
+- За обратным прокси нужен uvicorn `--proxy-headers --forwarded-allow-ips` (этап «Прод»), иначе
+  rate limit считает IP прокси, общий для всех.
+- VK и Яндекс подключаются только ручным вводом токена (позже — через расширение): их
+  музыкальный API не даёт публичного OAuth. **Пароли площадок не принимаем никогда.**
+- Миграция `7c1e4a9b2d30` удаляет переносы-сироты этапа 3 (`user_id` без пользователя), иначе
+  FK не создать. Прод-данных на тот момент нет.
+
+### 11c. Конкурентность run_match и кэш track_matches (исправлено в 4a)
+
+**Баг.** Два переноса одних и тех же треков (другой пользователь, повтор того же плейлиста)
+матчат треки параллельно. Оба не находят соответствие в кэше и оба делают INSERT
+`track_matches` с новым UUID. Второй падает на `UNIQUE(source_pt_id, target_platform)`, джоба
+`run_match` умирает, item остаётся PENDING, перенос навсегда застревает в RUNNING.
+
+**track_matches — upsert, побеждает первая запись.** `SqlTrackMatchRepository.save()` делает
+`INSERT ... ON CONFLICT (source_pt_id, target_platform) DO NOTHING` и затем читает строку,
+которая реально лежит в кэше. Порт возвращает её, и `ResolveTrackMatchUseCase` подменяет свой
+кандидат на закэшированный: все переносы видят одно соответствие. `record_confirmation` —
+атомарный `SET confirmations = confirmations + 1`.
+
+**run_match не сохраняет агрегат целиком.** Выбрано **точечное обновление одного item +
+атомарные счётчики**, а не optimistic locking:
+- при optimistic locking (version + retry) сотни параллельных джоб одного переноса конфликтуют
+  почти всегда. Ретрай — это повторный сетевой матчинг, а число конфликтов растёт ~квадратично
+  от размера плейлиста;
+- старый вариант (`get_for_update` на весь перенос) не терял обновлений, но держал лок на всё
+  время сетевого матчинга, то есть превращал параллельный матчинг в последовательный.
+
+Как устроено сейчас:
+- `run_match` читает «шапку» переноса (`get_header`, без items) и один item;
+- `save_item_outcome` условно обновляет этот item (`WHERE status = 'pending'` — защита от
+  повторной доставки: из PENDING item переводит ровно одна транзакция);
+- затем атомарно сдвигает счётчики `transfers` (`pending = pending - 1, matched = matched + 1`
+  и т.д.) с `RETURNING`;
+- джоба, получившая `pending = 0`, делает условный переход `RUNNING → REVIEW|WRITING`
+  (`transition_status`) и только при успехе вызывает доменный `Transfer.finish_matching()`
+  (событие `TransferWritingStarted`) и ставит `run_write`.
+
+Счётчики (`TransferProgress`: total/pending/matched/uncertain/not_found/added/failed) хранятся
+в колонках `transfers`. Полное сохранение агрегата (`run_transfer`, resolve, `run_write` —
+моменты, когда параллельных `run_match` нет) пересчитывает их из items. Атомарный UPDATE
+счётчиков — последняя запись в транзакции `run_match`, поэтому порядок локов у всех джоб
+одинаковый и дедлоков нет. Лок строки `transfers` держится только до коммита.
+Падение переноса из `run_match` (аккаунт отключён) — тоже условный переход `RUNNING → FAILED`,
+без полного save.
+
+**Ограниченный retry.** ARQ не повторяет джобу на обычном исключении. `run_match` сам ловит
+ошибку и до `MATCH_MAX_TRIES = 3` попыток бросает `arq.Retry` с нарастающей задержкой.
+После этого `FailTransferItemUseCase` переводит item в `FAILED` (событие
+`TrackProcessingFailed`) — точно так же точечно. Перенос продолжает остальные треки и сам
+переходит в REVIEW/WRITING, если этот item был последним. Sweeper такой item больше не
+трогает: он уже не PENDING.
+
+**Дрейф схемы.** Остальные интеграционные тесты проверяют поведение и не замечают, что ORM и
+миграции разошлись: недостающий в ORM индекс или NOT NULL на поведение не влияет. Поэтому
+есть `tests/integration/test_schema_drift.py` — аналог `alembic check`: в чистой БД
+`upgrade head` → `compare_metadata` пуст, плюс круг `downgrade base` → `upgrade head`.
+Список ORM-модулей один — `bootstrap/models.py:load_orm_models()`, им пользуются и `env.py`,
+и тест. Найденный дрейф этапа 3 исправлен: GIN trgm-индексы объявлены в `CanonicalTrackOrm`,
+а `transfers.created_at/updated_at` стали NOT NULL новой миграцией `9a2f6c1d4e57`
+(backfill + SET NOT NULL).
 
 ---
 
@@ -655,7 +814,11 @@ concurrency/rate-limit по площадкам, описанные в табли
 2. **shared_kernel + matching**: VO, нормализатор, скорер, пайплайн, корпус тестов.
 3. **transfers** (сделано): агрегат, use cases, репозитории, ARQ, SSE; попутно —
    минимальный срез `catalog` и персистентность `matching` (детали и долги — раздел 11a).
-4. **Адаптеры**: Яндекс → SoundCloud → YT Music → VK → Spotify (чтение).
+4. **Адаптеры**:
+   - 4a. **identity + accounts** (сделано): пользователи, сессии, подключённые аккаунты,
+     шифрование токенов, OAuth-каркас, `GatewayFactory.for_account` (детали и долги — 11b);
+   - 4b. адаптеры площадок: Яндекс → SoundCloud → YT Music → VK → Spotify (чтение) +
+     настоящие OAuth-клиенты.
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).

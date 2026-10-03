@@ -1,8 +1,9 @@
 from syncplaylists.integrations.platforms.fake.gateway import FakeMusicPlatformGateway
+from syncplaylists.shared_kernel.application.ports import AccountAccess
 from syncplaylists.shared_kernel.domain.ports import MusicPlatformGateway
-from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 
 class FakeGatewayFactory:
-    def for_platform(self, platform: Platform) -> MusicPlatformGateway:
-        return FakeMusicPlatformGateway(platform)
+    def for_account(self, access: AccountAccess) -> MusicPlatformGateway:
+        # Фейку credentials не нужны — важна только площадка.
+        return FakeMusicPlatformGateway(access.platform)

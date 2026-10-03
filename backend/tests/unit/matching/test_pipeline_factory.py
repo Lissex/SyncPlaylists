@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from syncplaylists.modules.matching.application.pipeline_factory import (
     DefaultMatchingPipelineFactory,
 )
@@ -7,6 +9,7 @@ from syncplaylists.modules.matching.domain.scoring import MatchScorer
 from syncplaylists.shared_kernel.domain.search import TrackCandidate
 from syncplaylists.shared_kernel.domain.value_objects import Duration, ExternalTrackRef, Platform
 from tests.fakes import FakeGatewayFactory, FakeMusicPlatformGateway, FakeTrackMatchRepository
+from tests.fakes.accounts import make_access
 
 
 async def test_create_builds_a_working_pipeline_for_the_requested_platform() -> None:
@@ -25,7 +28,8 @@ async def test_create_builds_a_working_pipeline_for_the_requested_platform() -> 
         gateway_factory, FakeTrackMatchRepository(), normalizer, MatchScorer(normalizer)
     )
 
-    pipeline = factory.create(Platform.SPOTIFY)
+    access = make_access(uuid4(), Platform.SPOTIFY)
+    pipeline = factory.create(access)
 
     source = TrackCandidate(
         ref=ExternalTrackRef(Platform.VK, "src-1"),
@@ -36,3 +40,4 @@ async def test_create_builds_a_working_pipeline_for_the_requested_platform() -> 
     attempt = await pipeline.run(MatchRequest(source=source, target_platform=Platform.SPOTIFY))
 
     assert attempt.status is MatchStatus.MATCHED
+    assert gateway_factory.accesses == [access]  # шлюз собран именно под этот аккаунт

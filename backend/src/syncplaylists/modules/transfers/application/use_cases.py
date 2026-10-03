@@ -9,7 +9,7 @@ from syncplaylists.modules.matching.domain.pipeline import MatchStatus
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
 from syncplaylists.modules.transfers.application.dto import TransferDto
 from syncplaylists.modules.transfers.application.ports import TransferRepository
-from syncplaylists.modules.transfers.domain.entities import Transfer
+from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.errors import InvalidTransferTransitionError
 from syncplaylists.modules.transfers.domain.value_objects import (
     ExistingPlaylist,
@@ -25,29 +25,108 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     destination_platform,
     source_platform,
 )
-from syncplaylists.shared_kernel.application.ports import GatewayFactory, TaskQueue, UnitOfWork
+from syncplaylists.shared_kernel.application.ports import (
+    AccountAccess,
+    AccountAccessProvider,
+    AccountNotAvailableError,
+    GatewayFactory,
+    TaskQueue,
+    UnitOfWork,
+)
 from syncplaylists.shared_kernel.domain.ports import MusicPlatformGateway
 from syncplaylists.shared_kernel.domain.search import InsertOrder, TrackCandidate
-from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, PlaylistRef
+from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, Platform, PlaylistRef
 
 _RUN_TRANSFER = "run_transfer"
 _RUN_MATCH = "run_match"
 _RUN_WRITE = "run_write"
 _STALE_AFTER = timedelta(minutes=10)
+_ACCOUNT_UNAVAILABLE = "account_unavailable"
+
+
+class TransferNotFoundError(Exception):
+    """Переноса нет или он принадлежит другому пользователю (не различаем намеренно)."""
+
+
+async def _access_for(
+    accounts: AccountAccessProvider, user_id: UUID, platform: Platform, account_id: UUID | None
+) -> AccountAccess:
+    """Доступ к площадке от имени пользователя: явный account_id (медиатека) — этот
+    аккаунт, иначе единственный активный аккаунт пользователя на площадке
+    (ARCHITECTURE.md, 11b). Бросает AccountNotAvailableError."""
+    if account_id is None:
+        return await accounts.for_platform(user_id, platform)
+    access = await accounts.get(user_id, account_id)
+    if access.platform is not platform:
+        raise AccountNotAvailableError(f"Аккаунт {account_id} подключён не к {platform}")
+    return access
+
+
+async def _source_access(accounts: AccountAccessProvider, transfer: Transfer) -> AccountAccess:
+    source = transfer.source
+    platform = source_platform(source)
+    if platform is None:
+        raise NotImplementedError(
+            "FileSource как источник переноса появится на этапе backups (импорт из файла)"
+        )
+    account_id = source.account_id if isinstance(source, LibrarySource) else None
+    return await _access_for(accounts, transfer.user_id, platform, account_id)
+
+
+async def _destination_access(accounts: AccountAccessProvider, transfer: Transfer) -> AccountAccess:
+    destination = transfer.destination
+    account_id = destination.account_id if isinstance(destination, LibraryDestination) else None
+    return await _access_for(
+        accounts, transfer.user_id, destination_platform(destination), account_id
+    )
+
+
+async def _fail_running_transfer(
+    uow: UnitOfWork, transfers: TransferRepository, transfer: Transfer, reason: str
+) -> None:
+    """Для «шапки» переноса (run_match): условный переход RUNNING → FAILED в БД, без
+    полного сохранения агрегата, которое перетёрло бы items параллельных джоб."""
+    if await transfers.transition_status(
+        transfer.id, TransferStatus.RUNNING, TransferStatus.FAILED
+    ):
+        transfer.fail(reason, datetime.now(UTC))
+        uow.track(transfer)
+    await uow.commit()
+
+
+async def _fail_for_unavailable_account(
+    uow: UnitOfWork, transfers: TransferRepository, transfer: Transfer
+) -> None:
+    """Аккаунт отключили/он истёк посреди переноса: перенос FAILED (с событием для SSE),
+    без исключения из ARQ-таска — повтор джобы всё равно не поможет."""
+    transfer.fail(_ACCOUNT_UNAVAILABLE, datetime.now(UTC))
+    uow.track(transfer)
+    await transfers.save(transfer)
+    await uow.commit()
 
 
 class StartTransferUseCase:
     def __init__(
-        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+        self,
+        uow: UnitOfWork,
+        transfers: TransferRepository,
+        task_queue: TaskQueue,
+        accounts: AccountAccessProvider,
     ) -> None:
         self._uow = uow
         self._transfers = transfers
         self._task_queue = task_queue
+        self._accounts = accounts
 
     async def execute(
         self, user_id: UUID, source: TrackSource, destination: TrackDestination
     ) -> TransferDto:
         transfer = Transfer(id=uuid4(), user_id=user_id, source=source, destination=destination)
+        # Ранняя проверка: аккаунты источника и назначения есть, свои и активны — иначе
+        # AccountNotAvailableError до постановки в очередь, а не FAILED уже в воркере.
+        # Сами токены дальше не передаются: воркер резолвит доступ заново по account_id.
+        await _source_access(self._accounts, transfer)
+        await _destination_access(self._accounts, transfer)
         async with self._uow as uow:
             await self._transfers.save(transfer)
             await uow.commit()
@@ -69,6 +148,7 @@ class ProcessTransferUseCase:
         ensure_platform_track: EnsurePlatformTrackUseCase,
         gateway_factory: GatewayFactory,
         task_queue: TaskQueue,
+        accounts: AccountAccessProvider,
     ) -> None:
         self._uow = uow
         self._transfers = transfers
@@ -76,6 +156,7 @@ class ProcessTransferUseCase:
         self._ensure_platform_track = ensure_platform_track
         self._gateway_factory = gateway_factory
         self._task_queue = task_queue
+        self._accounts = accounts
 
     async def execute(self, transfer_id: UUID) -> None:
         positions: list[int] = []
@@ -89,12 +170,12 @@ class ProcessTransferUseCase:
                 # Повторная доставка run_transfer: уже начали (или ушли дальше) раньше.
                 return
 
-            platform = source_platform(transfer.source)
-            if platform is None:
-                raise NotImplementedError(
-                    "FileSource как источник переноса появится на этапе backups (импорт из файла)"
-                )
-            gateway = self._gateway_factory.for_platform(platform)
+            try:
+                access = await _source_access(self._accounts, transfer)
+            except AccountNotAvailableError:
+                await _fail_for_unavailable_account(uow, self._transfers, transfer)
+                return
+            gateway = self._gateway_factory.for_account(access)
             tracks = await self._read_source(transfer.source, gateway)
 
             for position, candidate in enumerate(tracks):
@@ -132,11 +213,15 @@ class MatchTransferItemUseCase:
     единственное место в transfers, где намеренно пересекается граница с matching, и
     только через его публичный application use case, не через matching.domain.
 
-    Пайплайн запрашивается у MatchingPipelineFactory на каждый вызов, а не инжектится
-    готовым: целевая площадка — runtime-данные конкретного Transfer
-    (destination_platform), а не то, что можно зафиксировать на старте контейнера. Сам
-    use case не знает, из каких стратегий/гейтвея/нормализатора/скорера пайплайн
-    собирается — это внутренняя забота matching.
+    Конкурентность: по одному переносу параллельно идут сотни run_match. Агрегат целиком
+    здесь НЕ загружается и НЕ сохраняется (иначе либо глобальный лок на перенос на всё
+    время сетевого матчинга, либо потерянные обновления при merge). Вместо этого:
+    «шапка» переноса + один item, результат пишется условным UPDATE одного item, а
+    счётчики transfers — атомарным `SET x = x + 1` (TransferRepository.save_item_outcome).
+    Переход RUNNING → REVIEW/WRITING делает ровно та джоба, чей декремент дал pending == 0.
+
+    Пайплайн запрашивается у MatchingPipelineFactory на каждый вызов: целевая площадка
+    и аккаунт — runtime-данные конкретного Transfer.
     """
 
     def __init__(
@@ -148,6 +233,7 @@ class MatchTransferItemUseCase:
         ensure_platform_track: EnsurePlatformTrackUseCase,
         pipeline_factory: MatchingPipelineFactory,
         task_queue: TaskQueue,
+        accounts: AccountAccessProvider,
     ) -> None:
         self._uow = uow
         self._transfers = transfers
@@ -156,17 +242,21 @@ class MatchTransferItemUseCase:
         self._ensure_platform_track = ensure_platform_track
         self._pipeline_factory = pipeline_factory
         self._task_queue = task_queue
+        self._accounts = accounts
 
     async def execute(self, transfer_id: UUID, position: int) -> None:
         next_step: str | None = None
         async with self._uow as uow:
-            transfer = await self._transfers.get_for_update(transfer_id)
-            assert transfer is not None, f"Transfer {transfer_id} не найден"
-            item = next((i for i in transfer.items if i.position == position), None)
-            assert item is not None, f"TransferItem {position} не найден"
+            loaded = await _load_pending_item(self._transfers, transfer_id, position)
+            if loaded is None:
+                return  # повторная доставка / перенос уже не RUNNING
+            transfer, item = loaded
 
-            if item.status is not TransferItemStatus.PENDING:
-                return  # повторная доставка run_match — уже обработан под этим же локом
+            try:
+                target_access = await _destination_access(self._accounts, transfer)
+            except AccountNotAvailableError:
+                await _fail_running_transfer(uow, self._transfers, transfer, _ACCOUNT_UNAVAILABLE)
+                return
 
             platform_track = await self._platform_tracks.find_by_ref(item.source_track)
             assert platform_track is not None, f"platform_track для {item.source_track} не найден"
@@ -178,39 +268,105 @@ class MatchTransferItemUseCase:
                 isrc=platform_track.isrc,
             )
 
-            now = datetime.now(UTC)
             target_platform = destination_platform(transfer.destination)
-            pipeline = self._pipeline_factory.create(target_platform)
+            pipeline = self._pipeline_factory.create(target_access)
             resolve_track_match = ResolveTrackMatchUseCase(
                 pipeline, self._track_matches, self._ensure_platform_track
             )
             attempt = await resolve_track_match.execute(source_candidate, target_platform)
 
             if attempt.status is MatchStatus.MATCHED and attempt.match is not None:
-                result = MatchResult(
-                    target_ref=attempt.match.target_ref,
-                    method=attempt.match.method.value,
-                    score=attempt.match.score,
+                item.apply_match(
+                    MatchResult(
+                        target_ref=attempt.match.target_ref,
+                        method=attempt.match.method.value,
+                        score=attempt.match.score,
+                    )
                 )
-                transfer.record_match(position, result, now)
             elif attempt.status is MatchStatus.UNCERTAIN:
-                transfer.record_uncertain(position, attempt.candidates, now)
+                item.apply_uncertain(attempt.candidates)
             else:
-                transfer.record_not_found(position, attempt.candidates, now)
+                item.apply_not_found(attempt.candidates)
 
-            if not any(i.status is TransferItemStatus.PENDING for i in transfer.items):
-                if transfer.has_unresolved_items():
-                    transfer.enter_review()
-                else:
-                    transfer.begin_writing(now)
-                    next_step = _RUN_WRITE
-
-            uow.track(transfer)
-            await self._transfers.save(transfer)
-            await uow.commit()
+            next_step = await _commit_item_outcome(uow, self._transfers, transfer, item)
 
         if next_step is not None:
             await self._task_queue.enqueue(next_step, transfer_id)
+
+
+class FailTransferItemUseCase:
+    """run_match исчерпал повторы: item → FAILED, перенос продолжает остальные треки
+    (и сам переходит в REVIEW/WRITING, если этот item был последним) — вместо того чтобы
+    навсегда остаться в RUNNING с вечным PENDING."""
+
+    def __init__(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._task_queue = task_queue
+
+    async def execute(self, transfer_id: UUID, position: int, reason: str) -> None:
+        next_step: str | None = None
+        async with self._uow as uow:
+            loaded = await _load_pending_item(self._transfers, transfer_id, position)
+            if loaded is None:
+                return
+            transfer, item = loaded
+            item.apply_processing_failure()
+            next_step = await _commit_item_outcome(
+                uow, self._transfers, transfer, item, failure_reason=reason
+            )
+
+        if next_step is not None:
+            await self._task_queue.enqueue(next_step, transfer_id)
+
+
+async def _load_pending_item(
+    transfers: TransferRepository, transfer_id: UUID, position: int
+) -> tuple[Transfer, TransferItem] | None:
+    transfer = await transfers.get_header(transfer_id)
+    assert transfer is not None, f"Transfer {transfer_id} не найден"
+    if transfer.status is not TransferStatus.RUNNING:
+        return None  # перенос уже упал/ушёл дальше — items не трогаем
+    item = await transfers.get_item(transfer_id, position)
+    assert item is not None, f"TransferItem {position} не найден"
+    if item.status is not TransferItemStatus.PENDING:
+        return None  # повторная доставка — уже обработан
+    return transfer, item
+
+
+async def _commit_item_outcome(
+    uow: UnitOfWork,
+    transfers: TransferRepository,
+    transfer: Transfer,
+    item: TransferItem,
+    failure_reason: str = "",
+) -> str | None:
+    """Сохраняет результат одного item точечно и, если он последний, переводит перенос
+    дальше. Возвращает имя следующей задачи (run_write) или None."""
+    progress = await transfers.save_item_outcome(item)
+    if progress is None:
+        # Параллельная доставка той же джобы успела раньше (её коммит мы дождались на
+        # условном UPDATE) — наш результат не нужен, побочные записи откатываем.
+        await uow.rollback()
+        return None
+
+    now = datetime.now(UTC)
+    transfer.record_item_outcome(item, now, failure_reason)
+    next_step: str | None = None
+    next_status = progress.status_after_matching()
+    if next_status is not None and await transfers.transition_status(
+        transfer.id, TransferStatus.RUNNING, next_status
+    ):
+        # Порядок: сначала условный переход в БД, потом доменный метод (события) —
+        # если перенос параллельно упал, событий о переходе не будет.
+        transfer.finish_matching(progress, now)
+        if next_status is TransferStatus.WRITING:
+            next_step = _RUN_WRITE
+    uow.track(transfer)
+    await uow.commit()
+    return next_step
 
 
 class ResolveUncertainItemUseCase:
@@ -222,12 +378,17 @@ class ResolveUncertainItemUseCase:
         self._task_queue = task_queue
 
     async def execute(
-        self, transfer_id: UUID, position: int, chosen_ref: ExternalTrackRef | None
+        self,
+        user_id: UUID,
+        transfer_id: UUID,
+        position: int,
+        chosen_ref: ExternalTrackRef | None,
     ) -> None:
         next_step: str | None = None
         async with self._uow as uow:
             transfer = await self._transfers.get_for_update(transfer_id)
-            assert transfer is not None, f"Transfer {transfer_id} не найден"
+            if transfer is None or transfer.user_id != user_id:
+                raise TransferNotFoundError(str(transfer_id))
 
             now = datetime.now(UTC)
             transfer.resolve_item(position, chosen_ref, now)
@@ -251,19 +412,30 @@ class WriteTransferUseCase:
     """
 
     def __init__(
-        self, uow: UnitOfWork, transfers: TransferRepository, gateway_factory: GatewayFactory
+        self,
+        uow: UnitOfWork,
+        transfers: TransferRepository,
+        gateway_factory: GatewayFactory,
+        accounts: AccountAccessProvider,
     ) -> None:
         self._uow = uow
         self._transfers = transfers
         self._gateway_factory = gateway_factory
+        self._accounts = accounts
 
     async def execute(self, transfer_id: UUID) -> None:
         async with self._uow as uow:
             transfer = await self._transfers.get_for_update(transfer_id)
             assert transfer is not None, f"Transfer {transfer_id} не найден"
+            if transfer.status is not TransferStatus.WRITING:
+                return  # повторная доставка run_write после complete()/fail()
 
-            platform = destination_platform(transfer.destination)
-            gateway = self._gateway_factory.for_platform(platform)
+            try:
+                access = await _destination_access(self._accounts, transfer)
+            except AccountNotAvailableError:
+                await _fail_for_unavailable_account(uow, self._transfers, transfer)
+                return
+            gateway = self._gateway_factory.for_account(access)
             destination = transfer.destination
 
             matched_items = [i for i in transfer.items if i.status is TransferItemStatus.MATCHED]
@@ -310,9 +482,11 @@ class GetTransferUseCase:
     def __init__(self, transfers: TransferRepository) -> None:
         self._transfers = transfers
 
-    async def execute(self, transfer_id: UUID) -> TransferDto | None:
+    async def execute(self, user_id: UUID, transfer_id: UUID) -> TransferDto | None:
         transfer = await self._transfers.get(transfer_id)
-        return TransferDto.from_domain(transfer) if transfer is not None else None
+        if transfer is None or transfer.user_id != user_id:
+            return None
+        return TransferDto.from_domain(transfer)
 
 
 class SweepStaleTransfersUseCase:

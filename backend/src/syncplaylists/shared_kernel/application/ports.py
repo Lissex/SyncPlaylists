@@ -1,10 +1,13 @@
 from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime
 from types import TracebackType
 from typing import Any, Protocol
+from uuid import UUID
 
 from syncplaylists.shared_kernel.domain.base import AggregateRoot
 from syncplaylists.shared_kernel.domain.ports import MusicPlatformGateway
-from syncplaylists.shared_kernel.domain.value_objects import Platform
+from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
 
 
 class UnitOfWork(Protocol):
@@ -36,9 +39,53 @@ class TaskQueue(Protocol):
     async def enqueue(self, task_name: str, *args: Any, **kwargs: Any) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class PlatformCredentials:
+    """Расшифрованные токены площадки. Живут только в памяти процесса, который
+    обращается к площадке: в ARQ-задачи, события и логи передаётся только account_id,
+    AccountAccess резолвится заново внутри воркера. repr=False — чтобы токены не
+    утекли в лог через случайный repr()/f-строку."""
+
+    access_token: str = field(repr=False)
+    refresh_token: str | None = field(default=None, repr=False)
+    expires_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AccountAccess:
+    """Собранный вызывающей стороной VO «доступ к площадке от имени аккаунта».
+    shared_kernel не импортирует modules.accounts.domain.ConnectedAccount — это была
+    бы обратная зависимость; accounts сам собирает этот VO (AccountAccessProvider)."""
+
+    account_id: UUID
+    user_id: UUID
+    platform: Platform
+    transport: Transport
+    credentials: PlatformCredentials
+
+
+class AccountNotAvailableError(Exception):
+    """Аккаунта нет, он чужой, отключён/истёк или подключён к другой площадке."""
+
+
+class AccountAccessProvider(Protocol):
+    """Публичный канал контекста accounts для остальных контекстов (transfers,
+    адаптеры площадок). Все методы бросают AccountNotAvailableError."""
+
+    async def get(self, user_id: UUID, account_id: UUID) -> AccountAccess: ...
+
+    # Один активный аккаунт на (user, platform) — см. ARCHITECTURE.md, раздел 11b.
+    async def for_platform(self, user_id: UUID, platform: Platform) -> AccountAccess: ...
+
+    # Адаптеры сохраняют обновлённые OAuth-токены (после refresh). Пишется в ОТДЕЛЬНОЙ
+    # транзакции: если бы запись шла в UoW переноса и он откатился, новый refresh_token
+    # потерялся бы, а старый площадка при ротации уже инвалидировала.
+    async def update_credentials(
+        self, account_id: UUID, credentials: PlatformCredentials
+    ) -> None: ...
+
+
 class GatewayFactory(Protocol):
-    # TODO(этап 4, accounts): заменить на for_account(ConnectedAccount), когда появится
-    # модуль accounts. shared_kernel не должен импортировать modules.accounts.domain —
-    # сигнатура должна принимать уже собранный вызывающей стороной VO с credentials,
-    # а не доменную сущность чужого контекста.
-    def for_platform(self, platform: Platform) -> MusicPlatformGateway: ...
+    # Выбирает реализацию шлюза по access.platform/access.transport
+    # (official / unofficial / extension) и передаёт ей credentials.
+    def for_account(self, access: AccountAccess) -> MusicPlatformGateway: ...

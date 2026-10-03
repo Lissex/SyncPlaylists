@@ -1,3 +1,5 @@
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
@@ -104,3 +106,39 @@ class MatchResult(ValueObject):
     target_ref: ExternalTrackRef
     method: str
     score: MatchScore
+
+
+@dataclass(frozen=True, slots=True)
+class TransferProgress(ValueObject):
+    """Счётчики items переноса. В БД — колонки transfers, которые run_match обновляет
+    атомарно (`SET matched = matched + 1`), а не пересчитывает из загруженного агрегата:
+    параллельные джобы одного переноса не теряют чужие обновления."""
+
+    total: int = 0
+    pending: int = 0
+    matched: int = 0
+    uncertain: int = 0
+    not_found: int = 0
+    added: int = 0
+    failed: int = 0
+
+    @classmethod
+    def from_statuses(cls, statuses: Iterable[TransferItemStatus]) -> "TransferProgress":
+        counts = Counter(statuses)
+        return cls(
+            total=sum(counts.values()),
+            pending=counts[TransferItemStatus.PENDING],
+            matched=counts[TransferItemStatus.MATCHED],
+            uncertain=counts[TransferItemStatus.UNCERTAIN],
+            not_found=counts[TransferItemStatus.NOT_FOUND],
+            added=counts[TransferItemStatus.ADDED],
+            failed=counts[TransferItemStatus.FAILED],
+        )
+
+    def status_after_matching(self) -> TransferStatus | None:
+        """Куда переходит перенос, когда последний item сопоставлен; None — ещё рано."""
+        if self.pending > 0:
+            return None
+        if self.uncertain + self.not_found > 0:
+            return TransferStatus.REVIEW
+        return TransferStatus.WRITING

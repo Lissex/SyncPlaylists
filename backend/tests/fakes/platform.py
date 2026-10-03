@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator, Sequence
 
+from syncplaylists.shared_kernel.application.ports import AccountAccess
 from syncplaylists.shared_kernel.domain.search import (
     AddResult,
     InsertOrder,
@@ -74,9 +75,11 @@ class FakeMusicPlatformGateway:
 class FakeGatewayFactory:
     def __init__(self, gateways: dict[Platform, FakeMusicPlatformGateway] | None = None) -> None:
         self._gateways = gateways or {}
+        self.accesses: list[AccountAccess] = []
 
     def register(self, gateway: FakeMusicPlatformGateway) -> None:
         self._gateways[gateway.platform] = gateway
 
-    def for_platform(self, platform: Platform) -> FakeMusicPlatformGateway:
-        return self._gateways[platform]
+    def for_account(self, access: AccountAccess) -> FakeMusicPlatformGateway:
+        self.accesses.append(access)
+        return self._gateways[access.platform]

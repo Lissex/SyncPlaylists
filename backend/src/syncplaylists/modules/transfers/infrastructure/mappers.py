@@ -14,6 +14,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     TrackDestination,
     TrackSource,
     TransferItemStatus,
+    TransferProgress,
     TransferStatus,
 )
 from syncplaylists.modules.transfers.infrastructure.orm import TransferItemOrm, TransferOrm
@@ -157,6 +158,30 @@ def _columns_to_resolved_target(orm: TransferOrm) -> PlaylistRef | None:
     return PlaylistRef(Platform(orm.resolved_target_platform), orm.resolved_target_playlist_id)
 
 
+def item_result_columns(item: TransferItem) -> dict[str, object]:
+    """Изменяемая часть transfer_items — то, что пишет результат сопоставления."""
+    return {
+        "status": item.status.value,
+        "match_target_platform": item.match.target_ref.platform.value if item.match else None,
+        "match_target_external_id": item.match.target_ref.external_id if item.match else None,
+        "match_method": item.match.method if item.match else None,
+        "match_score": item.match.score.value if item.match else None,
+        "candidates": [_TrackCandidateDTO.from_domain(c).model_dump() for c in item.candidates],
+    }
+
+
+def progress_columns(progress: TransferProgress) -> dict[str, int]:
+    return {
+        "total": progress.total,
+        "pending": progress.pending,
+        "matched": progress.matched,
+        "uncertain": progress.uncertain,
+        "not_found": progress.not_found,
+        "added": progress.added,
+        "failed": progress.failed,
+    }
+
+
 async def item_to_orm(
     item: TransferItem, platform_tracks: PlatformTrackRepository
 ) -> TransferItemOrm:
@@ -167,12 +192,7 @@ async def item_to_orm(
         transfer_id=item.transfer_id,
         position=item.position,
         source_pt_id=source_pt.id,
-        status=item.status.value,
-        match_target_platform=item.match.target_ref.platform.value if item.match else None,
-        match_target_external_id=item.match.target_ref.external_id if item.match else None,
-        match_method=item.match.method if item.match else None,
-        match_score=item.match.score.value if item.match else None,
-        candidates=[_TrackCandidateDTO.from_domain(c).model_dump() for c in item.candidates],
+        **item_result_columns(item),
     )
 
 
@@ -213,6 +233,7 @@ async def transfer_to_orm(
         user_id=transfer.user_id,
         status=transfer.status.value,
         items=items,
+        **progress_columns(TransferProgress.from_statuses(i.status for i in transfer.items)),
         **_source_to_columns(transfer.source),
         **_destination_to_columns(transfer.destination),
         **_resolved_target_to_columns(transfer),
@@ -231,4 +252,17 @@ async def transfer_to_domain(
         status=TransferStatus(orm.status),
         resolved_target=_columns_to_resolved_target(orm),
         items=items,
+    )
+
+
+def transfer_header_to_domain(orm: TransferOrm) -> Transfer:
+    """Перенос без items — для run_match, который работает с одним item точечно."""
+    return Transfer(
+        id=orm.id,
+        user_id=orm.user_id,
+        source=_columns_to_source(orm),
+        destination=_columns_to_destination(orm),
+        status=TransferStatus(orm.status),
+        resolved_target=_columns_to_resolved_target(orm),
+        items=[],
     )
