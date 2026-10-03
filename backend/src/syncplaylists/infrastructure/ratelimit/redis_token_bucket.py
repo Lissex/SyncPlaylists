@@ -44,6 +44,30 @@ return {granted, wait}
 """
 
 
+# Пауза после 429 площадки: «долг» токенов такой, чтобы следующий токен появился не
+# раньше, чем через ARGV[3] мс. Только понижает баланс — пауза не сокращает уже
+# действующую. ARGV: capacity, rate (токенов/мс), penalty_ms.
+_PENALIZE_LUA: Final = """
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local capacity = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])
+local penalty = tonumber(ARGV[3])
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(data[1])
+local ts = tonumber(data[2])
+if tokens == nil or ts == nil then
+  tokens = capacity
+  ts = now
+end
+tokens = math.min(capacity, tokens + math.max(0, now - ts) * rate)
+tokens = math.min(tokens, 1 - penalty * rate)
+redis.call('HSET', KEYS[1], 'tokens', tostring(tokens), 'ts', now)
+redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate) + penalty + 1000)
+return 1
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class TokenBucketLimits:
     capacity: int
@@ -66,6 +90,7 @@ class RedisTokenBucketLimiter:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._script = redis.register_script(_LUA)
+        self._penalize_script = redis.register_script(_PENALIZE_LUA)
         self._limits = dict(limits)
         self._sleep = sleep
 
@@ -74,7 +99,7 @@ class RedisTokenBucketLimiter:
         if limits is None:
             return
         granted, wait_ms = await self._script(
-            keys=[f"ratelimit:tb:{platform.value}:{account_id}"],
+            keys=[_key(platform, account_id)],
             args=[
                 limits.capacity,
                 limits.refill_per_second / 1000,
@@ -85,3 +110,16 @@ class RedisTokenBucketLimiter:
             raise PlatformRateLimitedError(platform, int(wait_ms) / 1000, "token bucket")
         if int(wait_ms) > 0:
             await self._sleep(int(wait_ms) / 1000)
+
+    async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None:
+        limits = self._limits.get(platform)
+        if limits is None:
+            return
+        await self._penalize_script(
+            keys=[_key(platform, account_id)],
+            args=[limits.capacity, limits.refill_per_second / 1000, int(seconds * 1000)],
+        )
+
+
+def _key(platform: Platform, account_id: UUID) -> str:
+    return f"ratelimit:tb:{platform.value}:{account_id}"

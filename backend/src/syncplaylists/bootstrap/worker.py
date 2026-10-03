@@ -8,6 +8,7 @@ from dishka.integrations.arq import setup_dishka
 from syncplaylists.bootstrap.container import make_container
 from syncplaylists.infrastructure.config.settings import Settings
 from syncplaylists.modules.transfers.presentation.tasks import (
+    RATE_LIMITED_MAX_TRIES,
     run_match,
     run_transfer,
     run_write,
@@ -29,6 +30,9 @@ class WorkerSettings:
     # Каждые 5 минут — порог "застывания" в SweepStaleTransfersUseCase — 10 минут,
     # так что застывший перенос подхватится максимум через ~15 минут после сбоя.
     cron_jobs: ClassVar[list[CronJob]] = [cron(sweep_stale_transfers, minute=set(range(0, 60, 5)))]
+    # ARQ обрывает задачу после max_tries (по умолчанию 5) — не меньше бюджета
+    # повторов при rate limit, иначе трек навсегда останется PENDING.
+    max_tries = RATE_LIMITED_MAX_TRIES
     redis_settings = ArqRedisSettings.from_dsn(str(settings.redis.dsn))
 
 

@@ -255,8 +255,8 @@ class SoundCloudSettings(BaseModel):
     redirect_uri: str
 
 class RateLimitSettings(BaseModel):      # этап 4b: token bucket на (площадка, аккаунт)
-    capacity: int = 5
-    refill_per_second: float = 3.0
+    capacity: int = 3                    # под Яндекс, подобрано по e2e (11d)
+    refill_per_second: float = 1.5
     max_wait_seconds: float = 10.0       # дольше — PlatformRateLimitedError → повтор задачи
 
 class YandexSettings(BaseModel):         # этап 4b; секретов нет — токены лежат в БД
@@ -338,7 +338,7 @@ TrackDestination  = ExistingPlaylist(ref: PlaylistRef)
 
 | Площадка | Форматы | `external_id` |
 |---|---|---|
-| Яндекс | `music.yandex.{ru,com,by,kz,uz}`, `next.music.yandex.ru`: `/users/<login>/playlists/<kind>`, `/playlists/<uuid>` | `"<login>:<kind>"` или `lk.…`/`ar.…` |
+| Яндекс | `music.yandex.{ru,com,by,kz,uz}`, `next.music.yandex.ru`: `/users/<login>/playlists/<kind>`, `/playlists/<uuid>` | `"<login>:<kind>"` или uuid (без префикса `lk.` — с ним API отвечает 404) |
 | Spotify | `open.spotify.com/[intl-xx/][user/x/]playlist/<id22>`, `spotify:playlist:<id>`; `/collection/tracks` → медиатека | id |
 | VK | `vk.{com,ru}`, `m.vk.*`: `/music/playlist|album/…`, `/audio_playlist…`, `?z=audio_playlist…`, `?act=audio_playlist…&access_hash=` | `"<owner>_<id>[_<hash>]"` |
 | SoundCloud | `[m.]soundcloud.com/<user>/sets/<slug>[/s-<secret>]`; `/you/likes` → медиатека; `/<user>/likes` | путь |
@@ -891,7 +891,34 @@ concurrency/rate-limit по площадкам, описанные в табли
   (`addopts = -m 'not live'`). Сверка формы ответов — `tests/tools/record_yandex.py` (пишет
   вычищенные ответы в `tests/fixtures/yandex/recorded/`, она в .gitignore).
 
+**Ручной e2e (2026-10-03) и что по нему исправлено**
+- Запуск одной командой: `make e2e LINK="<ссылка на плейлист Яндекса>" [ACCEPT=1]` (корневой
+  `Makefile` → `scripts/e2e-yandex.ps1`): поднимает приложение, применяет миграции,
+  регистрирует пользователя, подключает Яндекс токеном из `.env`, переносит плейлист в новый
+  приватный и печатает сводку matched/uncertain/not_found из БД.
+- Перенос 100 треков Яндекс → Яндекс: 59 сопоставлены за ~30 с (5 разом + 3 запроса/с), затем
+  Яндекс ответил **429 с `Retry-After: 600`** сразу 41 задаче — перенос «встал» на 10 минут.
+  Исправлено:
+  - `PlatformRateLimiter.penalize(platform, account, seconds)`: при 429 транспорт ставит на
+    паузу **весь аккаунт** (Lua понижает баланс token bucket так, что следующий токен — не
+    раньше `Retry-After`; более длинную паузу не сокращает). Остальные задачи не идут в API, а
+    сразу уходят в повтор с оставшимся сроком;
+  - у `PlatformRateLimitedError` свой бюджет повторов (`RATE_LIMITED_MAX_TRIES = 12`, у сбоев —
+    по-прежнему 3): «подождите» от площадки — не повод отправлять трек в FAILED.
+    `WorkerSettings.max_tries` поднят до того же значения — иначе ARQ оборвал бы задачу на 5-й;
+  - задержка повтора — не меньше `Retry-After` плюс разброс до 20%, чтобы десятки отложенных
+    задач не просыпались в одну секунду;
+  - в лог повторов пишется текст ошибки (код/имя ошибки площадки, без токенов);
+  - лимит по умолчанию снижен до 3 разом + 1,5 запроса/с; `docker-compose.yml` теперь
+    пробрасывает `PLATFORMS__*` в api/worker (раньше настройки из `.env` до контейнеров не
+    доходили).
+- Ссылки `music.yandex.ru/playlists/<uuid>` содержат uuid **без** префикса `lk.`, и API
+  принимает его именно так (`GET /playlist/lk.<uuid>` → 404). Примеры в тестах исправлены.
+
 **Долги**
+- Фактический лимит Яндекса неизвестен: 3 + 1,5/с — консервативная оценка, подбирается по
+  логам (`make logs`, строки «PlatformRateLimitedError: … retry after …»). Пока перенос ждёт
+  паузы площадки, в API/SSE это никак не видно — только статус `running` без прогресса.
 - Фикстуры `tests/fixtures/yandex/*.json` составлены по формату API вручную; сверены с
   `recorded/` (2026-10-03): набор используемых полей трека/лайков/профиля совпадает. Поиск
   без `page` API отвергает (400 `validate`) — библиотека его передаёт, рекордер исправлен.

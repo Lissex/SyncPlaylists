@@ -82,7 +82,16 @@ class HttpxYandexRequest(Request):  # type: ignore[misc]  # yandex-music без 
 
         if response.is_success:
             return response.content
-        raise _error_for(response)
+        error = _error_for(response)
+        if (
+            isinstance(error, PlatformRateLimitedError)
+            and self._limiter is not None
+            and self._account_id is not None
+        ):
+            # Пауза на весь аккаунт: параллельные задачи будут ждать в token bucket (или
+            # сразу уйдут в повтор с тем же сроком), а не соберут по 429 каждая.
+            await self._limiter.penalize(_PLATFORM, self._account_id, error.retry_after_seconds)
+        raise error
 
 
 def _error_name(response: httpx.Response) -> str:

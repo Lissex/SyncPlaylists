@@ -36,7 +36,8 @@ class YandexTrackId:
 @dataclass(frozen=True, slots=True)
 class YandexPlaylistId:
     """Плейлист — "<owner>:<kind>" (owner — login или uid) или uuid нового формата
-    ("lk.…", "ar.…") из ссылок music.yandex.ru/playlists/<uuid>."""
+    из ссылок music.yandex.ru/playlists/<uuid> — без префикса: GET /playlist/<uuid>
+    отвечает 200, а с префиксом "lk." из поля playlistUuid — 404 (проверено 2026-10-03)."""
 
     owner: str | None = None
     kind: int | None = None

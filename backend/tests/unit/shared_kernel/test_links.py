@@ -48,16 +48,18 @@ def _playlist(platform: Platform, external_id: str) -> PlaylistLink:
             _playlist(Platform.YANDEX, "alice:3"),
         ),
         (
-            "https://music.yandex.ru/playlists/lk.6ad1ba0c-30fe-4b39-a4c6-2b53e1c4c0e8",
-            _playlist(Platform.YANDEX, "lk.6ad1ba0c-30fe-4b39-a4c6-2b53e1c4c0e8"),
+            # Веб-ссылка «Поделиться» нового формата: uuid без префикса (в API он
+            # принимается именно так; "lk.<uuid>" из поля playlistUuid API отвечает 404).
+            "https://music.yandex.ru/playlists/0f3c2b1a-7d6e-4c5b-9a8f-1e2d3c4b5a69",
+            _playlist(Platform.YANDEX, "0f3c2b1a-7d6e-4c5b-9a8f-1e2d3c4b5a69"),
         ),
         (
-            "https://music.yandex.ru/playlists/ar.0a6c4cfd-8e1c-4f63-b0f2-2c5b1f8c7c62?utm_source=web",
-            _playlist(Platform.YANDEX, "ar.0a6c4cfd-8e1c-4f63-b0f2-2c5b1f8c7c62"),
+            "https://music.yandex.ru/playlists/6ad1ba0c-30fe-4b39-a4c6-2b53e1c4c0e8?utm_source=web",
+            _playlist(Platform.YANDEX, "6ad1ba0c-30fe-4b39-a4c6-2b53e1c4c0e8"),
         ),
         (
-            "https://next.music.yandex.ru/playlists/lk.6ad1ba0c-30fe-4b39-a4c6-2b53e1c4c0e8",
-            _playlist(Platform.YANDEX, "lk.6ad1ba0c-30fe-4b39-a4c6-2b53e1c4c0e8"),
+            "https://next.music.yandex.ru/playlists/6ad1ba0c-30fe-4b39-a4c6-2b53e1c4c0e8",
+            _playlist(Platform.YANDEX, "6ad1ba0c-30fe-4b39-a4c6-2b53e1c4c0e8"),
         ),
         # --- Spotify ---
         (
