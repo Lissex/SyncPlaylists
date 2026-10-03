@@ -13,6 +13,7 @@ from syncplaylists.modules.accounts.domain.errors import AccountNotUsableError
 from syncplaylists.shared_kernel.application.ports import (
     AccountAccess,
     AccountNotAvailableError,
+    CredentialsRenewal,
     PlatformCredentials,
 )
 from syncplaylists.shared_kernel.domain.errors import PlatformAuthError, PlatformError
@@ -117,4 +118,54 @@ class AccountAccessService:
                 refresh_token=refresh_token,
                 expires_at=account.expires_at,
             ),
+        )
+
+
+class AccountCredentialsRefresher:
+    """shared_kernel.CredentialsRefresher: OAuth refresh под блокировкой строки аккаунта.
+    Блокировку держит AccountCredentialsWriter (своя транзакция, SELECT ... FOR UPDATE),
+    поэтому два воркера не обновят токен одновременно — второй дождётся первого и
+    получит уже обновлённые токены."""
+
+    def __init__(self, cipher: TokenCipher, writer: AccountCredentialsWriter) -> None:
+        self._cipher = cipher
+        self._writer = writer
+
+    async def refresh(
+        self, account_id: UUID, stale: PlatformCredentials, renew: CredentialsRenewal
+    ) -> PlatformCredentials:
+        result: list[PlatformCredentials] = []
+
+        async def change(account: ConnectedAccount) -> None:
+            current = self._decrypt(account)
+            if current.access_token != stale.access_token:
+                result.append(current)  # уже обновил другой воркер
+                return
+            fresh = await renew(current)
+            access, refresh = encrypt_credentials(self._cipher, account.id, fresh)
+            account.refresh_credentials(access, refresh, fresh.expires_at)
+            result.append(fresh)
+
+        if not await self._writer.apply_async(account_id, change):
+            raise AccountNotAvailableError(f"Аккаунт {account_id} не найден")
+        return result[0]
+
+    def _decrypt(self, account: ConnectedAccount) -> PlatformCredentials:
+        try:
+            access_token = account.ensure_usable()
+        except AccountNotUsableError as exc:
+            raise AccountNotAvailableError(str(exc)) from exc
+        refresh_token = (
+            self._cipher.decrypt(
+                account.refresh_token.ciphertext, aad=token_aad(account.id, "refresh")
+            )
+            if account.refresh_token is not None
+            else None
+        )
+        return PlatformCredentials(
+            access_token=self._cipher.decrypt(
+                access_token.ciphertext, aad=token_aad(account.id, "access")
+            ),
+            refresh_token=refresh_token,
+            expires_at=account.expires_at,
         )

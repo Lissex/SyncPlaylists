@@ -15,6 +15,7 @@ import httpx
 from yandex_music.utils.request_async import Request
 from yandex_music.utils.request_base import RequestBase
 
+from syncplaylists.integrations.platforms.rate_limit_log import log_rate_limited
 from syncplaylists.shared_kernel.application.ports import PlatformRateLimiter
 from syncplaylists.shared_kernel.domain.errors import (
     PlatformAuthError,
@@ -92,7 +93,9 @@ class HttpxYandexRequest(Request):  # type: ignore[misc]  # yandex-music без 
                 # Пауза на весь аккаунт: параллельные задачи будут ждать в token bucket
                 # (или сразу уйдут в повтор с тем же сроком), а не соберут по 429 каждая.
                 await self._limiter.penalize(_PLATFORM, self._account_id, error.retry_after_seconds)
-            await self._log_rate_limited(self._limiter, self._account_id, error.retry_after_seconds)
+            await log_rate_limited(
+                logger, self._limiter, _PLATFORM, self._account_id, error.retry_after_seconds
+            )
         raise error
 
     async def _count_request(self) -> None:
@@ -102,38 +105,6 @@ class HttpxYandexRequest(Request):  # type: ignore[misc]  # yandex-music без 
             await self._limiter.count_request(_PLATFORM)
         except Exception as exc:  # статистика не должна мешать запросу
             logger.debug("Счётчик запросов недоступен: %s", type(exc).__name__)
-
-    @staticmethod
-    async def _log_rate_limited(
-        limiter: PlatformRateLimiter, account_id: UUID | None, retry_after_seconds: float
-    ) -> None:
-        # Только числа и account_id. Аккаунт vs весь сервер (IP) — по этой паре видно,
-        # на что считается квота Яндекса: если 429 приходит при малом числе запросов
-        # аккаунта, но большом с сервера — квота на IP.
-        try:
-            account_10 = account_60 = None
-            if account_id is not None:
-                account_10 = await limiter.recent_requests(_PLATFORM, account_id, 10)
-                account_60 = await limiter.recent_requests(_PLATFORM, account_id, 60)
-            server_10 = await limiter.recent_requests(_PLATFORM, None, 10)
-            server_60 = await limiter.recent_requests(_PLATFORM, None, 60)
-        except Exception as exc:  # статистика не должна мешать обработке 429
-            logger.warning(
-                "Яндекс 429 (аккаунт %s), счётчик недоступен: %s",
-                account_id,
-                type(exc).__name__,
-            )
-            return
-        logger.warning(
-            "Яндекс 429 (аккаунт %s): аккаунт %s/%s, сервер (IP) %s/%s запросов за 10/60 мин,"
-            " Retry-After %.0f с",
-            account_id,
-            "-" if account_10 is None else account_10,
-            "-" if account_60 is None else account_60,
-            server_10,
-            server_60,
-            retry_after_seconds,
-        )
 
 
 def _error_name(response: httpx.Response) -> str:

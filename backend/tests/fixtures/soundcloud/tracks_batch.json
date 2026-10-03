@@ -1,0 +1,56 @@
+[
+  {
+    "id": 1005,
+    "kind": "track",
+    "title": "dark trap beat (FREE DL)",
+    "user": {
+      "id": 700004,
+      "kind": "user",
+      "username": "beatsmith",
+      "permalink": "beatsmith",
+      "verified": false,
+      "avatar_url": "https://i1.sndcdn.com/avatars-700004-large.jpg",
+      "urn": "soundcloud:users:700004"
+    },
+    "user_id": 700004,
+    "duration": 150000,
+    "full_duration": 150000,
+    "policy": "ALLOW",
+    "monetization_model": "NOT_APPLICABLE",
+    "publisher_metadata": null,
+    "streamable": true,
+    "sharing": "public",
+    "artwork_url": null,
+    "permalink_url": "https://soundcloud.com/beatsmith/t1005",
+    "urn": "soundcloud:tracks:1005"
+  },
+  {
+    "id": 1004,
+    "kind": "track",
+    "title": "Lucid Dreams (Remix)",
+    "user": {
+      "id": 700003,
+      "kind": "user",
+      "username": "Some Label",
+      "permalink": "some-label",
+      "verified": false,
+      "avatar_url": "https://i1.sndcdn.com/avatars-700003-large.jpg",
+      "urn": "soundcloud:users:700003"
+    },
+    "user_id": 700003,
+    "duration": 30000,
+    "full_duration": 240483,
+    "policy": "SNIP",
+    "monetization_model": "MONETIZE",
+    "publisher_metadata": {
+      "id": 1004,
+      "artist": "Juice WRLD, Lil Uzi Vert",
+      "isrc": "USUG12100801"
+    },
+    "streamable": true,
+    "sharing": "public",
+    "artwork_url": "https://i1.sndcdn.com/artworks-1004-large.jpg",
+    "permalink_url": "https://soundcloud.com/some-label/t1004",
+    "urn": "soundcloud:tracks:1004"
+  }
+]

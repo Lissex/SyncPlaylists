@@ -1,0 +1,105 @@
+{
+  "id": 5001,
+  "kind": "playlist",
+  "title": "Road trip",
+  "description": "летние треки",
+  "user": {
+    "id": 900001,
+    "kind": "user",
+    "permalink": "test-listener",
+    "username": "Test Listener",
+    "full_name": "",
+    "verified": false,
+    "avatar_url": "https://i1.sndcdn.com/avatars-000-large.jpg",
+    "uri": "https://api.soundcloud.com/users/900001",
+    "urn": "soundcloud:users:900001"
+  },
+  "user_id": 900001,
+  "sharing": "private",
+  "secret_token": "s-AbC123",
+  "track_count": 5,
+  "set_type": "",
+  "is_album": false,
+  "permalink_url": "https://soundcloud.com/test-listener/sets/road-trip/s-AbC123",
+  "tracks": [
+    {
+      "id": 1001,
+      "kind": "track",
+      "title": "Lucid Dreams",
+      "user": {
+        "id": 700001,
+        "kind": "user",
+        "username": "Juice WRLD",
+        "permalink": "juice-wrld",
+        "verified": true,
+        "avatar_url": "https://i1.sndcdn.com/avatars-700001-large.jpg",
+        "urn": "soundcloud:users:700001"
+      },
+      "user_id": 700001,
+      "duration": 239882,
+      "full_duration": 239882,
+      "policy": "ALLOW",
+      "monetization_model": "NOT_APPLICABLE",
+      "publisher_metadata": {
+        "id": 1001,
+        "urn": "soundcloud:tracks:1001",
+        "artist": "Juice WRLD",
+        "isrc": "USUG11800685",
+        "contains_music": true,
+        "release_title": "Lucid Dreams"
+      },
+      "streamable": true,
+      "sharing": "public",
+      "artwork_url": "https://i1.sndcdn.com/artworks-1001-large.jpg",
+      "permalink_url": "https://soundcloud.com/juice-wrld/t1001",
+      "urn": "soundcloud:tracks:1001"
+    },
+    {
+      "id": 1002,
+      "kind": "track",
+      "title": "Juice WRLD - Lucid Dreams [prod. Nick Mira]",
+      "user": {
+        "id": 700002,
+        "kind": "user",
+        "username": "trap.tunes.daily",
+        "permalink": "trap.tunes.daily",
+        "verified": false,
+        "avatar_url": "https://i1.sndcdn.com/avatars-700002-large.jpg",
+        "urn": "soundcloud:users:700002"
+      },
+      "user_id": 700002,
+      "duration": 239900,
+      "full_duration": 239900,
+      "policy": "ALLOW",
+      "monetization_model": "NOT_APPLICABLE",
+      "publisher_metadata": {
+        "id": 1002,
+        "urn": "soundcloud:tracks:1002",
+        "contains_music": true
+      },
+      "streamable": true,
+      "sharing": "public",
+      "artwork_url": "https://i1.sndcdn.com/artworks-1002-large.jpg",
+      "permalink_url": "https://soundcloud.com/trap.tunes.daily/t1002",
+      "urn": "soundcloud:tracks:1002"
+    },
+    {
+      "id": 1004,
+      "kind": "track",
+      "monetization_model": "MONETIZE",
+      "policy": "SNIP"
+    },
+    {
+      "id": 1099,
+      "kind": "track",
+      "monetization_model": "NOT_APPLICABLE",
+      "policy": "ALLOW"
+    },
+    {
+      "id": 1005,
+      "kind": "track",
+      "monetization_model": "NOT_APPLICABLE",
+      "policy": "ALLOW"
+    }
+  ]
+}

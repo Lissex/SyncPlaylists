@@ -1,4 +1,5 @@
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from uuid import UUID, uuid4
 
 from syncplaylists.modules.accounts.application.ports import (
@@ -132,6 +133,7 @@ class InMemoryCredentialsWriter:
     def __init__(self, accounts: InMemoryConnectedAccountRepository) -> None:
         self._accounts = accounts
         self.calls = 0
+        self._lock = asyncio.Lock()
 
     async def apply(self, account_id: UUID, change: Callable[[ConnectedAccount], None]) -> bool:
         self.calls += 1
@@ -140,6 +142,19 @@ class InMemoryCredentialsWriter:
             return False
         change(account)
         return True
+
+    async def apply_async(
+        self, account_id: UUID, change: Callable[[ConnectedAccount], Awaitable[None]]
+    ) -> bool:
+        # Строковый лок БД моделирует общий на все аккаунты asyncio.Lock — для тестов
+        # гонки двух refresh этого достаточно.
+        async with self._lock:
+            self.calls += 1
+            account = self._accounts.storage.get(account_id)
+            if account is None:
+                return False
+            await change(account)
+            return True
 
 
 class InMemoryOAuthStateStore:

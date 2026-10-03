@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
@@ -91,6 +91,25 @@ class AccountAccessProvider(Protocol):
     # площадки ещё раз: True — токен действительно не принят, аккаунт переведён в
     # EXPIRED; False — профиль ответил нормально, ошибка была разовой (повторить запрос).
     async def report_auth_failure(self, account_id: UUID) -> bool: ...
+
+
+CredentialsRenewal = Callable[[PlatformCredentials], Awaitable[PlatformCredentials]]
+
+
+class CredentialsRefresher(Protocol):
+    """Обновление токенов аккаунта (OAuth refresh) без гонок между воркерами.
+
+    `renew(current)` вызывается под блокировкой строки аккаунта, с актуальными (только
+    что прочитанными) токенами: если параллельный воркер уже обновил их — `stale` не
+    совпадёт с текущими, и они вернутся без нового запроса к площадке. Это важно при
+    ротации refresh_token: второй refresh со старым токеном площадка бы отвергла.
+    Новые токены сохраняются в отдельной транзакции (см. update_credentials).
+    Бросает AccountNotAvailableError; ошибки renew (PlatformAuthError — refresh_token
+    отозван) пробрасываются, ничего не сохраняя."""
+
+    async def refresh(
+        self, account_id: UUID, stale: PlatformCredentials, renew: CredentialsRenewal
+    ) -> PlatformCredentials: ...
 
 
 class GatewayFactory(Protocol):

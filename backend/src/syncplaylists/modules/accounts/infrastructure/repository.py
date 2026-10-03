@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from sqlalchemy import select
@@ -89,5 +89,17 @@ class SqlAccountCredentialsWriter:
                 return False
             account = account_to_domain(orm)
             change(account)
+            apply_to_orm(account, orm)
+        return True
+
+    async def apply_async(
+        self, account_id: UUID, change: Callable[[ConnectedAccount], Awaitable[None]]
+    ) -> bool:
+        async with self._session_factory() as session, session.begin():
+            orm = await session.get(ConnectedAccountOrm, account_id, with_for_update=True)
+            if orm is None:
+                return False
+            account = account_to_domain(orm)
+            await change(account)
             apply_to_orm(account, orm)
         return True

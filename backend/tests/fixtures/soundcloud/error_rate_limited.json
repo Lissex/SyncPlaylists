@@ -1,0 +1,16 @@
+{
+  "errors": [
+    {
+      "meta": {
+        "rate_limit": {
+          "bucket": "by-client",
+          "max_nr_of_requests": 15000,
+          "time_window": "PT24H",
+          "name": "plays"
+        },
+        "remaining_requests": 0,
+        "reset_time": "2026/10/03 15:10:00 +0000"
+      }
+    }
+  ]
+}

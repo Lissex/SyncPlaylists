@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
@@ -37,6 +37,12 @@ class AccountCredentialsWriter(Protocol):
     async def apply(
         self, account_id: UUID, change: Callable[[ConnectedAccount], None]
     ) -> bool: ...  # False — аккаунта нет
+
+    # То же, но change асинхронный: под блокировкой строки можно сходить в сеть (OAuth
+    # refresh) — так параллельные воркеры не обновляют токен одновременно.
+    async def apply_async(
+        self, account_id: UUID, change: Callable[[ConnectedAccount], Awaitable[None]]
+    ) -> bool: ...
 
 
 class TokenCipher(Protocol):
