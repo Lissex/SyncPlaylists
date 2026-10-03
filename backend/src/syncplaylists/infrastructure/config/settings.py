@@ -112,6 +112,19 @@ class SoundCloudSettings(BaseModel):
     client_id_override: str | None = None
     official: SoundCloudOfficialSettings | None = None
 
+    @field_validator("client_id_override", mode="before")
+    @classmethod
+    def _blank_override_is_none(cls, value: object) -> object:
+        # docker-compose передаёт незаданную переменную пустой строкой.
+        return value or None
+
+    @field_validator("official", mode="before")
+    @classmethod
+    def _blank_official_is_none(cls, value: object) -> object:
+        if isinstance(value, dict) and not value.get("client_id"):
+            return None  # пустые OFFICIAL__* из compose — официальный API выключен
+        return value
+
 
 class PlatformsSettings(BaseModel):
     # Площадки, которые обслуживает in-memory фейк (dev/тесты) — вместо настоящего
