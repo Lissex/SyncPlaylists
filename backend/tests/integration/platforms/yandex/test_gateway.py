@@ -55,9 +55,24 @@ def _ref(external_id: str) -> ExternalTrackRef:
 class CountingLimiter:
     def __init__(self) -> None:
         self.calls: list[tuple[Platform, UUID]] = []
+        self.penalties: list[float] = []
+        self.counted = 0
 
     async def acquire(self, platform: Platform, account_id: UUID) -> None:
         self.calls.append((platform, account_id))
+
+    async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None:
+        self.penalties.append(seconds)
+
+    async def count_request(self, platform: Platform) -> None:
+        self.counted += 1
+
+    async def recent_requests(
+        self, platform: Platform, account_id: UUID | None, minutes: int
+    ) -> int:
+        if account_id is None:
+            return {10: 900, 60: 4100}[minutes]
+        return {10: 42, 60: 310}[minutes]
 
 
 @pytest.fixture
@@ -124,7 +139,7 @@ def test_playlist_id_formats() -> None:
     assert YandexPlaylistId.parse("test.user:1001") == YandexPlaylistId(
         owner="test.user", kind=1001
     )
-    assert YandexPlaylistId.parse("lk.1-2") == YandexPlaylistId(uuid="lk.1-2")
+    assert YandexPlaylistId.parse("6ad1ba0c-30fe") == YandexPlaylistId(uuid="6ad1ba0c-30fe")
 
 
 # --- профиль -------------------------------------------------------------------------
@@ -204,13 +219,13 @@ async def test_get_playlist_maps_tracks_and_loads_missing_ones(
 
 async def test_playlist_by_login_and_uuid(api: respx.MockRouter, gateway: YandexGateway) -> None:
     by_login = api.get("/users/test.user/playlists/1001").respond(json=fixture("playlist"))
-    by_uuid = api.get("/playlist/lk.11111111-2222-3333-4444-555555555555").respond(
+    by_uuid = api.get("/playlist/11111111-2222-3333-4444-555555555555").respond(
         json=fixture("playlist")
     )
 
     info = await gateway.playlist_info(PlaylistRef(Platform.YANDEX, "test.user:1001"))
     await gateway.playlist_info(
-        PlaylistRef(Platform.YANDEX, "lk.11111111-2222-3333-4444-555555555555")
+        PlaylistRef(Platform.YANDEX, "11111111-2222-3333-4444-555555555555")
     )
 
     assert info.owner_external_id == UID
@@ -269,7 +284,7 @@ async def test_search_by_isrc_is_empty_without_request(
         ("Test.User:3", True),
         ("someone.else:3", False),
         ("test.user:1001", False),
-        ("lk.1-2", False),
+        ("6ad1ba0c-30fe", False),
     ],
 )
 async def test_is_own_library(
@@ -500,3 +515,50 @@ async def test_every_request_goes_through_rate_limiter(
     await gateway.get_playlist(PlaylistRef(Platform.YANDEX, f"{UID}:1001"))
 
     assert limiter.calls == [(Platform.YANDEX, account_id)] * 2
+
+
+async def test_429_pauses_whole_account_for_retry_after(
+    api: respx.MockRouter, gateway: YandexGateway, limiter: CountingLimiter
+) -> None:
+    api.get("/search").respond(429, headers={"Retry-After": "600"})
+
+    with pytest.raises(PlatformRateLimitedError):
+        await gateway.search(TrackQuery(title="x"))
+
+    assert limiter.penalties == [600]
+
+
+async def test_other_errors_do_not_pause_account(
+    api: respx.MockRouter, gateway: YandexGateway, limiter: CountingLimiter
+) -> None:
+    api.get("/search").respond(503)
+
+    with pytest.raises(PlatformUnavailableError):
+        await gateway.search(TrackQuery(title="x"))
+
+    assert limiter.penalties == []
+
+
+async def test_429_log_has_request_counts_but_no_token(
+    api: respx.MockRouter, gateway: YandexGateway, caplog: pytest.LogCaptureFixture
+) -> None:
+    api.get("/search").respond(429, headers={"Retry-After": "600"})
+
+    with caplog.at_level("WARNING"), pytest.raises(PlatformRateLimitedError):
+        await gateway.search(TrackQuery(title="x"))
+
+    assert "аккаунт 42/310, сервер (IP) 900/4100 запросов за 10/60 мин" in caplog.text
+    assert "Retry-After 600" in caplog.text
+    assert "y0_test-token" not in caplog.text
+
+
+async def test_every_request_is_counted_for_server_including_profile_check(
+    api: respx.MockRouter, http: httpx.AsyncClient, limiter: CountingLimiter
+) -> None:
+    api.get("/account/status").respond(json=fixture("account_status"))
+    clients = YandexClientFactory(http, timeout_seconds=5, limiter=limiter)
+
+    await YandexProfileFetcher(clients).fetch(PlatformCredentials(access_token="t"))
+
+    assert limiter.counted == 1  # учтён на сервер (IP)
+    assert limiter.calls == []  # но без аккаунта токены bucket не тратятся

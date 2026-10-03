@@ -1,4 +1,5 @@
 import logging
+import random
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any, Final
@@ -20,20 +21,30 @@ from syncplaylists.shared_kernel.domain.errors import PlatformError, PlatformRat
 
 logger = logging.getLogger(__name__)
 
-# Всего попыток run_match на один трек (первая + повторы). Не больше
-# WorkerSettings.max_tries (по умолчанию в ARQ — 5), иначе ARQ оборвёт раньше.
+# Всего попыток run_match на один трек (первая + повторы) при сбоях.
 MATCH_MAX_TRIES: Final = 3
 # То же для run_transfer/run_write — повторяются только временные ошибки площадки.
 PLATFORM_MAX_TRIES: Final = 3
+# «Подождите» от площадки (429) или от нашего token bucket — не сбой: площадка
+# просит паузу, трек от неё не становится хуже. Поэтому у rate limit свой, больший
+# бюджет попыток, иначе после трёх 429 подряд трек ушёл бы в FAILED. ARQ считает
+# попытки общим счётчиком: WorkerSettings.max_tries должен быть не меньше этого.
+RATE_LIMITED_MAX_TRIES: Final = 12
 _MATCH_RETRY_BASE_DELAY: Final = timedelta(seconds=5)
 _PLATFORM_UNAVAILABLE: Final = "platform_unavailable"
 
 
+def _max_tries(exc: BaseException, default: int) -> int:
+    return RATE_LIMITED_MAX_TRIES if isinstance(exc, PlatformRateLimitedError) else default
+
+
 def _retry_delay(job_try: int, exc: BaseException) -> timedelta:
     delay = _MATCH_RETRY_BASE_DELAY * job_try
-    # Площадка (или наш token bucket) сказала, сколько ждать — не раньше этого.
     if isinstance(exc, PlatformRateLimitedError):
-        delay = max(delay, timedelta(seconds=exc.retry_after_seconds))
+        # Площадка (или token bucket) сказала, сколько ждать — не раньше этого. Плюс
+        # немного разброса: десятки отложенных задач не должны проснуться в одну секунду.
+        wait = timedelta(seconds=exc.retry_after_seconds * random.uniform(1.0, 1.2))
+        delay = max(_MATCH_RETRY_BASE_DELAY, wait)
     return delay
 
 
@@ -62,13 +73,15 @@ async def with_platform_retries(
     try:
         await execute(transfer_id)
     except PlatformError as exc:
-        if job_try < PLATFORM_MAX_TRIES:
+        if job_try < _max_tries(exc, PLATFORM_MAX_TRIES):
+            # str(exc) — код и имя ошибки площадки, без токенов.
             logger.warning(
-                "%s %s: попытка %s не удалась (%s), повтор",
+                "%s %s: попытка %s не удалась (%s: %s), повтор",
                 task,
                 transfer_id,
                 job_try,
                 type(exc).__name__,
+                exc,
             )
             raise Retry(defer=_retry_delay(job_try, exc)) from exc
         logger.exception("%s %s: повторы исчерпаны, перенос → FAILED", task, transfer_id)
@@ -99,13 +112,14 @@ async def match_with_retries(
         # ARQ сам не повторяет джобу на обычном исключении — без этого упавший трек
         # навсегда оставил бы перенос в RUNNING с вечным PENDING. Транзакция use case
         # к этому моменту уже откачена (UnitOfWork.__aexit__).
-        if job_try < MATCH_MAX_TRIES:
+        if job_try < _max_tries(exc, MATCH_MAX_TRIES):
             logger.warning(
-                "run_match %s/%s: попытка %s не удалась (%s), повтор",
+                "run_match %s/%s: попытка %s не удалась (%s: %s), повтор",
                 transfer_id,
                 position,
                 job_try,
                 type(exc).__name__,
+                exc,
             )
             raise Retry(defer=_retry_delay(job_try, exc)) from exc
         logger.exception("run_match %s/%s: повторы исчерпаны, item → FAILED", transfer_id, position)

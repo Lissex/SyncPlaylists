@@ -67,7 +67,10 @@ class ResolvePlaylistLinkUseCase:
         self._gateway_factory = gateway_factory
         self._accounts = accounts
 
-    async def execute(self, user_id: UUID, url: str) -> ResolvedLinkDto:
+    async def execute(self, user_id: UUID, url: str, *, preview: bool = True) -> ResolvedLinkDto:
+        """preview=False — без чтения шапки плейлиста (название, число треков): при
+        запуске переноса она не нужна, плейлист и так прочитает run_transfer, а лишний
+        запрос к площадке тратит её квоту."""
         link = await self._resolver.resolve(url)
         platform = link.platform if isinstance(link, LibraryLink) else link.ref.platform
         if not self._gateway_factory.supports(platform):
@@ -88,6 +91,8 @@ class ResolvePlaylistLinkUseCase:
         gateway = self._gateway_factory.for_account(access)
         if await gateway.is_own_library(link.ref):
             return ResolvedLinkDto(platform, LinkKind.LIBRARY, account_id=access.account_id)
+        if not preview:
+            return ResolvedLinkDto(platform, LinkKind.PLAYLIST, external_id=link.ref.external_id)
         info = await gateway.playlist_info(link.ref)
         return ResolvedLinkDto(
             platform,

@@ -7,6 +7,8 @@ from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, M
 
 class MatchMethod(StrEnum):
     CACHE = "cache"
+    # Источник и назначение на одной площадке: трек и есть сам себе соответствие.
+    SAME_PLATFORM = "same_platform"
     ISRC = "isrc"
     FUZZY = "fuzzy"
     AUDIO = "audio"  # задел под этап 6, пока не используется

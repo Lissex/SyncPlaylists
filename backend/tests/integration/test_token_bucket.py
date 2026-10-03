@@ -111,3 +111,63 @@ async def test_bucket_key_expires(redis: Redis) -> None:
 
     ttl = await redis.pttl(f"ratelimit:tb:yandex:{account}")
     assert 0 < ttl <= 2000 + 1000 + 1000
+
+
+async def test_penalize_pauses_account_until_retry_after(redis: Redis) -> None:
+    sleep = _RecordingSleep()
+    limiter = _limiter(redis, sleep, capacity=3, rate=1.0, max_wait=5)
+    account = uuid4()
+
+    await limiter.penalize(Platform.YANDEX, account, 600)
+
+    # Ждать дольше max_wait — сразу отказ с примерно оставшимся сроком паузы.
+    with pytest.raises(PlatformRateLimitedError) as caught:
+        await limiter.acquire(Platform.YANDEX, account)
+    assert 599 <= caught.value.retry_after_seconds <= 601
+    assert sleep.waits == []
+
+
+async def test_penalize_does_not_shorten_longer_pause(redis: Redis) -> None:
+    limiter = _limiter(redis, _RecordingSleep(), capacity=3, rate=1.0, max_wait=0)
+    account = uuid4()
+
+    await limiter.penalize(Platform.YANDEX, account, 600)
+    await limiter.penalize(Platform.YANDEX, account, 10)
+
+    with pytest.raises(PlatformRateLimitedError) as caught:
+        await limiter.acquire(Platform.YANDEX, account)
+    assert caught.value.retry_after_seconds >= 599
+
+
+async def test_penalize_is_per_account(redis: Redis) -> None:
+    sleep = _RecordingSleep()
+    limiter = _limiter(redis, sleep, capacity=3, rate=1.0, max_wait=0)
+
+    await limiter.penalize(Platform.YANDEX, uuid4(), 600)
+    await limiter.acquire(Platform.YANDEX, uuid4())
+
+    assert sleep.waits == []
+
+
+async def test_recent_requests_counts_only_granted(redis: Redis) -> None:
+    limiter = _limiter(redis, _RecordingSleep(), capacity=2, rate=0.1, max_wait=0)
+    account = uuid4()
+
+    await limiter.acquire(Platform.YANDEX, account)
+    await limiter.acquire(Platform.YANDEX, account)
+    with pytest.raises(PlatformRateLimitedError):
+        await limiter.acquire(Platform.YANDEX, account)  # отказ — не запрос к площадке
+
+    assert await limiter.recent_requests(Platform.YANDEX, account, 10) == 2
+    assert await limiter.recent_requests(Platform.YANDEX, uuid4(), 10) == 0
+
+
+async def test_server_counter_counts_all_requests_across_accounts(redis: Redis) -> None:
+    limiter = _limiter(redis, _RecordingSleep(), capacity=5, rate=1.0, max_wait=1)
+
+    for _ in range(3):
+        await limiter.count_request(Platform.YANDEX)
+    await limiter.count_request(Platform.SPOTIFY)
+
+    assert await limiter.recent_requests(Platform.YANDEX, None, 10) == 3
+    assert await limiter.recent_requests(Platform.SPOTIFY, None, 60) == 1

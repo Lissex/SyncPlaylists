@@ -108,3 +108,19 @@ class PlatformRateLimiter(Protocol):
     PlatformRateLimitedError (задача уйдёт в повтор с задержкой)."""
 
     async def acquire(self, platform: Platform, account_id: UUID) -> None: ...
+
+    # Площадка сама ответила 429 с Retry-After: пауза для ВСЕГО аккаунта, а не только
+    # для задачи, которая её получила, — иначе остальные параллельные задачи продолжат
+    # стучаться и каждая соберёт свой 429.
+    async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None: ...
+
+    # Учёт КАЖДОГО HTTP-запроса к площадке с этого сервера (по всем аккаунтам, включая
+    # проверку профиля без аккаунта) — чтобы понять, квота площадки на токен или на IP.
+    async def count_request(self, platform: Platform) -> None: ...
+
+    # Сколько запросов за последние `minutes` минут: account_id — выданных этому аккаунту
+    # через acquire(); None — всех запросов с этого сервера (count_request). Для логов при
+    # 429 и подбора лимита под реальную квоту площадки.
+    async def recent_requests(
+        self, platform: Platform, account_id: UUID | None, minutes: int
+    ) -> int: ...

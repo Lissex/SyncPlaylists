@@ -7,10 +7,14 @@ from syncplaylists.modules.matching.application.ports import MatchingPipelineFac
 from syncplaylists.modules.matching.application.use_cases import ResolveTrackMatchUseCase
 from syncplaylists.modules.matching.domain.pipeline import MatchStatus
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
-from syncplaylists.modules.transfers.application.dto import TransferDto
+from syncplaylists.modules.transfers.application.dto import (
+    TransferDto,
+    TransferProgressDto,
+)
 from syncplaylists.modules.transfers.application.ports import TransferRepository
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.errors import InvalidTransferTransitionError
+from syncplaylists.modules.transfers.domain.progress import ETA_WINDOW
 from syncplaylists.modules.transfers.domain.value_objects import (
     ExistingPlaylist,
     LibraryDestination,
@@ -498,10 +502,14 @@ class ResolveUncertainItemUseCase:
 
 
 class WriteTransferUseCase:
-    """Таск `run_write`. Известный долг: create_playlist на реальной площадке —
-    побочный эффект вовне; если транзакция после него упадёт и откатится, повторная
-    доставка run_transfer создаст плейлист повторно (нет саги/outbox). Для фейковой
-    площадки на этом этапе не критично, см. ARCHITECTURE.md.
+    """Таск `run_write`.
+
+    Создание нового плейлиста — побочный эффект вовне, который откатом транзакции не
+    отменить. Поэтому это отдельный шаг: создали → сразу закоммитили resolved_target →
+    снова взяли лок на перенос и проверили статус. Если запись треков потом упадёт и
+    run_write повторится, он переиспользует уже созданный плейлист, а не создаст второй.
+    Остаётся только окно между ответом площадки на create и нашим коммитом (сбой
+    процесса ровно в этот момент) — см. ARCHITECTURE.md, 11d.
     """
 
     def __init__(
@@ -529,6 +537,17 @@ class WriteTransferUseCase:
                 await _fail_transfer(uow, self._transfers, transfer)
                 return
             try:
+                if self._needs_new_playlist(transfer):
+                    await self._create_playlist(transfer, access)
+                    await self._transfers.save(transfer)
+                    await uow.commit()  # resolved_target зафиксирован до записи треков
+                    # Коммит снял лок — берём снова: параллельная доставка run_write могла
+                    # успеть дописать перенос, пока лока не было.
+                    reloaded = await self._transfers.get_for_update(transfer_id)
+                    assert reloaded is not None
+                    if reloaded.status is not TransferStatus.WRITING:
+                        return
+                    transfer = reloaded
                 await self._write(transfer, access)
             except PlatformNotSupportedError:
                 await _fail_transfer(uow, self._transfers, transfer, _PLATFORM_NOT_SUPPORTED)
@@ -573,15 +592,23 @@ class WriteTransferUseCase:
                 transfer.mark_added(item.position)
 
     @staticmethod
+    def _needs_new_playlist(transfer: Transfer) -> bool:
+        return isinstance(transfer.destination, NewPlaylist) and transfer.resolved_target is None
+
+    async def _create_playlist(self, transfer: Transfer, access: AccountAccess) -> None:
+        destination = transfer.destination
+        assert isinstance(destination, NewPlaylist)
+        gateway = self._gateway_factory.for_account(access)
+        ref = await gateway.create_playlist(destination.title, destination.description)
+        transfer.set_resolved_target(ref)
+
+    @staticmethod
     async def _resolve_playlist(
         transfer: Transfer, destination: TrackDestination, gateway: MusicPlatformGateway
     ) -> PlaylistRef:
         if isinstance(destination, ExistingPlaylist):
             return destination.ref
-        assert isinstance(destination, NewPlaylist)
-        if transfer.resolved_target is None:
-            ref = await gateway.create_playlist(destination.title, destination.description)
-            transfer.set_resolved_target(ref)
+        # NewPlaylist: плейлист создан и закоммичен отдельным шагом в execute().
         assert transfer.resolved_target is not None
         return transfer.resolved_target
 
@@ -594,7 +621,22 @@ class GetTransferUseCase:
         transfer = await self._transfers.get(transfer_id)
         if transfer is None or transfer.user_id != user_id:
             return None
-        return TransferDto.from_domain(transfer)
+        sample = await self._transfers.progress_sample(transfer_id, ETA_WINDOW)
+        progress = TransferProgressDto.from_sample(sample, datetime.now(UTC)) if sample else None
+        return TransferDto.from_domain(transfer, progress)
+
+
+class GetTransferProgressUseCase:
+    """Прогресс и ETA без загрузки items — для периодических SSE-событий `progress`."""
+
+    def __init__(self, transfers: TransferRepository) -> None:
+        self._transfers = transfers
+
+    async def execute(self, user_id: UUID, transfer_id: UUID) -> TransferProgressDto | None:
+        sample = await self._transfers.progress_sample(transfer_id, ETA_WINDOW)
+        if sample is None or sample.user_id != user_id:
+            return None
+        return TransferProgressDto.from_sample(sample, datetime.now(UTC))
 
 
 class SweepStaleTransfersUseCase:

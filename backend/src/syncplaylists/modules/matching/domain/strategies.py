@@ -21,6 +21,31 @@ from syncplaylists.shared_kernel.domain.search import TrackCandidate, TrackQuery
 from syncplaylists.shared_kernel.domain.value_objects import MatchScore, MatchTier
 
 
+class SamePlatformStrategy:
+    """Перенос внутри одной площадки (чужой плейлист к себе, лайки в плейлист, ...):
+    id трека источника годится и для назначения — искать нечего. Ноль запросов к
+    площадке вместо 1–2 поисков на трек и без ложных UNCERTAIN."""
+
+    async def attempt(self, request: MatchRequest) -> MatchAttempt | None:
+        source = request.source
+        if source.ref.platform is not request.target_platform:
+            return None
+        match = TrackMatch(
+            id=uuid4(),
+            source_ref=source.ref,
+            target_platform=request.target_platform,
+            target_ref=source.ref,
+            method=MatchMethod.SAME_PLATFORM,
+            score=MatchScore(1.0),
+        )
+        return MatchAttempt(
+            status=MatchStatus.MATCHED,
+            match=match,
+            candidates=(source,),
+            method=MatchMethod.SAME_PLATFORM,
+        )
+
+
 class CacheStrategy:
     def __init__(self, repository: TrackMatchRepository) -> None:
         self._repository = repository
@@ -168,6 +193,7 @@ def build_default_pipeline(
 ) -> MatchingPipeline:
     return MatchingPipeline(
         [
+            SamePlatformStrategy(),
             CacheStrategy(repository),
             IsrcStrategy(gateway),
             FuzzySearchStrategy(gateway, normalizer, scorer, search_limit),

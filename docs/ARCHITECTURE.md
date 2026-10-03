@@ -255,8 +255,8 @@ class SoundCloudSettings(BaseModel):
     redirect_uri: str
 
 class RateLimitSettings(BaseModel):      # этап 4b: token bucket на (площадка, аккаунт)
-    capacity: int = 5
-    refill_per_second: float = 3.0
+    capacity: int = 3                    # под Яндекс, подобрано по e2e (11d)
+    refill_per_second: float = 1.5
     max_wait_seconds: float = 10.0       # дольше — PlatformRateLimitedError → повтор задачи
 
 class YandexSettings(BaseModel):         # этап 4b; секретов нет — токены лежат в БД
@@ -338,7 +338,7 @@ TrackDestination  = ExistingPlaylist(ref: PlaylistRef)
 
 | Площадка | Форматы | `external_id` |
 |---|---|---|
-| Яндекс | `music.yandex.{ru,com,by,kz,uz}`, `next.music.yandex.ru`: `/users/<login>/playlists/<kind>`, `/playlists/<uuid>` | `"<login>:<kind>"` или `lk.…`/`ar.…` |
+| Яндекс | `music.yandex.{ru,com,by,kz,uz}`, `next.music.yandex.ru`: `/users/<login>/playlists/<kind>`, `/playlists/<uuid>` | `"<login>:<kind>"` или uuid (без префикса `lk.` — с ним API отвечает 404) |
 | Spotify | `open.spotify.com/[intl-xx/][user/x/]playlist/<id22>`, `spotify:playlist:<id>`; `/collection/tracks` → медиатека | id |
 | VK | `vk.{com,ru}`, `m.vk.*`: `/music/playlist|album/…`, `/audio_playlist…`, `?z=audio_playlist…`, `?act=audio_playlist…&access_hash=` | `"<owner>_<id>[_<hash>]"` |
 | SoundCloud | `[m.]soundcloud.com/<user>/sets/<slug>[/s-<secret>]`; `/you/likes` → медиатека; `/<user>/likes` | путь |
@@ -381,7 +381,7 @@ Transfer (root)
 - `MatchingPipeline` — цепочка стратегий (паттерн Chain of Responsibility):
 
 ```
-CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrategy → FingerprintVerification
+SamePlatformStrategy → CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrategy → FingerprintVerification
       ↓ нет               ↓ нет             ↓ <0.70                    ↓ нет                    ↓
                                                                                     UNCERTAIN / NOT_FOUND → ручной выбор
 ```
@@ -390,6 +390,11 @@ CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrat
 acoustic | sped_up | slowed | cover | instrumental | karaoke | extended | radio_edit`) из названия;
 `MatchScorer` ограничивает результат потолком `UNCERTAIN`, если версии источника и кандидата не
 совпадают (разный тег или разные ремиксеры) — даже при идеальном совпадении текста и длительности.
+
+**Одна площадка — без поиска (этап 4b-1.1).** Первой в цепочке стоит `SamePlatformStrategy`:
+если площадка источника совпадает с целевой (чужой плейлист к себе, лайки в плейлист, слияние),
+трек и есть своё соответствие — MATCHED, `method=same_platform`, score 1.0, ноль запросов к
+площадке. В `track_matches` такое соответствие не пишется (как и попадание в кэш).
 
 **Поиск той же версии (реализовано на этапе 4b).** Если версия источника не `original`, а среди
 результатов первого поиска нет кандидата той же версии (`versions_match`: тот же тег; у ремиксов —
@@ -497,6 +502,8 @@ class GatewayFactory(Protocol):
 
 class PlatformRateLimiter(Protocol):     # 4b; RedisTokenBucketLimiter (infrastructure/ratelimit)
     async def acquire(self, platform: Platform, account_id: UUID) -> None: ...
+    async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None: ...  # 429 → пауза аккаунта
+    async def recent_requests(self, platform: Platform, account_id: UUID, minutes: int) -> int: ...  # для логов
 
 class AccountAccessProvider(Protocol):   # реализация — accounts.application.AccountAccessService
     async def get(self, user_id: UUID, account_id: UUID) -> AccountAccess: ...
@@ -686,10 +693,9 @@ concurrency/rate-limit по площадкам, описанные в табли
   `transfers`) — конкурентная доставка блокируется на этом локе до коммита первой попытки, затем
   видит уже изменённый статус и выходит no-op. `MatchTransferItemUseCase` с этапа 4a работает
   иначе — точечно, см. 11c.
-- **Побочный эффект до commit.** `WriteTransferUseCase.create_playlist` на реальной площадке —
-  вызов вовне; если транзакция после него упадёт и откатится, повторная доставка `run_write`
-  создаст плейлист повторно (нет саги/outbox). Для фейковой площадки на этом этапе не критично,
-  для реальных адаптеров (этап 4) — нужно будет решать.
+- ~~**Побочный эффект до commit.** `WriteTransferUseCase.create_playlist` … повторная доставка
+  `run_write` создаст плейлист повторно.~~ Закрыто после 4b-1.1 (см. 11d): создание плейлиста —
+  отдельный шаг с немедленным коммитом `resolved_target`.
 - **`StartTransferUseCase`/`ProcessTransferUseCase`/`MatchTransferItemUseCase`/
   `ResolveUncertainItemUseCase`: `TaskQueue.enqueue(...)` вызывается строго после успешного
   `uow.commit()`**, не внутри транзакции — иначе воркер может схватить джобу для записи, которую
@@ -891,12 +897,86 @@ concurrency/rate-limit по площадкам, описанные в табли
   (`addopts = -m 'not live'`). Сверка формы ответов — `tests/tools/record_yandex.py` (пишет
   вычищенные ответы в `tests/fixtures/yandex/recorded/`, она в .gitignore).
 
+**Ручной e2e (2026-10-03) и что по нему исправлено**
+- Запуск одной командой: `make e2e LINK="<ссылка на плейлист Яндекса>" [ACCEPT=1]` (корневой
+  `Makefile` → `scripts/e2e-yandex.ps1`): поднимает приложение, применяет миграции,
+  регистрирует пользователя, подключает Яндекс токеном из `.env`, переносит плейлист в новый
+  приватный и печатает сводку matched/uncertain/not_found из БД.
+- Перенос 100 треков Яндекс → Яндекс: 59 сопоставлены за ~30 с (5 разом + 3 запроса/с), затем
+  Яндекс ответил **429 с `Retry-After: 600`** сразу 41 задаче — перенос «встал» на 10 минут.
+  Исправлено:
+  - `PlatformRateLimiter.penalize(platform, account, seconds)`: при 429 транспорт ставит на
+    паузу **весь аккаунт** (Lua понижает баланс token bucket так, что следующий токен — не
+    раньше `Retry-After`; более длинную паузу не сокращает). Остальные задачи не идут в API, а
+    сразу уходят в повтор с оставшимся сроком;
+  - у `PlatformRateLimitedError` свой бюджет повторов (`RATE_LIMITED_MAX_TRIES = 12`, у сбоев —
+    по-прежнему 3): «подождите» от площадки — не повод отправлять трек в FAILED.
+    `WorkerSettings.max_tries` поднят до того же значения — иначе ARQ оборвал бы задачу на 5-й;
+  - задержка повтора — не меньше `Retry-After` плюс разброс до 20%, чтобы десятки отложенных
+    задач не просыпались в одну секунду;
+  - в лог повторов пишется текст ошибки (код/имя ошибки площадки, без токенов);
+  - лимит по умолчанию снижен до 3 разом + 1,5 запроса/с; `docker-compose.yml` теперь
+    пробрасывает `PLATFORMS__*` в api/worker (раньше настройки из `.env` до контейнеров не
+    доходили).
+- Ссылки `music.yandex.ru/playlists/<uuid>` содержат uuid **без** префикса `lk.`, и API
+  принимает его именно так (`GET /playlist/lk.<uuid>` → 404). Примеры в тестах исправлены.
+
+**Этап 4b-1.1 — экономия запросов** (тот же e2e, повторный прогон: 429 на первом же запросе —
+квота аккаунта, а не только частота). Ничего в поведении не меняет, кроме числа запросов:
+- **одна площадка — без поиска** (`SamePlatformStrategy`, раздел 7): перенос Яндекс → Яндекс на
+  100 треков — ~7 запросов вместо ~205;
+- **`POST /transfers` по ссылке не читает шапку плейлиста** (`ResolvePlaylistLinkUseCase(...,
+  preview=False)`): её всё равно прочитает `run_transfer`; предпросмотр — только `/links/resolve`;
+- **кэш поиска** `integrations/platforms/search_cache.py` (`CachedSearchGateway`, Redis через
+  `infrastructure/cache/RedisTextCache`): `search`/`search_by_isrc` по ключу
+  `search:<platform>:<sha256(title|artist|isrc|limit)>`, TTL `PLATFORMS__SEARCH_CACHE_TTL_SECONDS`
+  (сутки; пустой результат — не дольше часа; 0 — выключен). Публичные данные каталога — общий
+  кэш на всех. Сбой Redis не ломает поиск. Подключён только к настоящим адаптерам;
+- **данные для подбора лимита**: token bucket считает выданные разрешения по минутам
+  (`ratelimit:cnt:…`, TTL 2 ч); при 429 в логе «N запросов за 10 мин, M за 60 мин,
+  Retry-After S» — без токенов;
+- e2e-скрипт подсказывает, если прогресса нет дольше 30 с.
+
+Сознательно не делаем: парсинг сайта (квоту не обходит, SmartCaptcha, против правил), пул
+служебных аккаунтов (обход ограничений), пропуск `run_match` в `ProcessTransfer` (запросов не
+экономит, задевает счётчики/статусы).
+
+Исследовать без кода, когда квота восстановится: (1) массовый импорт Яндекса из текстового
+списка «Артист — Трек» — есть ли API (тысячи поисков → несколько запросов, но без нашего
+контроля версий); (2) квота на токен или на IP — от этого зависит, имеет ли смысл анонимный поиск.
+
+**После 4b-1.1: дубль плейлиста, квота на IP, ETA**
+- **Дубль плейлиста при повторе `run_write` закрыт.** `WriteTransferUseCase`: для `NewPlaylist`
+  без `resolved_target` — `create_playlist` → `save` → **commit** → снова `get_for_update` и
+  проверка статуса (параллельная доставка могла успеть дописать перенос, пока лока не было) →
+  запись треков. Упадёт запись — повтор переиспользует плейлист. Регрессия на Postgres:
+  `tests/integration/transfers/test_write_idempotency.py` (падение после create → повтор →
+  один плейлист). Остаётся только окно «площадка создала плейлист, а процесс упал до нашего
+  commit» — его закрывает лишь сага/outbox или поиск своего плейлиста по метке; пока не делаем.
+- **Счётчик запросов с сервера (IP).** Транспорт Яндекса учитывает **каждый** HTTP-запрос
+  (`PlatformRateLimiter.count_request`, ключи `ratelimit:cnt:<platform>:server:<минута>`), в том
+  числе проверку профиля без аккаунта. Лог 429: «аккаунт A10/A60, сервер (IP) S10/S60 запросов
+  за 10/60 мин, Retry-After R». Специально 429 не провоцируем — ждём естественных.
+- **ETA переноса.** `transfer_items.processed_at` (миграция `d4f1a7c2e8b3`) ставит БД в
+  `save_item_outcome`, когда item выходит из PENDING. `GET /transfers/{id}` отдаёт
+  `progress` {status, total, pending, matched, uncertain, not_found, added, failed,
+  eta_seconds}; `eta_seconds` — только для `running`, по скорости последних 20 треков,
+  считая время до *сейчас* (во время паузы площадки оценка растёт, а не замирает); `null` —
+  меньше двух обработанных треков. SSE шлёт событие `progress` с тем же телом раз в 3 с,
+  в том числе когда доменных событий нет (своя короткая request-scope сессия на опрос), после
+  `done`/`failed` — перестаёт.
+
 **Долги**
+- **Квота Яндекса — на токен или на IP? (открытый вопрос.)** Ответ даст первый естественный 429
+  с новой строкой лога: 429 при малом числе запросов аккаунта, но большом с сервера — квота на
+  IP (тогда анонимный поиск бесполезен, а при росте пользователей понадобятся несколько
+  исходящих IP/воркер `ru`); 429 при большом числе запросов аккаунта — квота на токен. При
+  нескольких серверах счётчик «server» в общем Redis надо будет разделить по хосту.
+- Фактический лимит Яндекса неизвестен: 3 + 1,5/с — консервативная оценка, подбирается по
+  тем же логам 429 (`make logs`).
 - Фикстуры `tests/fixtures/yandex/*.json` составлены по формату API вручную; сверены с
   `recorded/` (2026-10-03): набор используемых полей трека/лайков/профиля совпадает. Поиск
   без `page` API отвергает (400 `validate`) — библиотека его передаёт, рекордер исправлен.
-- `create_playlist` до commit — по-прежнему без саги (11a): если транзакция `run_write` после
-  создания плейлиста откатится, повтор создаст второй плейлист.
 - Как Яндекс отвечает при гео-блоке, точно не проверено: 451 → `PlatformRegionError`; если окажется
   другой код/тело — поправить `transport._error_for`. API Яндекса может требовать РФ-IP
   (воркер `ru`, раздел 11) — пока все запросы идут с одного процесса.

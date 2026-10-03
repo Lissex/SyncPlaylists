@@ -5,6 +5,7 @@ from types import TracebackType
 from typing import Any
 from uuid import UUID
 
+from syncplaylists.modules.transfers.application.ports import ProgressSample
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
     TransferItemStatus,
@@ -36,9 +37,23 @@ class FakeTransferRepository:
         self._updated_at: dict[UUID, datetime] = {}
         self.save_calls = 0
         self.item_outcome_calls = 0
+        # Когда items вышли из PENDING — как processed_at в transfer_items (для ETA).
+        self.processed_at: dict[UUID, list[datetime]] = {}
 
     async def get(self, transfer_id: UUID) -> Transfer | None:
         return self._storage.get(transfer_id)
+
+    async def progress_sample(self, transfer_id: UUID, recent: int) -> ProgressSample | None:
+        stored = self._storage.get(transfer_id)
+        if stored is None:
+            return None
+        times = sorted(self.processed_at.get(transfer_id, []), reverse=True)[:recent]
+        return ProgressSample(
+            user_id=stored.user_id,
+            status=stored.status,
+            progress=TransferProgress.from_statuses(i.status for i in stored.items),
+            recent_processed_at=tuple(times),
+        )
 
     async def get_for_update(self, transfer_id: UUID) -> Transfer | None:
         # В тестах однопоточно — реальный лок проверяется интеграционными тестами
@@ -71,6 +86,7 @@ class FakeTransferRepository:
         target.status = item.status
         target.match = item.match
         target.candidates = item.candidates
+        self.processed_at.setdefault(item.transfer_id, []).append(datetime.now(UTC))
         self.item_outcome_calls += 1
         return TransferProgress.from_statuses(i.status for i in stored.items)
 

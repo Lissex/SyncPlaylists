@@ -8,7 +8,9 @@ import pytest
 from arq.worker import Retry
 
 from syncplaylists.modules.transfers.application.use_cases import (
+    FailTransferItemUseCase,
     FailTransferUseCase,
+    MatchTransferItemUseCase,
     WriteTransferUseCase,
 )
 from syncplaylists.modules.transfers.domain.entities import Transfer
@@ -23,7 +25,10 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     TransferStatus,
 )
 from syncplaylists.modules.transfers.presentation.tasks import (
+    MATCH_MAX_TRIES,
     PLATFORM_MAX_TRIES,
+    RATE_LIMITED_MAX_TRIES,
+    match_with_retries,
     with_platform_retries,
 )
 from syncplaylists.shared_kernel.domain.base import DomainEvent
@@ -337,3 +342,117 @@ async def test_start_transfer_rejects_unsupported_platform() -> None:
 
     with pytest.raises(PlatformNotSupportedError):
         await env.start_transfer_use_case().execute(env.user_id, source, destination)
+
+
+# --- rate limit: отдельный бюджет повторов -------------------------------------------
+
+
+class _FailingMatch:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def execute(self, transfer_id: UUID, position: int) -> None:
+        raise self._error
+
+
+class _RecordingFailItem:
+    def __init__(self) -> None:
+        self.calls: list[tuple[UUID, int, str]] = []
+
+    async def execute(self, transfer_id: UUID, position: int, reason: str) -> None:
+        self.calls.append((transfer_id, position, reason))
+
+
+@pytest.mark.parametrize("job_try", [MATCH_MAX_TRIES, RATE_LIMITED_MAX_TRIES - 1])
+async def test_rate_limited_match_is_retried_beyond_normal_budget(job_try: int) -> None:
+    fail_item = _RecordingFailItem()
+
+    with pytest.raises(Retry) as caught:
+        await match_with_retries(
+            job_try,
+            uuid4(),
+            0,
+            cast(
+                MatchTransferItemUseCase,
+                _FailingMatch(PlatformRateLimitedError(Platform.YANDEX, 600)),
+            ),
+            cast(FailTransferItemUseCase, fail_item),
+        )
+
+    assert fail_item.calls == []
+    # Не раньше Retry-After площадки и с разбросом не больше 20%.
+    assert caught.value.defer_score is not None
+    assert 600_000 <= caught.value.defer_score <= 720_000
+
+
+async def test_rate_limited_match_fails_item_after_its_own_budget() -> None:
+    fail_item = _RecordingFailItem()
+    transfer_id = uuid4()
+
+    await match_with_retries(
+        RATE_LIMITED_MAX_TRIES,
+        transfer_id,
+        7,
+        cast(MatchTransferItemUseCase, _FailingMatch(PlatformRateLimitedError(Platform.YANDEX, 5))),
+        cast(FailTransferItemUseCase, fail_item),
+    )
+
+    assert fail_item.calls == [(transfer_id, 7, "PlatformRateLimitedError")]
+
+
+async def test_other_errors_keep_normal_budget() -> None:
+    fail_item = _RecordingFailItem()
+
+    await match_with_retries(
+        MATCH_MAX_TRIES,
+        uuid4(),
+        0,
+        cast(MatchTransferItemUseCase, _FailingMatch(PlatformUnavailableError(Platform.YANDEX))),
+        cast(FailTransferItemUseCase, fail_item),
+    )
+
+    assert len(fail_item.calls) == 1
+
+
+async def test_rate_limited_transfer_is_retried_beyond_normal_budget() -> None:
+    fail = _RecordingFailTransfer()
+
+    with pytest.raises(Retry):
+        await with_platform_retries(
+            PLATFORM_MAX_TRIES,
+            "run_transfer",
+            uuid4(),
+            _FailingExecute(PlatformRateLimitedError(Platform.YANDEX, 30)),
+            cast(FailTransferUseCase, fail),
+        )
+    assert fail.calls == []
+
+
+# --- новый плейлист: create — отдельный шаг с немедленным коммитом ------------------
+
+
+async def test_new_playlist_is_committed_before_tracks_are_written() -> None:
+    env = _env()
+    transfer = await _writing_transfer(
+        env, NewPlaylist(platform=Platform.SPOTIFY, title="Копия", description=None)
+    )
+    gateway = FakeMusicPlatformGateway(platform=Platform.SPOTIFY)
+    gateway.failures["add_tracks"] = PlatformUnavailableError(Platform.SPOTIFY)
+    env.register_gateway(gateway)
+
+    with pytest.raises(PlatformUnavailableError):
+        await _write_use_case(env).execute(transfer.id)
+
+    # Плейлист создан и ссылка на него закоммичена ДО упавшей записи треков —
+    # откат второй транзакции её не потеряет (на Postgres: test_write_idempotency).
+    assert gateway.created_playlists == [("Копия", None)]
+    assert env.uow.commits == 1
+    stored = await env.transfers.get(transfer.id)
+    assert stored is not None
+    assert stored.resolved_target == PlaylistRef(Platform.SPOTIFY, "created-1")
+
+    del gateway.failures["add_tracks"]
+    await _write_use_case(env).execute(transfer.id)  # повтор run_write
+
+    assert gateway.created_playlists == [("Копия", None)]  # второй не создан
+    assert await _status(env, transfer.id) is TransferStatus.DONE

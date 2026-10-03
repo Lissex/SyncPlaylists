@@ -30,7 +30,8 @@ class ResolveTrackMatchUseCase:
         if (
             attempt.status is MatchStatus.MATCHED
             and attempt.match is not None
-            and attempt.method is not MatchMethod.CACHE
+            # Из кэша — уже в кэше; «трек сам себе» (одна площадка) кэшировать незачем.
+            and attempt.method not in (MatchMethod.CACHE, MatchMethod.SAME_PLATFORM)
         ):
             target = next(c for c in attempt.candidates if c.ref == attempt.match.target_ref)
             # track_matches ссылается на platform_tracks по id — обе стороны матча

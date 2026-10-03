@@ -128,3 +128,23 @@ async def test_concurrently_cached_match_wins_over_own_candidate() -> None:
     assert attempt.match is not None
     assert attempt.match.id == already_cached.id
     assert attempt.match.target_ref == already_cached.target_ref
+
+
+async def test_same_platform_match_needs_no_requests_and_is_not_cached() -> None:
+    gateway = FakeMusicPlatformGateway(platform=Platform.VK)
+    repository = FakeTrackMatchRepository()
+    pipeline = build_default_pipeline(
+        gateway, repository, TrackNormalizer(), MatchScorer(TrackNormalizer())
+    )
+    use_case = ResolveTrackMatchUseCase(pipeline, repository, _ensure_platform_track())
+
+    attempt = await use_case.execute(_source(), Platform.VK)
+
+    assert attempt.status is MatchStatus.MATCHED
+    assert attempt.match is not None
+    assert attempt.match.target_ref == _SOURCE_REF
+    assert attempt.match.method is MatchMethod.SAME_PLATFORM
+    assert attempt.match.score.value == 1.0
+    assert gateway.search_calls == 0
+    assert gateway.search_by_isrc_calls == 0
+    assert repository.save_calls == []

@@ -114,5 +114,8 @@ class TransferItemOrm(Base):
     match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     candidates: Mapped[list[dict[str, object]]] = mapped_column(JSONB, nullable=False, default=list)
+    # Когда item вышел из PENDING (результат run_match) — по последним таким отметкам
+    # оценивается оставшееся время переноса. Ставит БД в save_item_outcome.
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     transfer: Mapped[TransferOrm] = relationship(back_populates="items")

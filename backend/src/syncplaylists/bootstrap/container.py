@@ -7,6 +7,7 @@ from dishka import AsyncContainer, Provider, Scope, make_async_container, provid
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from syncplaylists.infrastructure.cache.redis_text_cache import RedisTextCache
 from syncplaylists.infrastructure.config.settings import Settings
 from syncplaylists.infrastructure.db.engine import create_engine
 from syncplaylists.infrastructure.db.session import create_session_factory
@@ -30,6 +31,7 @@ from syncplaylists.integrations.platforms.registry import (
     GatewayBuilder,
     PlatformGatewayFactory,
 )
+from syncplaylists.integrations.platforms.search_cache import CachedSearchGateway, TextCache
 from syncplaylists.integrations.platforms.yandex.factory import (
     YandexClientFactory,
     YandexGatewayBuilder,
@@ -102,6 +104,7 @@ from syncplaylists.modules.transfers.application.ports import TransferRepository
 from syncplaylists.modules.transfers.application.use_cases import (
     FailTransferItemUseCase,
     FailTransferUseCase,
+    GetTransferProgressUseCase,
     GetTransferUseCase,
     MatchTransferItemUseCase,
     ProcessTransferUseCase,
@@ -225,12 +228,22 @@ class GatewayProvider(Provider):
         )
 
     @provide
+    def get_search_cache(self, redis: Redis) -> TextCache:
+        return RedisTextCache(redis)
+
+    @provide
     def get_gateway_factory(
-        self, settings: Settings, yandex_clients: YandexClientFactory
+        self, settings: Settings, yandex_clients: YandexClientFactory, search_cache: TextCache
     ) -> GatewayFactory:
+        yandex = YandexGatewayBuilder(
+            yandex_clients, batch_size=settings.platforms.yandex.batch_size
+        )
+        ttl = settings.platforms.search_cache_ttl_seconds
         builders: dict[Platform, GatewayBuilder] = {
-            Platform.YANDEX: YandexGatewayBuilder(
-                yandex_clients, batch_size=settings.platforms.yandex.batch_size
+            Platform.YANDEX: (
+                (lambda access: CachedSearchGateway(yandex(access), search_cache, ttl))
+                if ttl > 0
+                else yandex
             ),
         }
         # Фейк (dev/тесты) перекрывает настоящий адаптер площадки, если указан явно.
@@ -568,6 +581,10 @@ class TransfersProvider(Provider):
     @provide
     def get_get_transfer(self, transfers: TransferRepository) -> GetTransferUseCase:
         return GetTransferUseCase(transfers)
+
+    @provide
+    def get_transfer_progress(self, transfers: TransferRepository) -> GetTransferProgressUseCase:
+        return GetTransferProgressUseCase(transfers)
 
     @provide
     def get_sweep_stale_transfers(

@@ -72,8 +72,10 @@ class RateLimitSettings(BaseModel):
     refill_per_second — устойчивая частота. Если ждать токен дольше max_wait_seconds,
     задача уходит в повтор с задержкой, а не держит воркер."""
 
-    capacity: int = 5
-    refill_per_second: float = 3.0
+    # Значения по умолчанию — под Яндекс: e2e 2026-10-03 при 5 разом + 3/с через
+    # ~30 с получил 429 с Retry-After 600 (ARCHITECTURE.md, 11d). Подбираются эмпирически.
+    capacity: int = 3
+    refill_per_second: float = 1.5
     max_wait_seconds: float = 10.0
 
 
@@ -91,6 +93,8 @@ class PlatformsSettings(BaseModel):
     yandex: YandexSettings = YandexSettings()
     # Раскрытие коротких ссылок (vk.cc, on.soundcloud.com, ...).
     link_expander_timeout_seconds: float = 5.0
+    # Кэш результатов поиска площадок в Redis (экономия квоты); 0 — выключен.
+    search_cache_ttl_seconds: int = 86400
 
 
 class Settings(BaseSettings):

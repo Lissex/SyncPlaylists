@@ -44,7 +44,7 @@ def _not_a_playlist() -> UnsupportedLinkError:
 
 # --- Яндекс Музыка -------------------------------------------------------------------
 # external_id: "<login>:<kind>" (users/<login>/playlists/<kind>) или uuid нового формата
-# ("lk.…", "ar.…") для music.yandex.ru/playlists/<uuid>.
+# из music.yandex.ru/playlists/<uuid> — как есть, без префикса (так его принимает API).
 
 _YANDEX_HOSTS: Final = re.compile(r"^(?:next\.)?music\.yandex\.(?:ru|com|by|kz|uz)$")
 _YANDEX_USER_PLAYLIST: Final = re.compile(r"^/users/(?P<login>[^/]+)/playlists/(?P<kind>\d+)/?$")
