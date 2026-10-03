@@ -5,7 +5,7 @@ from rapidfuzz import fuzz
 
 from syncplaylists.modules.matching.domain.artists import artist_set_similarity, parse_artist_names
 from syncplaylists.modules.matching.domain.normalization import NormalizedTrack, TrackNormalizer
-from syncplaylists.modules.matching.domain.version import VersionInfo, VersionTag
+from syncplaylists.modules.matching.domain.version import versions_match
 from syncplaylists.shared_kernel.domain.value_objects import Duration, MatchScore
 
 
@@ -45,7 +45,7 @@ class MatchScorer:
                 + duration_sim * self.DURATION_WEIGHT
             )
 
-        if self._versions_mismatched(source_lat.version, candidate_lat.version):
+        if not versions_match(source_lat.version, candidate_lat.version):
             total = min(total, self._VERSION_MISMATCH_CAP)
 
         return MatchScore(value=min(1.0, max(0.0, total)))
@@ -82,13 +82,3 @@ class MatchScorer:
             return 0.0
         span = self._DURATION_ZERO_MS - self._DURATION_TOLERANCE_MS
         return 1.0 - (diff - self._DURATION_TOLERANCE_MS) / span
-
-    def _versions_mismatched(self, a: VersionInfo, b: VersionInfo) -> bool:
-        if a.tag != b.tag:
-            return True
-        return (
-            a.tag is VersionTag.REMIX
-            and bool(a.remixer)
-            and bool(b.remixer)
-            and a.remixer != b.remixer
-        )

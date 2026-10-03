@@ -23,6 +23,8 @@ dependencies = [
     "argon2-cffi>=23.1",
     "cryptography>=43",
     "email-validator>=2.2",
+    "yandex-music>=3.0.0",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
@@ -74,9 +76,19 @@ plugins = ["pydantic.mypy"]
 module = "arq.*"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# yandex-music без py.typed — модели библиотеки в адаптере идут как Any.
+module = "yandex_music.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# live — тесты на настоящей площадке с токеном из .env; только явно: pytest -m live
+addopts = "-m 'not live'"
+markers = [
+    "live: обращается к настоящей площадке (нужен токен в .env, запуск: pytest -m live)",
+]
 
 [tool.importlinter]
 root_package = "syncplaylists"
@@ -100,7 +112,7 @@ source_modules = [
 forbidden_modules = [
     "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
     "arq", "pydantic_settings", "authlib", "boto3", "aioboto3",
-    "argon2", "cryptography", "email_validator",
+    "argon2", "cryptography", "email_validator", "yandex_music", "aiohttp",
 ]
 
 [[tool.importlinter.contracts]]
@@ -167,7 +179,7 @@ source_modules = [
 forbidden_modules = [
     "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
     "arq", "pydantic_settings", "authlib", "boto3", "aioboto3",
-    "argon2", "cryptography", "email_validator",
+    "argon2", "cryptography", "email_validator", "yandex_music", "aiohttp",
     "syncplaylists.modules.identity.infrastructure",
     "syncplaylists.modules.identity.presentation",
     "syncplaylists.modules.accounts.infrastructure",

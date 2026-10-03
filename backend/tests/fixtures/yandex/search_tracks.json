@@ -1,0 +1,49 @@
+{
+  "invocationInfo": {"hostname": "music-api", "req-id": "scrubbed", "exec-duration-millis": 60},
+  "result": {
+    "searchRequestId": "scrubbed",
+    "text": "the weeknd starboy",
+    "type": "track",
+    "page": 0,
+    "perPage": 10,
+    "misspellCorrected": false,
+    "nocorrect": false,
+    "tracks": {
+      "type": "track",
+      "total": 3,
+      "perPage": 10,
+      "order": 0,
+      "results": [
+        {
+          "id": "57704",
+          "title": "Starboy",
+          "available": true,
+          "artists": [
+            {"id": 4611844, "name": "The Weeknd"},
+            {"id": 9367, "name": "Daft Punk"}
+          ],
+          "albums": [{"id": 4766, "title": "Starboy"}],
+          "coverUri": "avatars.yandex.net/get-music-content/49876/9ab1c2d3.a.4766-1/%%",
+          "durationMs": 230000
+        },
+        {
+          "id": "88001",
+          "title": "Starboy",
+          "version": "Kygo Remix",
+          "available": true,
+          "artists": [{"id": 4611844, "name": "The Weeknd"}],
+          "albums": [{"id": 8800, "title": "Starboy (Remixes)"}],
+          "durationMs": 245000
+        },
+        {
+          "id": "88002",
+          "title": "Starboy",
+          "available": false,
+          "artists": [{"id": 4611844, "name": "The Weeknd"}],
+          "albums": [{"id": 8801, "title": "Region locked"}],
+          "durationMs": 230000
+        }
+      ]
+    }
+  }
+}

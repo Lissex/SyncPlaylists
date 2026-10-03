@@ -1,0 +1,21 @@
+{
+  "invocationInfo": {"hostname": "music-api", "req-id": "scrubbed", "exec-duration-millis": 12},
+  "result": {
+    "account": {
+      "now": "2026-10-03T12:00:00+00:00",
+      "uid": 123456789,
+      "login": "test.user",
+      "region": 225,
+      "fullName": "Test User",
+      "secondName": "User",
+      "firstName": "Test",
+      "displayName": "Test User",
+      "serviceAvailable": true,
+      "hostedUser": false,
+      "registeredAt": "2015-01-01T00:00:00+00:00"
+    },
+    "permissions": {"until": "2027-01-01T00:00:00+00:00", "values": ["landing-play"], "default": []},
+    "subscription": {"hadAnySubscription": true, "canStartTrial": false, "mcdonalds": false},
+    "plus": {"hasPlus": true, "isTutorialCompleted": true}
+  }
+}

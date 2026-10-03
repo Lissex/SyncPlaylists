@@ -70,6 +70,9 @@ def settings(migrated_postgres_url: str, redis_url: str) -> Settings:
         redis={"dsn": redis_url},
         security=TEST_SECURITY,
         oauth={"fake_platforms": [Platform.SPOTIFY]},
+        # Яндекс — настоящий адаптер (его HTTP в тестах подменяет respx), остальные
+        # площадки — фейк.
+        platforms={"fake": [Platform.VK, Platform.SPOTIFY, Platform.SOUNDCLOUD, Platform.YTMUSIC]},
     )
 
 

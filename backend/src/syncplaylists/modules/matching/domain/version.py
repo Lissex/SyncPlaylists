@@ -98,3 +98,33 @@ def extract_version(text: str) -> tuple[str, VersionInfo]:
             return _WHITESPACE_PATTERN.sub(" ", remaining).strip(), VersionInfo(tag)
 
     return text, VersionInfo()
+
+
+def versions_match(a: VersionInfo, b: VersionInfo) -> bool:
+    """Одна и та же версия записи. Ремикс без имени ремиксера с одной из сторон не
+    считается несовпадением — площадки часто пишут просто "(Remix)"."""
+    if a.tag != b.tag:
+        return False
+    return not (
+        a.tag is VersionTag.REMIX and bool(a.remixer) and bool(b.remixer) and a.remixer != b.remixer
+    )
+
+
+_SEARCH_SUFFIXES: Final[dict[VersionTag, str]] = {
+    VersionTag.LIVE: "live",
+    VersionTag.ACOUSTIC: "acoustic",
+    VersionTag.SPED_UP: "sped up",
+    VersionTag.SLOWED: "slowed",
+    VersionTag.INSTRUMENTAL: "instrumental",
+    VersionTag.EXTENDED: "extended mix",
+    VersionTag.RADIO_EDIT: "radio edit",
+}
+
+
+def version_search_suffix(version: VersionInfo) -> str | None:
+    """Что дописать к поисковому запросу, чтобы найти на площадке ту же версию.
+    None — для оригинала и версий, которые поиском по слову не находятся (cover,
+    karaoke: там важнее исполнитель, а не пометка)."""
+    if version.tag is VersionTag.REMIX:
+        return f"{version.remixer} remix" if version.remixer else "remix"
+    return _SEARCH_SUFFIXES.get(version.tag)

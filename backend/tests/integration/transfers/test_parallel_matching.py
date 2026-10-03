@@ -59,7 +59,7 @@ async def _create_user_with_accounts(container: AsyncContainer) -> UUID:
         await session.commit()
         connect = await request.get(ConnectAccountUseCase)
         for platform in (Platform.VK, Platform.SPOTIFY):
-            await connect.execute(
+            await connect.connect_verified(
                 user_id=user_id,
                 platform=platform,
                 transport=Transport.UNOFFICIAL,

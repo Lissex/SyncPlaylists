@@ -5,6 +5,7 @@ from syncplaylists.integrations.platforms.fake.catalog import DEMO_TRACKS, DemoT
 from syncplaylists.shared_kernel.domain.search import (
     AddResult,
     InsertOrder,
+    PlaylistInfo,
     PlaylistSnapshot,
     TrackCandidate,
     TrackQuery,
@@ -26,8 +27,11 @@ class FakeMusicPlatformGateway:
     Ничего не персистирует: add_tracks/add_to_library только отвечают "успех".
     """
 
-    def __init__(self, platform: Platform) -> None:
+    def __init__(self, platform: Platform, owner_external_id: str) -> None:
         self.platform = platform
+        # Любой плейлист фейка «принадлежит» аккаунту, от имени которого шлюз создан:
+        # проверка права записи в ExistingPlaylist проходит.
+        self._owner_external_id = owner_external_id
 
     def _candidate(self, track: DemoTrack) -> TrackCandidate:
         return TrackCandidate(
@@ -56,6 +60,18 @@ class FakeMusicPlatformGateway:
             description=None,
             tracks=tuple(self._candidate(t) for t in DEMO_TRACKS),
         )
+
+    async def playlist_info(self, ref: PlaylistRef) -> PlaylistInfo:
+        return PlaylistInfo(
+            ref=ref,
+            title="Demo playlist",
+            description=None,
+            owner_external_id=self._owner_external_id,
+            track_count=len(DEMO_TRACKS),
+        )
+
+    async def is_own_library(self, ref: PlaylistRef) -> bool:
+        return False
 
     async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:
         return PlaylistRef(self.platform, f"created-{uuid4().hex[:8]}")

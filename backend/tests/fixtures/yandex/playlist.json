@@ -1,0 +1,63 @@
+{
+  "invocationInfo": {"hostname": "music-api", "req-id": "scrubbed", "exec-duration-millis": 40},
+  "result": {
+    "owner": {"uid": 123456789, "login": "test.user", "name": "test.user", "sex": "unknown", "verified": false},
+    "playlistUuid": "lk.11111111-2222-3333-4444-555555555555",
+    "available": true,
+    "uid": 123456789,
+    "kind": 1001,
+    "title": "Дорога",
+    "description": "Для машины",
+    "revision": 7,
+    "snapshot": 7,
+    "trackCount": 4,
+    "visibility": "public",
+    "collective": false,
+    "created": "2024-05-01T10:00:00+00:00",
+    "modified": "2026-09-01T10:00:00+00:00",
+    "durationMs": 900000,
+    "tracks": [
+      {
+        "id": 57703,
+        "albumId": 4766,
+        "timestamp": "2026-09-01T10:00:00+00:00",
+        "originalIndex": 0,
+        "track": {
+          "id": "57703",
+          "realId": "57703",
+          "title": "Starboy",
+          "version": "Live",
+          "available": true,
+          "availableForPremiumUsers": true,
+          "lyricsAvailable": false,
+          "type": "music",
+          "trackSource": "OWN",
+          "artists": [
+            {"id": 4611844, "name": "The Weeknd", "various": false, "composer": false},
+            {"id": 9367, "name": "Daft Punk", "various": false, "composer": false}
+          ],
+          "albums": [{"id": 4766, "title": "Starboy", "year": 2016, "trackCount": 18}],
+          "coverUri": "avatars.yandex.net/get-music-content/49876/9ab1c2d3.a.4766-1/%%",
+          "ogImage": "avatars.yandex.net/get-music-content/49876/9ab1c2d3.a.4766-1/%%",
+          "durationMs": 260000
+        }
+      },
+      {"id": 33311009, "albumId": 4006131, "timestamp": "2026-09-01T10:01:00+00:00", "originalIndex": 1},
+      {
+        "id": 111,
+        "albumId": 222,
+        "timestamp": "2026-09-01T10:02:00+00:00",
+        "originalIndex": 2,
+        "track": {
+          "id": "111",
+          "title": "Изъятый трек",
+          "available": false,
+          "artists": [{"id": 1, "name": "Кто-то"}],
+          "albums": [{"id": 222, "title": "Альбом"}],
+          "durationMs": 180000
+        }
+      },
+      {"id": 999001, "timestamp": "2026-09-01T10:03:00+00:00", "originalIndex": 3}
+    ]
+  }
+}

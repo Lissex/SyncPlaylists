@@ -23,6 +23,7 @@ from syncplaylists.modules.accounts.infrastructure.repository import (
 from syncplaylists.modules.transfers.infrastructure.orm import TransferOrm
 from syncplaylists.shared_kernel.application.ports import PlatformCredentials
 from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
+from tests.fakes.accounts import StubProfileRegistry
 
 
 def _account(user_id: UUID, external_user_id: str = "vk-1") -> ConnectedAccount:
@@ -160,7 +161,9 @@ async def test_update_credentials_survives_rollback_of_outer_transaction(
         await repo.add(account)
         await session.commit()  # аккаунт и пользователь видны другим сессиям
 
-        service = AccountAccessService(repo, cipher, SqlAccountCredentialsWriter(factory))
+        service = AccountAccessService(
+            repo, cipher, SqlAccountCredentialsWriter(factory), StubProfileRegistry()
+        )
         # Внешняя «транзакция переноса»: что-то пишет, адаптер обновляет токены, потом
         # перенос падает и откатывается. (Строку connected_accounts внешняя транзакция
         # не трогает — иначе FOR UPDATE во writer ждал бы её лока.)
@@ -186,7 +189,10 @@ async def test_update_credentials_survives_rollback_of_outer_transaction(
 
         async with factory() as fresh:
             access = await AccountAccessService(
-                SqlConnectedAccountRepository(fresh), cipher, SqlAccountCredentialsWriter(factory)
+                SqlConnectedAccountRepository(fresh),
+                cipher,
+                SqlAccountCredentialsWriter(factory),
+                StubProfileRegistry(),
             ).get(user_id, account.id)
             rolled_back_transfer = await fresh.get(TransferOrm, transfer_id)
         assert access.credentials.access_token == "rotated"

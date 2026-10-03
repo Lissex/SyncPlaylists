@@ -254,6 +254,21 @@ class SoundCloudSettings(BaseModel):
     client_secret: SecretStr
     redirect_uri: str
 
+class RateLimitSettings(BaseModel):      # этап 4b: token bucket на (площадка, аккаунт)
+    capacity: int = 5
+    refill_per_second: float = 3.0
+    max_wait_seconds: float = 10.0       # дольше — PlatformRateLimitedError → повтор задачи
+
+class YandexSettings(BaseModel):         # этап 4b; секретов нет — токены лежат в БД
+    rate_limit: RateLimitSettings = RateLimitSettings()
+    request_timeout_seconds: float = 15.0
+    batch_size: int = 100                # догрузка /tracks и пачки записи
+
+class PlatformsSettings(BaseModel):      # этап 4b
+    fake: list[Platform] = []            # площадки на in-memory фейке (dev/тесты)
+    yandex: YandexSettings = YandexSettings()
+    link_expander_timeout_seconds: float = 5.0
+
 class RecognitionSettings(BaseModel):
     shazam_enabled: bool = True
     acrcloud_host: str | None = None
@@ -273,6 +288,7 @@ class Settings(BaseSettings):
     security: SecuritySettings
     cors: CorsSettings = CorsSettings()
     oauth: OAuthSettings = OAuthSettings()
+    platforms: PlatformsSettings = PlatformsSettings()
     spotify: SpotifySettings
     soundcloud: SoundCloudSettings
     recognition: RecognitionSettings = RecognitionSettings()
@@ -315,6 +331,31 @@ TrackDestination  = ExistingPlaylist(ref: PlaylistRef)
 Ссылки разбирает доменный сервис **`LinkResolver`** (набор парсеров по площадкам, короткие ссылки
 раскрываются через порт `UrlExpander`) → `PlaylistRef`.
 
+**Реализовано на этапе 4b** (`shared_kernel/domain/links.py`): `LinkResolver.resolve(raw)` →
+`PlaylistLink(ref) | LibraryLink(platform)`. Лежит в `shared_kernel`, потому что ссылки нужны
+и transfers, и (дальше) backups/library_tools; порт `UrlExpander` — в `shared_kernel/domain/ports.py`,
+т.к. резолвер (домен) зовёт его сам. Парсеры — чистые regex + `urllib.parse`:
+
+| Площадка | Форматы | `external_id` |
+|---|---|---|
+| Яндекс | `music.yandex.{ru,com,by,kz,uz}`, `next.music.yandex.ru`: `/users/<login>/playlists/<kind>`, `/playlists/<uuid>` | `"<login>:<kind>"` или `lk.…`/`ar.…` |
+| Spotify | `open.spotify.com/[intl-xx/][user/x/]playlist/<id22>`, `spotify:playlist:<id>`; `/collection/tracks` → медиатека | id |
+| VK | `vk.{com,ru}`, `m.vk.*`: `/music/playlist|album/…`, `/audio_playlist…`, `?z=audio_playlist…`, `?act=audio_playlist…&access_hash=` | `"<owner>_<id>[_<hash>]"` |
+| SoundCloud | `[m.]soundcloud.com/<user>/sets/<slug>[/s-<secret>]`; `/you/likes` → медиатека; `/<user>/likes` | путь |
+| YT Music | `music.youtube.com`, `youtube.com`, `youtu.be`: `list=`, `/browse/VL…`; `LM` → медиатека; `RD…` (миксы) — отказ | id без `VL` |
+
+Резолвер извлекает ссылку из текста «Поделиться», отбрасывает трекинговые параметры, отвергает
+альбомы/треки (`UnsupportedLinkError(reason)` с машиночитаемой причиной). Короткие ссылки
+(`vk.cc`, `on.soundcloud.com`, `spotify.link`, `spoti.fi`, `soundcloud.app.goo.gl`) раскрывает
+`HttpxUrlExpander` (`infrastructure/http`): **запросы только к хостам-сокращателям из allowlist**,
+редиректы вручную, ≤ 5 переходов; как только `Location` ведёт на любой другой хост — остановка
+без запроса туда (защита от SSRF), дальше решает парсер.
+
+Поддерживается ли площадка адаптером и не «своя» ли это медиатека, решает application:
+`transfers.application.links.ResolvePlaylistLinkUseCase`. Ссылка `users/<login>/playlists/3`
+(«Мне нравится» Яндекса) становится медиатекой, только если `gateway.is_own_library(ref)` —
+login/uid совпадает с подключённым аккаунтом пользователя; чужая — обычный плейлист.
+
 ### Агрегат `Transfer`
 ```
 Transfer (root)
@@ -350,11 +391,14 @@ acoustic | sped_up | slowed | cover | instrumental | karaoke | extended | radio_
 `MatchScorer` ограничивает результат потолком `UNCERTAIN`, если версии источника и кандидата не
 совпадают (разный тег или разные ремиксеры) — даже при идеальном совпадении текста и длительности.
 
-**Задел на этап адаптеров площадок:** при несовпадении версий `FuzzySearchStrategy` сейчас просто
-выставляет `UNCERTAIN` на лучшего найденного кандидата. Когда появятся реальные адаптеры (этап 4),
-пайплайн должен сначала **отдельно поискать на целевой площадке ту же версию** (ту же live-запись,
-того же ремиксера) — и только если её там нет, предлагать оригинал как `UNCERTAIN` для ручного
-подтверждения, а не молча брать первый попавшийся вариант с другой версией.
+**Поиск той же версии (реализовано на этапе 4b).** Если версия источника не `original`, а среди
+результатов первого поиска нет кандидата той же версии (`versions_match`: тот же тег; у ремиксов —
+тот же ремиксер, если он указан с обеих сторон), `FuzzySearchStrategy` делает **второй запрос**:
+очищенное название + `version_search_suffix` (`live`, `<remixer> remix`, `acoustic`, `sped up`,
+`slowed`, `instrumental`, `extended mix`, `radio edit`; для cover/karaoke суффикса нет).
+Результаты объединяются (найденные вторым запросом — первыми в списке кандидатов для ручного
+выбора). Кандидат той же версии с AUTO → MATCHED; иначе лучший — оригинал под потолком скорера →
+`UNCERTAIN` на ручное подтверждение.
 
 ---
 
@@ -395,8 +439,23 @@ class MusicPlatformGateway(Protocol):
     def get_library(self) -> AsyncIterator[TrackCandidate]: ...
     async def add_to_library(self, tracks: Sequence[ExternalTrackRef]) -> AddResult: ...
     def library_insert_order(self) -> InsertOrder: ...                     # TOP | BOTTOM — для сохранения порядка
+    # с этапа 4b:
+    async def playlist_info(self, ref: PlaylistRef) -> PlaylistInfo: ...   # шапка без треков, owner_external_id
+    async def is_own_library(self, ref: PlaylistRef) -> bool: ...          # ссылка на «свою» медиатеку
+    # Все методы бросают ошибки shared_kernel/domain/errors.py (см. ниже).
 
-class UrlExpander(Protocol):
+# TrackCandidate с этапа 4b: + artists: tuple[str, ...], cover_url: str | None.
+# Версию отдельным полем не заводим: адаптер склеивает её в title ("Starboy (Live)"),
+# matching извлекает её оттуда же, откуда и у остальных площадок.
+
+# shared_kernel/domain/errors.py (этап 4b) — контракт шлюза:
+# PlatformAuthError (401, токен не принят) | PlatformRateLimitedError(retry_after_seconds)
+# | PlatformUnavailableError (сеть/5xx/таймаут — временная) | PlatformRegionError (гео)
+# | PlaylistNotFoundError | PlaylistNotWritableError (чужой плейлист, 403 на запись —
+# аккаунт НЕ протух); PlatformNotSupportedError, UnsupportedLinkError(reason).
+
+class UrlExpander(Protocol):                      # shared_kernel/domain/ports.py
+    def is_short_link(self, host: str) -> bool: ...
     async def expand(self, url: str) -> str: ...   # раскрытие коротких ссылок
 
 # enrichment
@@ -426,22 +485,33 @@ class PlatformCredentials:           # расшифрованные токены
 @dataclass(frozen=True)
 class AccountAccess:
     account_id: UUID; user_id: UUID; platform: Platform; transport: Transport
+    external_user_id: str                # 4b: проверен через профиль площадки
     credentials: PlatformCredentials
 
 class GatewayFactory(Protocol):
     def for_account(self, access: AccountAccess) -> MusicPlatformGateway: ...
     # выбирает транспорт по access.transport: official / unofficial / extension
+    def supports(self, platform: Platform) -> bool: ...   # 4b; иначе PlatformNotSupportedError
+    # Реализация — integrations/platforms/registry.py: PlatformGatewayFactory(площадка → сборщик);
+    # что чем обслуживается (Яндекс — настоящий адаптер, platforms.fake — фейк), решает container.py.
+
+class PlatformRateLimiter(Protocol):     # 4b; RedisTokenBucketLimiter (infrastructure/ratelimit)
+    async def acquire(self, platform: Platform, account_id: UUID) -> None: ...
 
 class AccountAccessProvider(Protocol):   # реализация — accounts.application.AccountAccessService
     async def get(self, user_id: UUID, account_id: UUID) -> AccountAccess: ...
     async def for_platform(self, user_id: UUID, platform: Platform) -> AccountAccess: ...
     async def update_credentials(self, account_id: UUID, credentials: PlatformCredentials) -> None: ...
+    async def report_auth_failure(self, account_id: UUID) -> bool: ...   # 4b, см. 11d
     # все методы бросают AccountNotAvailableError (нет / чужой / отключён / не та площадка)
 
 # accounts/application/ports.py
 class TokenCipher(Protocol):         # реализация — infrastructure/security/aes_gcm.py
     def encrypt(self, plaintext: str, *, aad: bytes) -> bytes: ...
     def decrypt(self, ciphertext: bytes, *, aad: bytes) -> str: ...
+class PlatformProfileFetcher(Protocol):   # 4b: профиль по токену; Yandex/FakeProfileFetcher
+    platform: Platform
+    async def fetch(self, credentials: PlatformCredentials) -> PlatformProfile: ...  # external_user_id, display_name
 class OAuthProvider(Protocol):       # пока только FakeOAuthProvider (integrations/platforms/fake)
     platform: Platform
     def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str: ...
@@ -550,7 +620,7 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 | `write` | создание плейлиста, добавление пачками | 1 на аккаунт |
 | `ru` | всё, что требует РФ-IP (VK, Яндекс) — отдельный воркер | по площадке |
 
-- Rate limit: token bucket в Redis на `(platform, account)`.
+- Rate limit: token bucket в Redis на `(platform, account)` (реализован на этапе 4b, см. 11d).
 - Капча VK → `CaptchaRequired` → фронт показывает картинку → `resume`.
 - Аудио-фрагменты не храним: скачали → распознали → удалили. Результаты кэшируем в `recognitions`.
 
@@ -695,8 +765,8 @@ concurrency/rate-limit по площадкам, описанные в табли
 - Сессии с фиксированным TTL, без sliding-продления при активности.
 - Сам refresh OAuth-токенов (по `expires_at`) — задача адаптеров 4b; порт `update_credentials` готов.
 - Нет ротации ключа AES; под неё оставлен байт версии в формате шифротекста.
-- `external_user_id` при ручном подключении токеном не проверяется у площадки. Проверка через
-  профиль площадки появится с адаптерами.
+- ~~`external_user_id` при ручном подключении токеном не проверяется у площадки.~~ Закрыто на
+  этапе 4b: id и имя берутся из профиля площадки (см. 11d).
 - CSRF закрывается сочетанием SameSite=Lax, JSON-тел (cross-origin JSON требует preflight) и CORS-allowlist.
   Отдельного CSRF-токена нет.
 - За обратным прокси нужен uvicorn `--proxy-headers --forwarded-allow-ips` (этап «Прод»), иначе
@@ -761,6 +831,81 @@ concurrency/rate-limit по площадкам, описанные в табли
 а `transfers.created_at/updated_at` стали NOT NULL новой миграцией `9a2f6c1d4e57`
 (backfill + SET NOT NULL).
 
+### 11d. Этап 4b-1 (LinkResolver + Яндекс Музыка) — что сделано и какой долг оставлен
+
+**Сделано**
+- **LinkResolver** для всех 5 площадок + раскрытие коротких ссылок без SSRF (раздел 7).
+  `POST /transfers` принимает `{"kind": "link", "url": …}` и в source, и в destination
+  (существующий плейлист или медиатека); `POST /links/resolve` — предпросмотр для фронта
+  (площадка, плейлист/медиатека, название и число треков, если аккаунт подключён). Ошибки — 422
+  с `detail.code` (`not_a_playlist`, `unknown_host`, `mix_not_supported`, `platform_not_supported`,
+  `account_not_connected`, `playlist_not_found`, `playlist_not_writable`), площадка недоступна — 503.
+  Площадка без адаптера разбирается, но перенос отвергается (`GatewayFactory.supports`).
+- **YandexGateway** (`integrations/platforms/yandex/`) поверх `yandex-music` 3.x. Встроенный
+  aiohttp-транспорт библиотеки заменён `HttpxYandexRequest` (подкласс её `Request`): один
+  `httpx.AsyncClient` на процесс, token bucket перед **каждым** HTTP-запросом (включая догрузку
+  треков), свой маппинг HTTP-кодов (библиотека сливает 401 и 403 в одно), respx в тестах.
+  - id трека — `"<track>:<album>"` или `"<track>"` (трек без альбома допустим);
+    `YandexTrackId.parse` — единственное место разбора. Дубли — по track_id без альбома.
+  - Плейлист — `"<login|uid>:<kind>"` или uuid; созданный нами — `"<uid>:<kind>"`, приватный.
+  - Запись в плейлист — diff к ревизии пачками; `wrong-revision` → перечитать и повторить (≤ 3);
+    треки, которые уже есть в назначении, не добавляются и считаются добавленными (повтор
+    `run_write` после сбоя не задвоит). Трек без альбома вставляется по одному: отказ площадки →
+    `AddResult.failed`, а не падение пачки.
+  - «Мне нравится» — `library_insert_order = TOP`. **Порядок внутри пачки
+    `users_likes_tracks_add` проверен live-тестом** (`test_batch_like_order_is_reported`,
+    3 прогона, 2026-10-03, две пачки с немонотонными id — то есть это не сортировка по id):
+    пачка ложится целиком, **первый трек пачки — сверху**, следующая пачка — над предыдущей.
+    Поэтому `add_to_library` пишет пачками по `batch_size`, а каждую пачку отправляет
+    развёрнутой: последний трек списка (`WriteTransferUseCase` уже развернул его под
+    `InsertOrder.TOP`) оказывается на самом верху. Если Яндекс поменяет поведение —
+    `library_batch_preserves_order=False` включает запасной режим «по одному».
+  - ISRC у Яндекса нет: `search_by_isrc` → `[]`, работает FuzzySearchStrategy.
+    Недоступные треки (`available=false`) при чтении пропускаются (в лог — счётчик).
+- **Подключение по токену проверяет токен** (`PlatformProfileFetcher`): `external_user_id` и
+  `display_name` — из профиля площадки (`/account/status`), присланные клиентом не принимаются.
+  Не принят → 422 `invalid_token`; для площадки без проверки профиля подключение по токену
+  отвергается (`platform_not_supported`).
+- **401 ≠ 403.** 401 → `PlatformAuthError` → `AccountAccessProvider.report_auth_failure`: токен
+  **один раз перепроверяется** через профиль; EXPIRED и `FAILED("account_expired")` — только если
+  профиль тоже ответил 401. Иначе ошибка считается разовой и идёт retry. 403 на запись →
+  `PlaylistNotWritableError` → `FAILED("playlist_not_writable")`, аккаунт не трогаем; 403 на чтение
+  → `PlaylistNotFoundError`. `StartTransferUseCase` для `ExistingPlaylist` заранее сверяет
+  `playlist_info().owner_external_id` с uid аккаунта → 422 `playlist_not_writable`.
+- **Ошибки площадки в переносах.** Терминальные (протух токен, плейлист не найден/чужой, гео,
+  площадка не поддерживается) → `FAILED(<reason>)` без исключения из таска. Временные
+  (`PlatformUnavailableError`, `PlatformRateLimitedError`, неподтверждённый 401) пробрасываются:
+  `run_match` — прежний retry; `run_transfer`/`run_write` — новый `with_platform_retries`
+  (≤ `PLATFORM_MAX_TRIES = 3`, задержка не меньше `retry_after`), после последней попытки
+  `FailTransferUseCase` → `FAILED("platform_unavailable")` — иначе перенос навсегда остался бы
+  в QUEUED (sweeper гонял бы его по кругу) или WRITING (sweeper его не трогает).
+- **Token bucket** (`infrastructure/ratelimit/redis_token_bucket.py`): Lua-скрипт, время из Redis
+  `TIME`, ключ `ratelimit:tb:<platform>:<account_id>` с TTL. С резервированием: токены уходят в
+  минус, каждый ждущий получает своё время ожидания (воркеры не просыпаются пачкой); если ждать
+  дольше `max_wait` — разрешение не выдаётся и не резервируется, `PlatformRateLimitedError` →
+  повтор задачи. Fixed-window лимитер входа (11b) остался как был.
+- Тесты: unit (парсеры ссылок на реальных форматах, версии, ошибки переносов, accounts);
+  integration без Docker — адаптер Яндекса и раскрытие ссылок на respx/записанных ответах
+  (`tests/fixtures/yandex`); с Docker — token bucket на Redis, API. Live — `pytest -m live` на
+  токене из `.env` (`YANDEX_LIVE_TOKEN`), без токена пропускаются; по умолчанию не запускаются
+  (`addopts = -m 'not live'`). Сверка формы ответов — `tests/tools/record_yandex.py` (пишет
+  вычищенные ответы в `tests/fixtures/yandex/recorded/`, она в .gitignore).
+
+**Долги**
+- Фикстуры `tests/fixtures/yandex/*.json` составлены по формату API вручную; сверены с
+  `recorded/` (2026-10-03): набор используемых полей трека/лайков/профиля совпадает. Поиск
+  без `page` API отвергает (400 `validate`) — библиотека его передаёт, рекордер исправлен.
+- `create_playlist` до commit — по-прежнему без саги (11a): если транзакция `run_write` после
+  создания плейлиста откатится, повтор создаст второй плейлист.
+- Как Яндекс отвечает при гео-блоке, точно не проверено: 451 → `PlatformRegionError`; если окажется
+  другой код/тело — поправить `transport._error_for`. API Яндекса может требовать РФ-IP
+  (воркер `ru`, раздел 11) — пока все запросы идут с одного процесса.
+- `playlist_info` у Яндекса читает плейлист целиком (отдельного лёгкого эндпоинта шапки нет).
+- `get_library` читает «Мне нравится» одним запросом id + догрузка пачками; постраничного
+  чтения через `cursor` переноса (11a) по-прежнему нет.
+- Остальные площадки только парсятся; адаптеры — SoundCloud → YT Music → VK → Spotify (4b-2…).
+- Rate limit настроен только для Яндекса; у фейка лимита нет.
+
 ---
 
 ## 12. Фронтенд и расширение
@@ -818,7 +963,8 @@ concurrency/rate-limit по площадкам, описанные в табли
    - 4a. **identity + accounts** (сделано): пользователи, сессии, подключённые аккаунты,
      шифрование токенов, OAuth-каркас, `GatewayFactory.for_account` (детали и долги — 11b);
    - 4b. адаптеры площадок: Яндекс → SoundCloud → YT Music → VK → Spotify (чтение) +
-     настоящие OAuth-клиенты.
+     настоящие OAuth-клиенты. **4b-1 (сделано):** LinkResolver всех площадок, YandexGateway,
+     token bucket, проверка токена через профиль, поиск той же версии (детали и долги — 11d).
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).

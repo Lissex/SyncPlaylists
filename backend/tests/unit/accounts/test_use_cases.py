@@ -16,12 +16,17 @@ from syncplaylists.modules.accounts.application.use_cases import (
 from syncplaylists.modules.accounts.domain.errors import (
     AccountAlreadyConnectedError,
     AccountNotFoundError,
+    InvalidPlatformTokenError,
 )
 from syncplaylists.modules.accounts.domain.value_objects import AccountStatus
 from syncplaylists.shared_kernel.application.ports import (
     AccountAccess,
     AccountNotAvailableError,
     PlatformCredentials,
+)
+from syncplaylists.shared_kernel.domain.errors import (
+    PlatformNotSupportedError,
+    PlatformUnavailableError,
 )
 from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
 from tests.fakes import FakeUnitOfWork
@@ -32,6 +37,7 @@ from tests.fakes.accounts import (
     InMemoryCredentialsWriter,
     InMemoryOAuthStateStore,
     StubOAuthProvider,
+    StubProfileRegistry,
 )
 
 _CONFIG = OAuthFlowConfig(callback_base_url="http://api.test/", state_ttl_seconds=600)
@@ -46,13 +52,14 @@ class Env:
         self.states = InMemoryOAuthStateStore()
         self.provider = StubOAuthProvider(Platform.SPOTIFY)
         self.registry = DictRegistry(self.provider)
+        self.profiles = StubProfileRegistry()
         self.user_id = uuid4()
 
     def connect_use_case(self) -> ConnectAccountUseCase:
-        return ConnectAccountUseCase(self.uow, self.accounts, self.cipher)
+        return ConnectAccountUseCase(self.uow, self.accounts, self.cipher, self.profiles)
 
     def access(self) -> AccountAccessService:
-        return AccountAccessService(self.accounts, self.cipher, self.writer)
+        return AccountAccessService(self.accounts, self.cipher, self.writer, self.profiles)
 
     async def connect(
         self,
@@ -61,12 +68,12 @@ class Env:
         user_id: UUID | None = None,
         access_token: str = "secret-access",
     ) -> UUID:
+        # Площадка «знает» этот токен и отдаёт по нему профиль external_user_id.
+        self.profiles.fetcher(platform).accept(access_token, external_user_id)
         dto = await self.connect_use_case().execute(
             user_id=user_id or self.user_id,
             platform=platform,
             transport=Transport.UNOFFICIAL,
-            external_user_id=external_user_id,
-            display_name="Alice",
             credentials=PlatformCredentials(access_token=access_token, refresh_token="secret-r"),
         )
         return dto.id
@@ -213,11 +220,126 @@ def test_account_access_repr_hides_tokens() -> None:
         user_id=uuid4(),
         platform=Platform.VK,
         transport=Transport.UNOFFICIAL,
+        external_user_id="vk-1",
         credentials=PlatformCredentials(access_token="top-secret", refresh_token="also-secret"),
     )
 
     assert "top-secret" not in repr(access)
     assert "also-secret" not in repr(access)
+
+
+# --- подключение по токену: проверка через профиль площадки ---
+
+
+async def test_connect_takes_external_id_and_name_from_platform_profile() -> None:
+    env = Env()
+    env.profiles.fetcher(Platform.YANDEX).accept("ya-token", "12345", "Иван")
+
+    dto = await env.connect_use_case().execute(
+        user_id=env.user_id,
+        platform=Platform.YANDEX,
+        transport=Transport.UNOFFICIAL,
+        credentials=PlatformCredentials(access_token="ya-token"),
+    )
+
+    assert dto.external_user_id == "12345"
+    assert dto.display_name == "Иван"
+
+
+async def test_connect_with_rejected_token_is_invalid_and_stores_nothing() -> None:
+    env = Env()
+    env.profiles.fetcher(Platform.YANDEX)  # площадка есть, но токен ей неизвестен
+
+    with pytest.raises(InvalidPlatformTokenError):
+        await env.connect_use_case().execute(
+            user_id=env.user_id,
+            platform=Platform.YANDEX,
+            transport=Transport.UNOFFICIAL,
+            credentials=PlatformCredentials(access_token="bad"),
+        )
+    assert env.accounts.storage == {}
+
+
+async def test_connect_without_profile_check_for_platform_is_not_supported() -> None:
+    env = Env()
+
+    with pytest.raises(PlatformNotSupportedError):
+        await env.connect_use_case().execute(
+            user_id=env.user_id,
+            platform=Platform.SOUNDCLOUD,
+            transport=Transport.UNOFFICIAL,
+            credentials=PlatformCredentials(access_token="t"),
+        )
+
+
+async def test_connect_when_platform_unavailable_propagates_platform_error() -> None:
+    env = Env()
+    env.profiles.fetcher(Platform.YANDEX).failure = PlatformUnavailableError(Platform.YANDEX)
+
+    with pytest.raises(PlatformUnavailableError):
+        await env.connect_use_case().execute(
+            user_id=env.user_id,
+            platform=Platform.YANDEX,
+            transport=Transport.UNOFFICIAL,
+            credentials=PlatformCredentials(access_token="t"),
+        )
+
+
+async def test_access_carries_verified_external_user_id() -> None:
+    env = Env()
+    account_id = await env.connect(platform=Platform.YANDEX, external_user_id="777")
+
+    access = await env.access().get(env.user_id, account_id)
+
+    assert access.external_user_id == "777"
+
+
+# --- report_auth_failure: 401 → перепроверка → EXPIRED ---
+
+
+async def test_auth_failure_confirmed_by_profile_marks_account_expired() -> None:
+    env = Env()
+    account_id = await env.connect(access_token="ya", platform=Platform.YANDEX)
+    env.profiles.fetcher(Platform.YANDEX).revoke("ya")  # токен отозван на площадке
+
+    expired = await env.access().report_auth_failure(account_id)
+
+    assert expired is True
+    assert env.accounts.storage[account_id].status is AccountStatus.EXPIRED
+    with pytest.raises(AccountNotAvailableError):
+        await env.access().get(env.user_id, account_id)
+
+
+async def test_auth_failure_not_confirmed_by_profile_keeps_account_active() -> None:
+    env = Env()
+    account_id = await env.connect(access_token="ya", platform=Platform.YANDEX)
+
+    expired = await env.access().report_auth_failure(account_id)  # профиль отвечает
+
+    assert expired is False
+    assert env.accounts.storage[account_id].status is AccountStatus.ACTIVE
+    assert env.writer.calls == 0
+
+
+async def test_auth_failure_when_recheck_unavailable_is_treated_as_transient() -> None:
+    env = Env()
+    account_id = await env.connect(access_token="ya", platform=Platform.YANDEX)
+    env.profiles.fetcher(Platform.YANDEX).failure = PlatformUnavailableError(Platform.YANDEX)
+
+    assert await env.access().report_auth_failure(account_id) is False
+    assert env.accounts.storage[account_id].status is AccountStatus.ACTIVE
+
+
+async def test_reconnect_with_fresh_token_reactivates_expired_account() -> None:
+    env = Env()
+    account_id = await env.connect(access_token="old", platform=Platform.YANDEX)
+    env.profiles.fetcher(Platform.YANDEX).revoke("old")
+    await env.access().report_auth_failure(account_id)
+
+    again = await env.connect(access_token="new", platform=Platform.YANDEX)
+
+    assert again == account_id
+    assert env.accounts.storage[account_id].status is AccountStatus.ACTIVE
 
 
 # --- OAuth ---

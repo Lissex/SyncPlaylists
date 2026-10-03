@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from syncplaylists.modules.transfers.application.dto import TransferDto, TransferItemDto
+from syncplaylists.modules.transfers.application.links import LinkKind, ResolvedLinkDto
 from syncplaylists.modules.transfers.domain.value_objects import (
     ExistingPlaylist,
     LibraryDestination,
@@ -13,6 +14,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     TrackDestination,
     TrackSource,
 )
+from syncplaylists.shared_kernel.domain.links import MAX_LINK_LENGTH
 from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, Platform, PlaylistRef
 
 # FileSource/импорт из файла — отдельный вид источника на этапе backups, здесь не принимается.
@@ -36,8 +38,16 @@ class LibrarySourceSchema(BaseModel):
         return LibrarySource(platform=self.platform, account_id=self.account_id)
 
 
+class LinkSchema(BaseModel):
+    """Сырая ссылка от пользователя (или текст «Поделиться» со ссылкой внутри) —
+    сервер сам разберёт, плейлист это или медиатека (ResolvePlaylistLinkUseCase)."""
+
+    kind: Literal["link"] = "link"
+    url: str = Field(min_length=1, max_length=MAX_LINK_LENGTH)
+
+
 TrackSourceSchema = Annotated[
-    PlaylistSourceSchema | LibrarySourceSchema, Field(discriminator="kind")
+    PlaylistSourceSchema | LibrarySourceSchema | LinkSchema, Field(discriminator="kind")
 ]
 
 
@@ -70,7 +80,7 @@ class LibraryDestinationSchema(BaseModel):
 
 
 TrackDestinationSchema = Annotated[
-    ExistingPlaylistSchema | NewPlaylistSchema | LibraryDestinationSchema,
+    ExistingPlaylistSchema | NewPlaylistSchema | LibraryDestinationSchema | LinkSchema,
     Field(discriminator="kind"),
 ]
 
@@ -116,6 +126,8 @@ class TrackCandidateSchema(BaseModel):
     artist: str
     duration_ms: int | None = None
     isrc: str | None = None
+    artists: list[str] = []
+    cover_url: str | None = None
 
 
 class MatchResultSchema(BaseModel):
@@ -159,6 +171,8 @@ class TransferItemResponse(BaseModel):
                     artist=c.artist,
                     duration_ms=c.duration.milliseconds if c.duration else None,
                     isrc=c.isrc.value if c.isrc else None,
+                    artists=list(c.artists),
+                    cover_url=c.cover_url,
                 )
                 for c in dto.candidates
             ],
@@ -193,3 +207,27 @@ class ResolveItemRequest(BaseModel):
         if self.chosen_platform is None or self.chosen_external_id is None:
             return None
         return ExternalTrackRef(self.chosen_platform, self.chosen_external_id)
+
+
+class ResolveLinkRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=MAX_LINK_LENGTH)
+
+
+class ResolvedLinkResponse(BaseModel):
+    platform: Platform
+    kind: LinkKind
+    external_id: str | None
+    account_id: UUID | None
+    title: str | None
+    track_count: int | None
+
+    @classmethod
+    def from_dto(cls, dto: ResolvedLinkDto) -> "ResolvedLinkResponse":
+        return cls(
+            platform=dto.platform,
+            kind=dto.kind,
+            external_id=dto.external_id,
+            account_id=dto.account_id,
+            title=dto.title,
+            track_count=dto.track_count,
+        )

@@ -86,3 +86,6 @@ Thumbs.db
 # --- Logs ---
 *.log
 logs/
+
+# Ответы API площадок, записанные tests/tools/record_*.py (сверка, не фикстуры)
+backend/tests/fixtures/*/recorded/

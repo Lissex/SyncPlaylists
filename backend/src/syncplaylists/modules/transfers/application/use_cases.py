@@ -33,6 +33,14 @@ from syncplaylists.shared_kernel.application.ports import (
     TaskQueue,
     UnitOfWork,
 )
+from syncplaylists.shared_kernel.domain.errors import (
+    PlatformAuthError,
+    PlatformError,
+    PlatformNotSupportedError,
+    PlatformRegionError,
+    PlaylistNotFoundError,
+    PlaylistNotWritableError,
+)
 from syncplaylists.shared_kernel.domain.ports import MusicPlatformGateway
 from syncplaylists.shared_kernel.domain.search import InsertOrder, TrackCandidate
 from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, Platform, PlaylistRef
@@ -42,6 +50,8 @@ _RUN_MATCH = "run_match"
 _RUN_WRITE = "run_write"
 _STALE_AFTER = timedelta(minutes=10)
 _ACCOUNT_UNAVAILABLE = "account_unavailable"
+_ACCOUNT_EXPIRED = "account_expired"
+_PLATFORM_NOT_SUPPORTED = "platform_not_supported"
 
 
 class TransferNotFoundError(Exception):
@@ -94,15 +104,38 @@ async def _fail_running_transfer(
     await uow.commit()
 
 
-async def _fail_for_unavailable_account(
-    uow: UnitOfWork, transfers: TransferRepository, transfer: Transfer
+async def _fail_transfer(
+    uow: UnitOfWork,
+    transfers: TransferRepository,
+    transfer: Transfer,
+    reason: str = _ACCOUNT_UNAVAILABLE,
 ) -> None:
-    """Аккаунт отключили/он истёк посреди переноса: перенос FAILED (с событием для SSE),
-    без исключения из ARQ-таска — повтор джобы всё равно не поможет."""
-    transfer.fail(_ACCOUNT_UNAVAILABLE, datetime.now(UTC))
+    """Аккаунт отключили/он истёк, плейлист пропал и т.п. посреди переноса: перенос
+    FAILED (с событием для SSE), без исключения из ARQ-таска — повтор джобы не поможет.
+    Только вне фазы RUNNING: полный save перетёр бы items параллельных run_match."""
+    transfer.fail(reason, datetime.now(UTC))
     uow.track(transfer)
     await transfers.save(transfer)
     await uow.commit()
+
+
+async def _terminal_failure_reason(
+    accounts: AccountAccessProvider, access: AccountAccess, exc: PlatformError
+) -> str | None:
+    """Ошибка площадки → причина FAILED переноса, если повтор не поможет; None — ошибка
+    временная (сеть, rate limit, разовый 401), исключение нужно пробросить в retry."""
+    if isinstance(exc, PlatformAuthError):
+        # 401 ещё не значит «токен протух» — accounts один раз перепроверит его через
+        # профиль и только тогда переведёт аккаунт в EXPIRED.
+        expired = await accounts.report_auth_failure(access.account_id)
+        return _ACCOUNT_EXPIRED if expired else None
+    if isinstance(exc, PlaylistNotFoundError):
+        return "playlist_not_found"
+    if isinstance(exc, PlaylistNotWritableError):
+        return "playlist_not_writable"
+    if isinstance(exc, PlatformRegionError):
+        return "region_blocked"
+    return None
 
 
 class StartTransferUseCase:
@@ -112,26 +145,43 @@ class StartTransferUseCase:
         transfers: TransferRepository,
         task_queue: TaskQueue,
         accounts: AccountAccessProvider,
+        gateway_factory: GatewayFactory,
     ) -> None:
         self._uow = uow
         self._transfers = transfers
         self._task_queue = task_queue
         self._accounts = accounts
+        self._gateway_factory = gateway_factory
 
     async def execute(
         self, user_id: UUID, source: TrackSource, destination: TrackDestination
     ) -> TransferDto:
+        """Бросает AccountNotAvailableError, PlatformNotSupportedError,
+        PlaylistNotWritableError/PlaylistNotFoundError (назначение — чужой или
+        несуществующий плейлист) и прочие PlatformError."""
         transfer = Transfer(id=uuid4(), user_id=user_id, source=source, destination=destination)
+        for platform in (source_platform(source), destination_platform(destination)):
+            if platform is not None and not self._gateway_factory.supports(platform):
+                raise PlatformNotSupportedError(platform)
         # Ранняя проверка: аккаунты источника и назначения есть, свои и активны — иначе
         # AccountNotAvailableError до постановки в очередь, а не FAILED уже в воркере.
         # Сами токены дальше не передаются: воркер резолвит доступ заново по account_id.
         await _source_access(self._accounts, transfer)
-        await _destination_access(self._accounts, transfer)
+        target_access = await _destination_access(self._accounts, transfer)
+        if isinstance(destination, ExistingPlaylist):
+            await self._ensure_writable(target_access, destination.ref)
         async with self._uow as uow:
             await self._transfers.save(transfer)
             await uow.commit()
         await self._task_queue.enqueue(_RUN_TRANSFER, transfer.id)
         return TransferDto.from_domain(transfer)
+
+    async def _ensure_writable(self, access: AccountAccess, ref: PlaylistRef) -> None:
+        # Писать можно только в свой плейлист — проверяем заранее, а не узнаём по 403
+        # после часа матчинга.
+        info = await self._gateway_factory.for_account(access).playlist_info(ref)
+        if info.owner_external_id != access.external_user_id:
+            raise PlaylistNotWritableError(ref.platform, "плейлист принадлежит другому аккаунту")
 
 
 class ProcessTransferUseCase:
@@ -173,10 +223,20 @@ class ProcessTransferUseCase:
             try:
                 access = await _source_access(self._accounts, transfer)
             except AccountNotAvailableError:
-                await _fail_for_unavailable_account(uow, self._transfers, transfer)
+                await _fail_transfer(uow, self._transfers, transfer)
                 return
-            gateway = self._gateway_factory.for_account(access)
-            tracks = await self._read_source(transfer.source, gateway)
+            try:
+                gateway = self._gateway_factory.for_account(access)
+                tracks = await self._read_source(transfer.source, gateway)
+            except PlatformNotSupportedError:
+                await _fail_transfer(uow, self._transfers, transfer, _PLATFORM_NOT_SUPPORTED)
+                return
+            except PlatformError as exc:
+                reason = await _terminal_failure_reason(self._accounts, access, exc)
+                if reason is None:
+                    raise  # временная ошибка — повтор run_transfer (tasks.py)
+                await _fail_transfer(uow, self._transfers, transfer, reason)
+                return
 
             for position, candidate in enumerate(tracks):
                 await self._ensure_platform_track.execute(
@@ -269,11 +329,23 @@ class MatchTransferItemUseCase:
             )
 
             target_platform = destination_platform(transfer.destination)
-            pipeline = self._pipeline_factory.create(target_access)
-            resolve_track_match = ResolveTrackMatchUseCase(
-                pipeline, self._track_matches, self._ensure_platform_track
-            )
-            attempt = await resolve_track_match.execute(source_candidate, target_platform)
+            try:
+                pipeline = self._pipeline_factory.create(target_access)
+                resolve_track_match = ResolveTrackMatchUseCase(
+                    pipeline, self._track_matches, self._ensure_platform_track
+                )
+                attempt = await resolve_track_match.execute(source_candidate, target_platform)
+            except PlatformNotSupportedError:
+                await _fail_running_transfer(
+                    uow, self._transfers, transfer, _PLATFORM_NOT_SUPPORTED
+                )
+                return
+            except PlatformError as exc:
+                reason = await _terminal_failure_reason(self._accounts, target_access, exc)
+                if reason is None:
+                    raise  # временная ошибка — повтор run_match (tasks.py)
+                await _fail_running_transfer(uow, self._transfers, transfer, reason)
+                return
 
             if attempt.status is MatchStatus.MATCHED and attempt.match is not None:
                 item.apply_match(
@@ -320,6 +392,27 @@ class FailTransferItemUseCase:
 
         if next_step is not None:
             await self._task_queue.enqueue(next_step, transfer_id)
+
+
+class FailTransferUseCase:
+    """run_transfer/run_write исчерпали повторы на временной ошибке площадки: перенос
+    FAILED с причиной — вместо вечного QUEUED (sweeper гонял бы его по кругу) или
+    WRITING (sweeper его не трогает)."""
+
+    def __init__(self, uow: UnitOfWork, transfers: TransferRepository) -> None:
+        self._uow = uow
+        self._transfers = transfers
+
+    async def execute(self, transfer_id: UUID, reason: str) -> None:
+        async with self._uow as uow:
+            transfer = await self._transfers.get_for_update(transfer_id)
+            if transfer is None or transfer.status in (TransferStatus.DONE, TransferStatus.FAILED):
+                return
+            if transfer.status is TransferStatus.RUNNING:
+                # Идут run_match — только условный переход «шапки», без полного save.
+                await _fail_running_transfer(uow, self._transfers, transfer, reason)
+                return
+            await _fail_transfer(uow, self._transfers, transfer, reason)
 
 
 async def _load_pending_item(
@@ -433,36 +526,51 @@ class WriteTransferUseCase:
             try:
                 access = await _destination_access(self._accounts, transfer)
             except AccountNotAvailableError:
-                await _fail_for_unavailable_account(uow, self._transfers, transfer)
+                await _fail_transfer(uow, self._transfers, transfer)
                 return
-            gateway = self._gateway_factory.for_account(access)
-            destination = transfer.destination
-
-            matched_items = [i for i in transfer.items if i.status is TransferItemStatus.MATCHED]
-            if isinstance(destination, LibraryDestination) and (
-                gateway.library_insert_order() is InsertOrder.TOP
-            ):
-                # Самый свежий лайк источника должен оказаться сверху и в назначении.
-                matched_items = list(reversed(matched_items))
-            refs = [item.match.target_ref for item in matched_items if item.match is not None]
-
-            if isinstance(destination, LibraryDestination):
-                result = await gateway.add_to_library(refs)
-            else:
-                playlist_ref = await self._resolve_playlist(transfer, destination, gateway)
-                result = await gateway.add_tracks(playlist_ref, refs)
-
-            failed_refs = set(result.failed)
-            for item in matched_items:
-                if item.match is not None and item.match.target_ref in failed_refs:
-                    transfer.mark_write_failed(item.position)
-                else:
-                    transfer.mark_added(item.position)
+            try:
+                await self._write(transfer, access)
+            except PlatformNotSupportedError:
+                await _fail_transfer(uow, self._transfers, transfer, _PLATFORM_NOT_SUPPORTED)
+                return
+            except PlatformError as exc:
+                reason = await _terminal_failure_reason(self._accounts, access, exc)
+                if reason is None:
+                    # Временная ошибка — повтор run_write. Уже добавленное повтор не
+                    # задвоит: адаптеры вычитают треки, которые уже есть в назначении.
+                    raise
+                await _fail_transfer(uow, self._transfers, transfer, reason)
+                return
 
             transfer.complete(datetime.now(UTC))
             uow.track(transfer)
             await self._transfers.save(transfer)
             await uow.commit()
+
+    async def _write(self, transfer: Transfer, access: AccountAccess) -> None:
+        gateway = self._gateway_factory.for_account(access)
+        destination = transfer.destination
+
+        matched_items = [i for i in transfer.items if i.status is TransferItemStatus.MATCHED]
+        if isinstance(destination, LibraryDestination) and (
+            gateway.library_insert_order() is InsertOrder.TOP
+        ):
+            # Самый свежий лайк источника должен оказаться сверху и в назначении.
+            matched_items = list(reversed(matched_items))
+        refs = [item.match.target_ref for item in matched_items if item.match is not None]
+
+        if isinstance(destination, LibraryDestination):
+            result = await gateway.add_to_library(refs)
+        else:
+            playlist_ref = await self._resolve_playlist(transfer, destination, gateway)
+            result = await gateway.add_tracks(playlist_ref, refs)
+
+        failed_refs = set(result.failed)
+        for item in matched_items:
+            if item.match is not None and item.match.target_ref in failed_refs:
+                transfer.mark_write_failed(item.position)
+            else:
+                transfer.mark_added(item.position)
 
     @staticmethod
     async def _resolve_playlist(

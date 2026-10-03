@@ -1,0 +1,19 @@
+{
+  "invocationInfo": {"hostname": "music-api", "req-id": "scrubbed", "exec-duration-millis": 50},
+  "result": {
+    "owner": {"uid": 123456789, "login": "test.user", "name": "test.user", "sex": "unknown", "verified": false},
+    "playlistUuid": "lk.11111111-2222-3333-4444-777777777777",
+    "uid": 123456789,
+    "kind": 1077,
+    "title": "Перенесено из VK",
+    "revision": 1,
+    "snapshot": 1,
+    "trackCount": 0,
+    "visibility": "private",
+    "collective": false,
+    "created": "2026-10-03T12:00:00+00:00",
+    "modified": "2026-10-03T12:00:00+00:00",
+    "durationMs": 0,
+    "tracks": []
+  }
+}
