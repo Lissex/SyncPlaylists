@@ -181,10 +181,11 @@ def extract_version(text: str) -> tuple[str, VersionInfo]:
             remixer = _clean_remixer(match.group("remixer").strip())
             return remaining, VersionInfo(VersionTag.REMIX, remixer)
 
-    for tag, patterns in (
+    edit_checks: tuple[tuple[VersionTag, tuple[re.Pattern[str], ...]], ...] = (
         (VersionTag.RADIO_EDIT, _RADIO_EDIT_PATTERNS),
         (VersionTag.EXTENDED, _EXTENDED_PATTERNS),
-    ):
+    )
+    for tag, patterns in edit_checks:
         remaining, found = _try_remove(text, patterns)
         if found:
             return _WHITESPACE_PATTERN.sub(" ", remaining).strip(), VersionInfo(tag)
