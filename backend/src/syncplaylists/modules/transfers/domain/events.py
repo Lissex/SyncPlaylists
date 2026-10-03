@@ -55,3 +55,13 @@ class TransferCompleted(DomainEvent):
 class TransferFailed(DomainEvent):
     transfer_id: UUID
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TrackProcessingFailed(DomainEvent):
+    """Сопоставление трека не удалось и после всех повторов — item FAILED, перенос
+    продолжает остальные треки."""
+
+    transfer_id: UUID
+    position: int
+    reason: str

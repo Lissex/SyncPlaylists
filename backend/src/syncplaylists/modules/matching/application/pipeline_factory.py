@@ -3,8 +3,7 @@ from syncplaylists.modules.matching.domain.pipeline import MatchingPipeline
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
 from syncplaylists.modules.matching.domain.scoring import MatchScorer
 from syncplaylists.modules.matching.domain.strategies import build_default_pipeline
-from syncplaylists.shared_kernel.application.ports import GatewayFactory
-from syncplaylists.shared_kernel.domain.value_objects import Platform
+from syncplaylists.shared_kernel.application.ports import AccountAccess, GatewayFactory
 
 
 class DefaultMatchingPipelineFactory:
@@ -20,6 +19,6 @@ class DefaultMatchingPipelineFactory:
         self._normalizer = normalizer
         self._scorer = scorer
 
-    def create(self, target_platform: Platform) -> MatchingPipeline:
-        gateway = self._gateway_factory.for_platform(target_platform)
+    def create(self, target: AccountAccess) -> MatchingPipeline:
+        gateway = self._gateway_factory.for_account(target)
         return build_default_pipeline(gateway, self._track_matches, self._normalizer, self._scorer)

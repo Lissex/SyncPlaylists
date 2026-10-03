@@ -7,10 +7,10 @@ from uuid import uuid4
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from syncplaylists.infrastructure.db.uow import SqlUnitOfWork
 from syncplaylists.infrastructure.events.redis_publisher import RedisEventPublisher
 from syncplaylists.modules.transfers.domain.entities import Transfer
 from syncplaylists.modules.transfers.domain.value_objects import ExistingPlaylist, PlaylistSource
-from syncplaylists.modules.transfers.infrastructure.uow import SqlUnitOfWork
 from syncplaylists.shared_kernel.domain.value_objects import Platform, PlaylistRef
 
 

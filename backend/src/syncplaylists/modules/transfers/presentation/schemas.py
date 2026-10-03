@@ -104,7 +104,7 @@ def destination_to_schema(
 
 
 class StartTransferRequest(BaseModel):
-    user_id: UUID
+    # user_id не принимаем от клиента — он берётся из сессии (cookie).
     source: TrackSourceSchema
     destination: TrackDestinationSchema
 

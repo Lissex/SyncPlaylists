@@ -1,4 +1,4 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -20,18 +20,20 @@ _DESTINATION = {
 
 @pytest.mark.parametrize("status", list(TransferStatus))
 async def test_every_transfer_status_enum_value_is_accepted(
-    session: AsyncSession, status: TransferStatus
+    session: AsyncSession, user_id: UUID, status: TransferStatus
 ) -> None:
     session.add(
-        TransferOrm(id=uuid4(), user_id=uuid4(), status=status.value, **_SOURCE, **_DESTINATION)
+        TransferOrm(id=uuid4(), user_id=user_id, status=status.value, **_SOURCE, **_DESTINATION)
     )
     await session.flush()
 
 
-async def test_arbitrary_transfer_status_is_rejected_by_db(session: AsyncSession) -> None:
+async def test_arbitrary_transfer_status_is_rejected_by_db(
+    session: AsyncSession, user_id: UUID
+) -> None:
     session.add(
         TransferOrm(
-            id=uuid4(), user_id=uuid4(), status="not_a_real_status", **_SOURCE, **_DESTINATION
+            id=uuid4(), user_id=user_id, status="not_a_real_status", **_SOURCE, **_DESTINATION
         )
     )
     with pytest.raises(IntegrityError):
@@ -40,11 +42,11 @@ async def test_arbitrary_transfer_status_is_rejected_by_db(session: AsyncSession
 
 @pytest.mark.parametrize("status", list(TransferItemStatus))
 async def test_every_transfer_item_status_enum_value_is_accepted(
-    session: AsyncSession, status: TransferItemStatus
+    session: AsyncSession, user_id: UUID, status: TransferItemStatus
 ) -> None:
     transfer_id = uuid4()
     session.add(
-        TransferOrm(id=transfer_id, user_id=uuid4(), status="running", **_SOURCE, **_DESTINATION)
+        TransferOrm(id=transfer_id, user_id=user_id, status="running", **_SOURCE, **_DESTINATION)
     )
     platform_tracks = SqlPlatformTrackRepository(session)
     pt = await platform_tracks.get_or_create(
@@ -71,10 +73,12 @@ async def test_every_transfer_item_status_enum_value_is_accepted(
     await session.flush()
 
 
-async def test_arbitrary_transfer_item_status_is_rejected_by_db(session: AsyncSession) -> None:
+async def test_arbitrary_transfer_item_status_is_rejected_by_db(
+    session: AsyncSession, user_id: UUID
+) -> None:
     transfer_id = uuid4()
     session.add(
-        TransferOrm(id=transfer_id, user_id=uuid4(), status="running", **_SOURCE, **_DESTINATION)
+        TransferOrm(id=transfer_id, user_id=user_id, status="running", **_SOURCE, **_DESTINATION)
     )
     platform_tracks = SqlPlatformTrackRepository(session)
     pt = await platform_tracks.get_or_create(

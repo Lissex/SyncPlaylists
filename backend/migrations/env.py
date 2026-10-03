@@ -6,15 +6,8 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from syncplaylists.bootstrap.models import load_orm_models
 from syncplaylists.infrastructure.config.settings import Settings
-from syncplaylists.infrastructure.db.base import Base
-
-# Импорт ORM-модулей — побочный эффект регистрирует их таблицы в Base.metadata
-# до того, как autogenerate станет сравнивать её со схемой БД. Без этого импорта
-# autogenerate не увидит новые модели, даже если они есть в коде.
-from syncplaylists.modules.catalog.infrastructure import orm as catalog_orm  # noqa: F401
-from syncplaylists.modules.matching.infrastructure import orm as matching_orm  # noqa: F401
-from syncplaylists.modules.transfers.infrastructure import orm as transfers_orm  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -31,7 +24,8 @@ config.set_main_option("sqlalchemy.url", str(Settings().db.dsn))
 
 # add your model's MetaData object here
 # for 'autogenerate' support
-target_metadata = Base.metadata
+# Все ORM-модели — через единый список (его же использует тест на дрейф схемы).
+target_metadata = load_orm_models()
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

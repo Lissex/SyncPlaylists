@@ -4,13 +4,14 @@ import signal
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import pytest
 import uvicorn
 from arq.connections import RedisSettings as ArqRedisSettings
 from arq.worker import Worker, create_worker
 from dishka.integrations.arq import setup_dishka
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from syncplaylists.bootstrap.api import create_app
 from syncplaylists.bootstrap.container import make_container
@@ -69,6 +70,64 @@ async def _drain_queue(worker: Worker, max_rounds: int = 20) -> None:
     raise AssertionError("ARQ-воркер не разобрал очередь за отведённое число проходов")
 
 
+async def _run_worker_until_idle(settings: Settings, redis_url: str) -> None:
+    worker_container = make_container(settings)
+    worker_settings_cls = _make_worker_settings_class()
+    setup_dishka(worker_container, worker_settings_cls)
+    worker = create_worker(
+        worker_settings_cls,
+        redis_settings=ArqRedisSettings.from_dsn(redis_url),
+        burst=True,
+        handle_signals=False,
+        poll_delay=0.05,
+    )
+    try:
+        await _drain_queue(worker)
+    finally:
+        await worker.close()
+        await worker_container.close()
+
+
+async def _login_with_accounts(client: AsyncClient) -> None:
+    # С этапа 4a перенос — от имени вошедшего пользователя (cookie хранит AsyncClient)
+    # и требует подключённых аккаунтов на площадках источника и назначения.
+    register = await client.post(
+        "/auth/register",
+        json={"email": f"e2e-{uuid4().hex}@example.com", "password": "correct horse"},
+    )
+    assert register.status_code == 201, register.text
+    for platform in ("vk", "spotify"):
+        connect = await client.post(
+            "/accounts",
+            json={
+                "platform": platform,
+                "external_user_id": f"{platform}-e2e",
+                "access_token": "token",
+            },
+        )
+        assert connect.status_code == 201, connect.text
+
+
+_DEMO_TRANSFER = {
+    "source": {"kind": "playlist", "platform": "vk", "external_id": "demo"},
+    "destination": {"kind": "existing", "platform": "spotify", "external_id": "demo"},
+}
+
+
+async def _start_demo_transfer(client: AsyncClient) -> str:
+    response = await client.post("/transfers", json=_DEMO_TRANSFER)
+    assert response.status_code == 201, response.text
+    transfer_id: str = response.json()["id"]
+    return transfer_id
+
+
+async def _assert_done(client: AsyncClient, transfer_id: str) -> None:
+    body = (await client.get(f"/transfers/{transfer_id}")).json()
+    assert body["status"] == "done", body
+    assert len(body["items"]) == 3
+    assert all(item["status"] == "added" for item in body["items"])
+
+
 async def _collect_sse_events(
     client: AsyncClient, transfer_id: str, received: list[str], ready: asyncio.Event
 ) -> None:
@@ -96,16 +155,8 @@ async def test_transfer_runs_end_to_end_and_streams_events_over_sse(
         _run_app(settings) as base_url,
         AsyncClient(base_url=base_url, timeout=10.0) as client,
     ):
-        response = await client.post(
-            "/transfers",
-            json={
-                "user_id": "11111111-1111-1111-1111-111111111111",
-                "source": {"kind": "playlist", "platform": "vk", "external_id": "demo"},
-                "destination": {"kind": "existing", "platform": "spotify", "external_id": "demo"},
-            },
-        )
-        assert response.status_code == 201, response.text
-        transfer_id = response.json()["id"]
+        await _login_with_accounts(client)
+        transfer_id = await _start_demo_transfer(client)
 
         received: list[str] = []
         snapshot_ready = asyncio.Event()
@@ -114,21 +165,7 @@ async def test_transfer_runs_end_to_end_and_streams_events_over_sse(
         )
         await asyncio.wait_for(snapshot_ready.wait(), timeout=5)
 
-        worker_container = make_container(settings)
-        worker_settings_cls = _make_worker_settings_class()
-        setup_dishka(worker_container, worker_settings_cls)
-        worker = create_worker(
-            worker_settings_cls,
-            redis_settings=ArqRedisSettings.from_dsn(redis_url),
-            burst=True,
-            handle_signals=False,
-            poll_delay=0.05,
-        )
-        try:
-            await _drain_queue(worker)
-        finally:
-            await worker.close()
-            await worker_container.close()
+        await _run_worker_until_idle(settings, redis_url)
 
         # Даём SSE-подписчику время дочитать последнее сообщение (TransferCompleted)
         # прежде чем его оборвать.
@@ -148,3 +185,46 @@ async def test_transfer_runs_end_to_end_and_streams_events_over_sse(
     assert received.count("TrackMatched") == 3
     assert "TransferWritingStarted" in received
     assert received[-1] == "TransferCompleted"
+
+
+# Регрессия: track_matches — глобальный кэш. Раньше второй перенос тех же треков (или
+# параллельный перенос другим пользователем) падал в run_match на UniqueViolation
+# (source_pt_id, target_platform), и перенос навсегда застревал в RUNNING.
+
+
+async def test_same_playlist_transferred_twice_in_a_row(settings: Settings, redis_url: str) -> None:
+    app = create_app(settings)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        await _login_with_accounts(client)
+
+        first = await _start_demo_transfer(client)
+        await _run_worker_until_idle(settings, redis_url)
+        second = await _start_demo_transfer(client)
+        await _run_worker_until_idle(settings, redis_url)
+
+        await _assert_done(client, first)
+        await _assert_done(client, second)
+
+
+async def test_same_playlist_transferred_concurrently_by_two_users(
+    settings: Settings, redis_url: str
+) -> None:
+    app = create_app(settings)
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://testserver") as alice,
+        AsyncClient(transport=transport, base_url="http://testserver") as bob,
+    ):
+        await _login_with_accounts(alice)
+        await _login_with_accounts(bob)
+        alice_transfer = await _start_demo_transfer(alice)
+        bob_transfer = await _start_demo_transfer(bob)
+
+        # Один воркер, обе очереди разом: run_match обоих переносов по тем же трекам
+        # идут параллельно (ARQ max_jobs > 1) и пишут в общий кэш track_matches.
+        await _run_worker_until_idle(settings, redis_url)
+
+        await _assert_done(alice, alice_transfer)
+        await _assert_done(bob, bob_transfer)

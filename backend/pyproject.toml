@@ -20,6 +20,9 @@ dependencies = [
     "rapidfuzz>=3.10",
     "redis>=5.0",
     "sse-starlette>=2.1",
+    "argon2-cffi>=23.1",
+    "cryptography>=43",
+    "email-validator>=2.2",
 ]
 
 [dependency-groups]
@@ -97,6 +100,7 @@ source_modules = [
 forbidden_modules = [
     "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
     "arq", "pydantic_settings", "authlib", "boto3", "aioboto3",
+    "argon2", "cryptography", "email_validator",
 ]
 
 [[tool.importlinter.contracts]]
@@ -163,6 +167,7 @@ source_modules = [
 forbidden_modules = [
     "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
     "arq", "pydantic_settings", "authlib", "boto3", "aioboto3",
+    "argon2", "cryptography", "email_validator",
     "syncplaylists.modules.identity.infrastructure",
     "syncplaylists.modules.identity.presentation",
     "syncplaylists.modules.accounts.infrastructure",
