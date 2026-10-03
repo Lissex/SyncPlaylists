@@ -1,14 +1,18 @@
+import time
 from collections.abc import AsyncIterator
+from typing import Final
 from uuid import UUID
 
+from dishka import AsyncContainer
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from redis.asyncio import Redis
 from sse_starlette.sse import EventSourceResponse
 
 from syncplaylists.modules.identity.presentation.dependencies import CurrentUserId
 from syncplaylists.modules.transfers.application.links import ResolvePlaylistLinkUseCase
 from syncplaylists.modules.transfers.application.use_cases import (
+    GetTransferProgressUseCase,
     GetTransferUseCase,
     ResolveUncertainItemUseCase,
     StartTransferUseCase,
@@ -21,6 +25,7 @@ from syncplaylists.modules.transfers.presentation.schemas import (
     ResolveItemRequest,
     ResolveLinkRequest,
     StartTransferRequest,
+    TransferProgressSchema,
     TransferResponse,
 )
 from syncplaylists.shared_kernel.application.ports import AccountNotAvailableError
@@ -152,11 +157,29 @@ async def resolve_item(
         raise HTTPException(status_code=404, detail="Transfer не найден") from exc
 
 
+# Как часто SSE шлёт событие `progress` (счётчики + ETA) — и при потоке событий, и
+# когда их нет вовсе (пауза площадки: ETA при этом растёт, клиент это видит).
+PROGRESS_INTERVAL_SECONDS: Final = 3.0
+_FINISHED_STATUSES: Final = frozenset({"done", "failed"})
+
+
+async def _progress(
+    container: AsyncContainer, user_id: UUID, transfer_id: UUID
+) -> TransferProgressSchema | None:
+    # Стрим живёт дольше запроса — зависимости запроса к этому моменту уже закрыты,
+    # поэтому на каждый опрос — свой короткий request-scope (своя сессия БД).
+    async with container() as request_container:
+        use_case = await request_container.get(GetTransferProgressUseCase)
+        dto = await use_case.execute(user_id, transfer_id)
+    return TransferProgressSchema.from_dto(dto) if dto is not None else None
+
+
 @router.get("/{transfer_id}/events")
 @inject
 async def transfer_events(
     transfer_id: UUID,
     user_id: CurrentUserId,
+    request: Request,
     get_transfer: FromDishka[GetTransferUseCase],
     redis: FromDishka[Redis],
 ) -> EventSourceResponse:
@@ -164,6 +187,7 @@ async def transfer_events(
     dto = await get_transfer.execute(user_id, transfer_id)
     if dto is None:
         raise HTTPException(status_code=404, detail="Transfer не найден")
+    app_container: AsyncContainer = request.app.state.dishka_container
 
     async def stream() -> AsyncIterator[dict[str, str]]:
         # Снэпшот сразу — иначе клиент, подключившийся после начала переноса,
@@ -172,16 +196,26 @@ async def transfer_events(
         channel = f"transfer:{transfer_id}"
         pubsub = redis.pubsub()
         await pubsub.subscribe(channel)
+        last_progress = time.monotonic()
+        finished = dto.status in _FINISHED_STATUSES
         try:
-            async for message in pubsub.listen():
-                if message["type"] != "message":
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message is not None and message["type"] == "message":
+                    # redis.asyncio без decode_responses отдаёт payload как bytes — иначе
+                    # sse_starlette сериализует его через str(b'...'), а не сам JSON.
+                    data = message["data"]
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8")
+                    yield {"event": "domain_event", "data": data}
+                if finished or time.monotonic() - last_progress < PROGRESS_INTERVAL_SECONDS:
                     continue
-                # redis.asyncio без decode_responses отдаёт payload как bytes — иначе
-                # sse_starlette сериализует его через str(b'...'), а не сам JSON.
-                data = message["data"]
-                if isinstance(data, bytes):
-                    data = data.decode("utf-8")
-                yield {"event": "domain_event", "data": data}
+                last_progress = time.monotonic()
+                progress = await _progress(app_container, user_id, transfer_id)
+                if progress is not None:
+                    yield {"event": "progress", "data": progress.model_dump_json()}
+                    # После done/failed прогресс не меняется — дальше только события.
+                    finished = progress.status in _FINISHED_STATUSES
         finally:
             await pubsub.unsubscribe(channel)
 

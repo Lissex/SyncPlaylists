@@ -34,7 +34,7 @@ class YandexClientFactory:
         request = HttpxYandexRequest(
             self._http,
             timeout_seconds=self._timeout,
-            limiter=self._limiter if account_id is not None else None,
+            limiter=self._limiter,
             account_id=account_id,
         )
         return ClientAsync(token, request=request)

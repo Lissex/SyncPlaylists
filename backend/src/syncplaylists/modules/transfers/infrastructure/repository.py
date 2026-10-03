@@ -2,11 +2,12 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from syncplaylists.modules.catalog.application.ports import PlatformTrackRepository
+from syncplaylists.modules.transfers.application.ports import ProgressSample
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
     TransferItemStatus,
@@ -66,6 +67,50 @@ class SqlTransferRepository:
         orm = await transfer_to_orm(transfer, self._platform_tracks)
         await self._session.merge(orm)
 
+    async def progress_sample(self, transfer_id: UUID, recent: int) -> ProgressSample | None:
+        header = (
+            await self._session.execute(
+                select(
+                    TransferOrm.user_id,
+                    TransferOrm.status,
+                    TransferOrm.total,
+                    TransferOrm.pending,
+                    TransferOrm.matched,
+                    TransferOrm.uncertain,
+                    TransferOrm.not_found,
+                    TransferOrm.added,
+                    TransferOrm.failed,
+                ).where(TransferOrm.id == transfer_id)
+            )
+        ).one_or_none()
+        if header is None:
+            return None
+        processed = (
+            await self._session.scalars(
+                select(TransferItemOrm.processed_at)
+                .where(
+                    TransferItemOrm.transfer_id == transfer_id,
+                    TransferItemOrm.processed_at.is_not(None),
+                )
+                .order_by(TransferItemOrm.processed_at.desc())
+                .limit(recent)
+            )
+        ).all()
+        return ProgressSample(
+            user_id=header.user_id,
+            status=TransferStatus(header.status),
+            progress=TransferProgress(
+                total=header.total,
+                pending=header.pending,
+                matched=header.matched,
+                uncertain=header.uncertain,
+                not_found=header.not_found,
+                added=header.added,
+                failed=header.failed,
+            ),
+            recent_processed_at=tuple(at for at in processed if at is not None),
+        )
+
     async def get_header(self, transfer_id: UUID) -> Transfer | None:
         orm = await self._session.scalar(
             select(TransferOrm)
@@ -99,7 +144,7 @@ class SqlTransferRepository:
                 TransferItemOrm.position == item.position,
                 TransferItemOrm.status == TransferItemStatus.PENDING.value,
             )
-            .values(**item_result_columns(item))
+            .values(**item_result_columns(item), processed_at=func.now())
             .returning(TransferItemOrm.id)
         )
         if updated.first() is None:

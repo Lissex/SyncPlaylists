@@ -426,3 +426,33 @@ async def test_rate_limited_transfer_is_retried_beyond_normal_budget() -> None:
             cast(FailTransferUseCase, fail),
         )
     assert fail.calls == []
+
+
+# --- новый плейлист: create — отдельный шаг с немедленным коммитом ------------------
+
+
+async def test_new_playlist_is_committed_before_tracks_are_written() -> None:
+    env = _env()
+    transfer = await _writing_transfer(
+        env, NewPlaylist(platform=Platform.SPOTIFY, title="Копия", description=None)
+    )
+    gateway = FakeMusicPlatformGateway(platform=Platform.SPOTIFY)
+    gateway.failures["add_tracks"] = PlatformUnavailableError(Platform.SPOTIFY)
+    env.register_gateway(gateway)
+
+    with pytest.raises(PlatformUnavailableError):
+        await _write_use_case(env).execute(transfer.id)
+
+    # Плейлист создан и ссылка на него закоммичена ДО упавшей записи треков —
+    # откат второй транзакции её не потеряет (на Postgres: test_write_idempotency).
+    assert gateway.created_playlists == [("Копия", None)]
+    assert env.uow.commits == 1
+    stored = await env.transfers.get(transfer.id)
+    assert stored is not None
+    assert stored.resolved_target == PlaylistRef(Platform.SPOTIFY, "created-1")
+
+    del gateway.failures["add_tracks"]
+    await _write_use_case(env).execute(transfer.id)  # повтор run_write
+
+    assert gateway.created_playlists == [("Копия", None)]  # второй не создан
+    assert await _status(env, transfer.id) is TransferStatus.DONE

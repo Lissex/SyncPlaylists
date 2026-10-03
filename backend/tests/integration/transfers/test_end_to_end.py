@@ -141,8 +141,9 @@ async def _collect_sse_events(
                 payload = json.loads(raw)
                 if current_event == "snapshot":
                     ready.set()
-                else:
+                elif current_event == "domain_event":
                     received.append(payload["type"])
+                # "progress" (счётчики + ETA раз в несколько секунд) здесь не нужен.
 
 
 async def test_transfer_runs_end_to_end_and_streams_events_over_sse(
@@ -177,6 +178,11 @@ async def test_transfer_runs_end_to_end_and_streams_events_over_sse(
     assert body["status"] == "done"
     assert len(body["items"]) == 3
     assert all(item["status"] == "added" for item in body["items"])
+
+    assert body["progress"]["status"] == "done"
+    assert body["progress"]["added"] == 3
+    assert body["progress"]["pending"] == 0
+    assert body["progress"]["eta_seconds"] is None  # ETA только для running
 
     assert received[0] == "TransferStarted"
     assert received.count("TrackMatched") == 3

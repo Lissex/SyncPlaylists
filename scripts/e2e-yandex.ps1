@@ -78,7 +78,11 @@ function Wait-Transfer($transferId, [string[]]$activeStatuses) {
   do {
     $transfer = Api GET "/transfers/$transferId"
     $counts = ($transfer.items | Group-Object status | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join " "
-    Write-Host ("{0}  {1,-8} {2}" -f (Get-Date -Format HH:mm:ss), $transfer.status, $counts)
+    $eta = ""
+    if ($transfer.progress -and $null -ne $transfer.progress.eta_seconds) {
+      $eta = "  (осталось ~$($transfer.progress.eta_seconds) с)"
+    }
+    Write-Host ("{0}  {1,-8} {2}{3}" -f (Get-Date -Format HH:mm:ss), $transfer.status, $counts, $eta)
     $state = "$($transfer.status) $counts"
     if ($state -ne $lastState) {
       $lastState = $state

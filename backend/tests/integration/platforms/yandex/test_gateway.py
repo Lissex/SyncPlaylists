@@ -56,6 +56,7 @@ class CountingLimiter:
     def __init__(self) -> None:
         self.calls: list[tuple[Platform, UUID]] = []
         self.penalties: list[float] = []
+        self.counted = 0
 
     async def acquire(self, platform: Platform, account_id: UUID) -> None:
         self.calls.append((platform, account_id))
@@ -63,7 +64,14 @@ class CountingLimiter:
     async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None:
         self.penalties.append(seconds)
 
-    async def recent_requests(self, platform: Platform, account_id: UUID, minutes: int) -> int:
+    async def count_request(self, platform: Platform) -> None:
+        self.counted += 1
+
+    async def recent_requests(
+        self, platform: Platform, account_id: UUID | None, minutes: int
+    ) -> int:
+        if account_id is None:
+            return {10: 900, 60: 4100}[minutes]
         return {10: 42, 60: 310}[minutes]
 
 
@@ -539,5 +547,18 @@ async def test_429_log_has_request_counts_but_no_token(
     with caplog.at_level("WARNING"), pytest.raises(PlatformRateLimitedError):
         await gateway.search(TrackQuery(title="x"))
 
-    assert "42 запросов за 10 мин, 310 за 60 мин, Retry-After 600" in caplog.text
+    assert "аккаунт 42/310, сервер (IP) 900/4100 запросов за 10/60 мин" in caplog.text
+    assert "Retry-After 600" in caplog.text
     assert "y0_test-token" not in caplog.text
+
+
+async def test_every_request_is_counted_for_server_including_profile_check(
+    api: respx.MockRouter, http: httpx.AsyncClient, limiter: CountingLimiter
+) -> None:
+    api.get("/account/status").respond(json=fixture("account_status"))
+    clients = YandexClientFactory(http, timeout_seconds=5, limiter=limiter)
+
+    await YandexProfileFetcher(clients).fetch(PlatformCredentials(access_token="t"))
+
+    assert limiter.counted == 1  # учтён на сервер (IP)
+    assert limiter.calls == []  # но без аккаунта токены bucket не тратятся

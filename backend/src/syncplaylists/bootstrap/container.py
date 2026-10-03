@@ -104,6 +104,7 @@ from syncplaylists.modules.transfers.application.ports import TransferRepository
 from syncplaylists.modules.transfers.application.use_cases import (
     FailTransferItemUseCase,
     FailTransferUseCase,
+    GetTransferProgressUseCase,
     GetTransferUseCase,
     MatchTransferItemUseCase,
     ProcessTransferUseCase,
@@ -580,6 +581,10 @@ class TransfersProvider(Provider):
     @provide
     def get_get_transfer(self, transfers: TransferRepository) -> GetTransferUseCase:
         return GetTransferUseCase(transfers)
+
+    @provide
+    def get_transfer_progress(self, transfers: TransferRepository) -> GetTransferProgressUseCase:
+        return GetTransferProgressUseCase(transfers)
 
     @provide
     def get_sweep_stale_transfers(

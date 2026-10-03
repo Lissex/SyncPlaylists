@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -7,8 +8,22 @@ from syncplaylists.modules.transfers.domain.entities import Transfer, TransferIt
 from syncplaylists.modules.transfers.domain.value_objects import TransferProgress, TransferStatus
 
 
+@dataclass(frozen=True, slots=True)
+class ProgressSample:
+    """Лёгкий срез переноса для прогресса/ETA: шапка со счётчиками и время обработки
+    последних items — без загрузки всех items (SSE опрашивает его раз в несколько секунд)."""
+
+    user_id: UUID
+    status: TransferStatus
+    progress: TransferProgress
+    recent_processed_at: tuple[datetime, ...]
+
+
 class TransferRepository(Protocol):
     async def get(self, transfer_id: UUID) -> Transfer | None: ...
+
+    # Шапка со счётчиками + processed_at последних `recent` items (новые первыми).
+    async def progress_sample(self, transfer_id: UUID, recent: int) -> ProgressSample | None: ...
 
     # Блокирующее чтение (SELECT ... FOR UPDATE на строке transfers) — для use cases,
     # которые мутируют Transfer целиком (run_transfer, resolve, run_write). В эти моменты

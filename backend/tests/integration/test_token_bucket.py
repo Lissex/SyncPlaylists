@@ -160,3 +160,14 @@ async def test_recent_requests_counts_only_granted(redis: Redis) -> None:
 
     assert await limiter.recent_requests(Platform.YANDEX, account, 10) == 2
     assert await limiter.recent_requests(Platform.YANDEX, uuid4(), 10) == 0
+
+
+async def test_server_counter_counts_all_requests_across_accounts(redis: Redis) -> None:
+    limiter = _limiter(redis, _RecordingSleep(), capacity=5, rate=1.0, max_wait=1)
+
+    for _ in range(3):
+        await limiter.count_request(Platform.YANDEX)
+    await limiter.count_request(Platform.SPOTIFY)
+
+    assert await limiter.recent_requests(Platform.YANDEX, None, 10) == 3
+    assert await limiter.recent_requests(Platform.SPOTIFY, None, 60) == 1

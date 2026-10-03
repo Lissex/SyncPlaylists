@@ -3,7 +3,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from syncplaylists.modules.transfers.application.dto import TransferDto, TransferItemDto
+from syncplaylists.modules.transfers.application.dto import (
+    TransferDto,
+    TransferItemDto,
+    TransferProgressDto,
+)
 from syncplaylists.modules.transfers.application.links import LinkKind, ResolvedLinkDto
 from syncplaylists.modules.transfers.domain.value_objects import (
     ExistingPlaylist,
@@ -179,6 +183,34 @@ class TransferItemResponse(BaseModel):
         )
 
 
+class TransferProgressSchema(BaseModel):
+    status: str
+    total: int
+    pending: int
+    matched: int
+    uncertain: int
+    not_found: int
+    added: int
+    failed: int
+    # Оценка оставшегося времени матчинга по скорости последних треков, секунды.
+    # Только для status=running; null — данных пока мало или фаза не матчинг.
+    eta_seconds: int | None
+
+    @classmethod
+    def from_dto(cls, dto: TransferProgressDto) -> "TransferProgressSchema":
+        return cls(
+            status=dto.status,
+            total=dto.total,
+            pending=dto.pending,
+            matched=dto.matched,
+            uncertain=dto.uncertain,
+            not_found=dto.not_found,
+            added=dto.added,
+            failed=dto.failed,
+            eta_seconds=dto.eta_seconds,
+        )
+
+
 class TransferResponse(BaseModel):
     id: UUID
     user_id: UUID
@@ -186,6 +218,7 @@ class TransferResponse(BaseModel):
     source: PlaylistSourceSchema | LibrarySourceSchema
     destination: ExistingPlaylistSchema | NewPlaylistSchema | LibraryDestinationSchema
     items: list[TransferItemResponse]
+    progress: TransferProgressSchema | None = None
 
     @classmethod
     def from_dto(cls, dto: TransferDto) -> "TransferResponse":
@@ -196,6 +229,7 @@ class TransferResponse(BaseModel):
             source=source_to_schema(dto.source),
             destination=destination_to_schema(dto.destination),
             items=[TransferItemResponse.from_dto(item) for item in dto.items],
+            progress=TransferProgressSchema.from_dto(dto.progress) if dto.progress else None,
         )
 
 

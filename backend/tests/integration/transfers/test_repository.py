@@ -105,3 +105,49 @@ async def test_get_returns_none_for_unknown_id(session: AsyncSession) -> None:
     repo = SqlTransferRepository(session, platform_tracks)
 
     assert await repo.get(uuid4()) is None
+
+
+async def test_item_outcome_stamps_processed_at_for_eta(
+    session: AsyncSession, user_id: UUID
+) -> None:
+    platform_tracks = SqlPlatformTrackRepository(session)
+    repo = SqlTransferRepository(session, platform_tracks)
+    transfer = _transfer(user_id)
+    transfer.start(datetime.now(UTC))
+    refs = [ExternalTrackRef(Platform.VK, f"src-{uuid4().hex[:8]}") for _ in range(3)]
+    for position, ref in enumerate(refs):
+        transfer.add_item(position, ref)
+        await platform_tracks.get_or_create(
+            PlatformTrack(
+                id=uuid4(),
+                platform=ref.platform,
+                external_id=ref.external_id,
+                raw_title="t",
+                raw_artist="a",
+            )
+        )
+    await repo.save(transfer)
+    await session.flush()
+
+    for position in (0, 1):
+        item = await repo.get_item(transfer.id, position)
+        assert item is not None
+        item.apply_match(
+            MatchResult(
+                target_ref=ExternalTrackRef(Platform.SPOTIFY, f"tgt-{position}"),
+                method="fuzzy",
+                score=MatchScore(0.95),
+            )
+        )
+        assert await repo.save_item_outcome(item) is not None
+    await session.flush()
+
+    sample = await repo.progress_sample(transfer.id, recent=20)
+
+    assert sample is not None
+    assert sample.user_id == user_id
+    assert sample.status.value == "running"
+    assert sample.progress.pending == 1
+    assert sample.progress.matched == 2
+    assert len(sample.recent_processed_at) == 2  # необработанный item без отметки
+    assert all(at.tzinfo is not None for at in sample.recent_processed_at)

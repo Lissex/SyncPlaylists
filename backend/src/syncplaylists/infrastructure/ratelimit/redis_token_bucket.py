@@ -73,6 +73,16 @@ return 1
 """
 
 
+# Счётчик всех запросов к площадке с этого сервера: KEYS[1]..":"..<минута>, TTL 2 ч.
+_COUNT_LUA: Final = """
+local t = redis.call('TIME')
+local counter = KEYS[1] .. ':' .. math.floor(tonumber(t[1]) / 60)
+redis.call('INCR', counter)
+redis.call('EXPIRE', counter, 7200)
+return 1
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class TokenBucketLimits:
     capacity: int
@@ -97,6 +107,7 @@ class RedisTokenBucketLimiter:
         self._redis = redis
         self._script = redis.register_script(_LUA)
         self._penalize_script = redis.register_script(_PENALIZE_LUA)
+        self._count_script = redis.register_script(_COUNT_LUA)
         self._limits = dict(limits)
         self._sleep = sleep
 
@@ -117,10 +128,20 @@ class RedisTokenBucketLimiter:
         if int(wait_ms) > 0:
             await self._sleep(int(wait_ms) / 1000)
 
-    async def recent_requests(self, platform: Platform, account_id: UUID, minutes: int) -> int:
+    async def count_request(self, platform: Platform) -> None:
+        # Не зависит от того, настроены ли лимиты площадки: это статистика, не ограничение.
+        await self._count_script(keys=[_server_counter_prefix(platform)], args=[])
+
+    async def recent_requests(
+        self, platform: Platform, account_id: UUID | None, minutes: int
+    ) -> int:
         seconds, _ = await self._redis.time()
         current = int(seconds) // 60
-        prefix = _counter_prefix(platform, account_id)
+        prefix = (
+            _server_counter_prefix(platform)
+            if account_id is None
+            else _counter_prefix(platform, account_id)
+        )
         values = await self._redis.mget(
             [f"{prefix}:{m}" for m in range(current - minutes + 1, current + 1)]
         )
@@ -142,3 +163,8 @@ def _key(platform: Platform, account_id: UUID) -> str:
 
 def _counter_prefix(platform: Platform, account_id: UUID) -> str:
     return f"ratelimit:cnt:{platform.value}:{account_id}"
+
+
+def _server_counter_prefix(platform: Platform) -> str:
+    # Все процессы (api, worker) ходят в площадку с одного IP сервера и пишут сюда.
+    return f"ratelimit:cnt:{platform.value}:server"
