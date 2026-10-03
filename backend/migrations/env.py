@@ -16,7 +16,10 @@ config = context.config
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: миграции могут идти в одном процессе с приложением
+    # (тесты через testcontainers) — без флага fileConfig молча выключает все уже
+    # созданные логгеры приложения (например, предупреждения транспорта о 429).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # DSN приходит из Settings (pydantic-settings/.env), а не из alembic.ini —
 # единая точка конфигурации для приложения и миграций.
