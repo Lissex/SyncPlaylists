@@ -10,6 +10,7 @@
 Если тест упал посреди — проверьте сеты и лайки вручную.
 """
 
+import contextlib
 import time
 from typing import Any
 from uuid import uuid4
@@ -32,12 +33,16 @@ from syncplaylists.integrations.platforms.soundcloud.tokens import (
     token_client_id,
     token_expires_at,
 )
+from syncplaylists.integrations.platforms.soundcloud.transport import (
+    V2_BASE_URL,
+    SoundCloudTransport,
+)
 from syncplaylists.shared_kernel.application.ports import (
     AccountAccess,
     CredentialsRenewal,
     PlatformCredentials,
 )
-from syncplaylists.shared_kernel.domain.errors import PlatformAuthError
+from syncplaylists.shared_kernel.domain.errors import PlatformAuthError, PlaylistNotFoundError
 from syncplaylists.shared_kernel.domain.search import InsertOrder, TrackCandidate, TrackQuery
 from syncplaylists.shared_kernel.domain.value_objects import (
     Platform,
@@ -148,13 +153,18 @@ async def test_search_finds_official_upload(live: _Live) -> None:
     assert any(c.rights_holder and c.isrc is not None for c in found)
 
 
-async def test_stale_client_id_is_refreshed(apis: SoundCloudApiFactory, live: _Live) -> None:
-    transport = live.api.transport
-    provider = transport._client_ids
-    assert provider is not None
-    provider._value = "0" * 32
-    me = await live.api.me()
-    assert str(me["id"]) == live.user_id
+async def test_stale_client_id_is_refreshed(live_http: httpx.AsyncClient) -> None:
+    # С валидным токеном v2 принимает и мусорный client_id (проверено live 2026-10-03),
+    # поэтому проверяем запросом без токена — там client_id обязателен.
+    provider = ClientIdProvider(
+        live_http, None, ttl_seconds=3600, min_refresh_seconds=60, timeout_seconds=20
+    )
+    provider._value = "0" * 32  # заведомо протухший
+    transport = SoundCloudTransport(
+        live_http, base_url=V2_BASE_URL, timeout_seconds=20, client_ids=provider
+    )
+    found = await transport.get("/search/tracks", {"q": "lucid dreams", "limit": 1})
+    assert found["collection"]
     assert provider._value != "0" * 32
 
 
@@ -208,9 +218,11 @@ async def test_like_order_and_cleanup(live: _Live) -> None:
         assert top == [probes[1].ref.external_id, probes[0].ref.external_id]
     finally:
         for probe in probes:
-            await live.api.transport.request(
-                "DELETE", f"/users/{live.user_id}/track_likes/{probe.ref.external_id}"
-            )
+            # 404 — лайк так и не поставился, снимать нечего.
+            with contextlib.suppress(PlaylistNotFoundError):
+                await live.api.transport.request(
+                    "DELETE", f"/users/{live.user_id}/track_likes/{probe.ref.external_id}"
+                )
 
 
 async def test_private_set_by_link(live: _Live, live_settings: LiveSettings) -> None:
