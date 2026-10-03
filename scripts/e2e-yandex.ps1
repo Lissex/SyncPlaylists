@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  Ручной e2e переноса Яндекс → новый плейлист на Яндексе одной командой.
+  Ручной e2e переноса (Яндекс или SoundCloud) → новый плейлист на Яндексе одной командой.
 
 .DESCRIPTION
   Регистрирует свежего пользователя, подключает Яндекс токеном YANDEX_LIVE_TOKEN из .env
@@ -144,6 +144,22 @@ try {
   Remove-Variable token
 }
 Write-Host "аккаунт: $($account.display_name), статус $($account.status)"
+
+# Источник на SoundCloud (сет или лайки soundcloud.com/you/likes) — нужен и его аккаунт.
+$scToken = Get-EnvValue "SOUNDCLOUD_LIVE_TOKEN"
+if ($scToken) {
+  Step "Подключение SoundCloud токеном из .env"
+  try {
+    $body = @{ platform = "soundcloud"; access_token = $scToken }
+    $scRefresh = Get-EnvValue "SOUNDCLOUD_LIVE_REFRESH_TOKEN"
+    if ($scRefresh) { $body.refresh_token = $scRefresh }
+    $scAccount = Api POST "/accounts" $body
+  } finally {
+    Remove-Variable scToken, scRefresh -ErrorAction SilentlyContinue
+    Remove-Variable body -ErrorAction SilentlyContinue
+  }
+  Write-Host "аккаунт: $($scAccount.display_name), статус $($scAccount.status)"
+}
 
 # --- 4. Ссылка ----------------------------------------------------------------------
 Step "Разбор ссылки"
