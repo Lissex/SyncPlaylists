@@ -1,0 +1,4 @@
+{
+  "invocationInfo": {"hostname": "music-api", "req-id": "scrubbed", "exec-duration-millis": 5},
+  "error": {"name": "wrong-revision", "message": "Wrong revision"}
+}

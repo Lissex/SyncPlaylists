@@ -98,6 +98,11 @@ class Env:
             self.accounts,
         )
 
+    def start_transfer_use_case(self) -> StartTransferUseCase:
+        return StartTransferUseCase(
+            self.uow, self.transfers, self.task_queue, self.accounts, self.gateway_factory
+        )
+
     def process_transfer_use_case(self) -> ProcessTransferUseCase:
         return ProcessTransferUseCase(
             self.uow,
@@ -138,7 +143,7 @@ class Env:
 
 async def test_start_transfer_creates_queued_transfer_and_enqueues_run_transfer() -> None:
     env = Env()
-    use_case = StartTransferUseCase(env.uow, env.transfers, env.task_queue, env.accounts)
+    use_case = env.start_transfer_use_case()
     source = PlaylistSource(ref=PlaylistRef(Platform.VK, "src-playlist"))
     destination = ExistingPlaylist(ref=PlaylistRef(Platform.SPOTIFY, "dst-playlist"))
 
@@ -338,7 +343,7 @@ async def test_get_transfer_returns_none_for_unknown_id() -> None:
 
 async def test_start_transfer_rejects_foreign_library_account() -> None:
     env = Env()
-    use_case = StartTransferUseCase(env.uow, env.transfers, env.task_queue, env.accounts)
+    use_case = env.start_transfer_use_case()
     stranger = env.accounts.connect(uuid4(), Platform.SPOTIFY)
     source = PlaylistSource(ref=PlaylistRef(Platform.VK, "src-playlist"))
     destination = LibraryDestination(platform=Platform.SPOTIFY, account_id=stranger.account_id)
@@ -351,7 +356,7 @@ async def test_start_transfer_rejects_foreign_library_account() -> None:
 
 async def test_start_transfer_rejects_account_of_other_platform() -> None:
     env = Env()
-    use_case = StartTransferUseCase(env.uow, env.transfers, env.task_queue, env.accounts)
+    use_case = env.start_transfer_use_case()
     source = LibrarySource(platform=Platform.YANDEX, account_id=env.vk.account_id)
     destination = ExistingPlaylist(ref=PlaylistRef(Platform.SPOTIFY, "dst-playlist"))
 
@@ -361,7 +366,7 @@ async def test_start_transfer_rejects_account_of_other_platform() -> None:
 
 async def test_start_transfer_requires_account_on_destination_platform() -> None:
     env = Env()
-    use_case = StartTransferUseCase(env.uow, env.transfers, env.task_queue, env.accounts)
+    use_case = env.start_transfer_use_case()
     source = PlaylistSource(ref=PlaylistRef(Platform.VK, "src-playlist"))
     destination = ExistingPlaylist(ref=PlaylistRef(Platform.YANDEX, "dst-playlist"))
 

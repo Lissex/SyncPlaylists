@@ -18,6 +18,7 @@ from syncplaylists.modules.accounts.application.use_cases import (
 from syncplaylists.modules.accounts.domain.errors import (
     AccountAlreadyConnectedError,
     AccountNotFoundError,
+    InvalidPlatformTokenError,
 )
 from syncplaylists.modules.accounts.presentation.schemas import (
     AccountResponse,
@@ -25,6 +26,11 @@ from syncplaylists.modules.accounts.presentation.schemas import (
 )
 from syncplaylists.modules.identity.presentation.dependencies import CurrentUserId
 from syncplaylists.shared_kernel.application.ports import PlatformCredentials
+from syncplaylists.shared_kernel.domain.errors import (
+    PlatformError,
+    PlatformNotSupportedError,
+    PlatformRegionError,
+)
 from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -60,8 +66,6 @@ async def connect_account(
             user_id=user_id,
             platform=body.platform,
             transport=body.transport,
-            external_user_id=body.external_user_id,
-            display_name=body.display_name,
             credentials=PlatformCredentials(
                 access_token=body.access_token.get_secret_value(),
                 refresh_token=(
@@ -73,6 +77,26 @@ async def connect_account(
     except AccountAlreadyConnectedError as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "На этой площадке уже подключён другой аккаунт"
+        ) from exc
+    except InvalidPlatformTokenError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            {"code": "invalid_token", "message": "Площадка не приняла токен"},
+        ) from exc
+    except PlatformNotSupportedError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            {"code": "platform_not_supported", "message": str(exc)},
+        ) from exc
+    except PlatformRegionError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {"code": "region_blocked", "message": "Площадка недоступна из региона сервера"},
+        ) from exc
+    except PlatformError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {"code": "platform_unavailable", "message": "Площадка не ответила, попробуйте позже"},
         ) from exc
     return AccountResponse.from_dto(dto)
 

@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from syncplaylists.modules.accounts.application.ports import (
     OAuthGrant,
     PendingOAuth,
+    PlatformProfile,
 )
 from syncplaylists.modules.accounts.domain.entities import ConnectedAccount
 from syncplaylists.modules.accounts.domain.value_objects import AccountStatus
@@ -12,6 +13,7 @@ from syncplaylists.shared_kernel.application.ports import (
     AccountNotAvailableError,
     PlatformCredentials,
 )
+from syncplaylists.shared_kernel.domain.errors import PlatformAuthError
 from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
 
 
@@ -21,6 +23,7 @@ def make_access(user_id: UUID, platform: Platform, account_id: UUID | None = Non
         user_id=user_id,
         platform=platform,
         transport=Transport.UNOFFICIAL,
+        external_user_id=f"{platform.value}-owner",
         credentials=PlatformCredentials(access_token=f"token-{platform.value}"),
     )
 
@@ -30,6 +33,9 @@ class FakeAccountAccessProvider:
         self._accesses: dict[UUID, AccountAccess] = {}
         self._unavailable: set[UUID] = set()
         self.updated: list[tuple[UUID, PlatformCredentials]] = []
+        # report_auth_failure: True — перепроверка подтвердила, что токен протух.
+        self.auth_failure_confirms = True
+        self.auth_failures: list[UUID] = []
 
     def connect(self, user_id: UUID, platform: Platform) -> AccountAccess:
         access = make_access(user_id, platform)
@@ -57,6 +63,12 @@ class FakeAccountAccessProvider:
 
     async def update_credentials(self, account_id: UUID, credentials: PlatformCredentials) -> None:
         self.updated.append((account_id, credentials))
+
+    async def report_auth_failure(self, account_id: UUID) -> bool:
+        self.auth_failures.append(account_id)
+        if self.auth_failure_confirms:
+            self._unavailable.add(account_id)
+        return self.auth_failure_confirms
 
 
 class FakeTokenCipher:
@@ -168,3 +180,43 @@ class DictRegistry:
 
     def get(self, platform: Platform) -> StubOAuthProvider | None:
         return self._providers.get(platform)
+
+
+class StubProfileFetcher:
+    """Профиль площадки по токену: известные токены → заданный профиль; неизвестный
+    токен площадка «не принимает» (PlatformAuthError). `failure` — что бросить вместо
+    ответа (например, PlatformUnavailableError)."""
+
+    def __init__(self, platform: Platform) -> None:
+        self.platform = platform
+        self.profiles: dict[str, PlatformProfile] = {}
+        self.failure: Exception | None = None
+        self.calls = 0
+
+    def accept(self, token: str, external_user_id: str, display_name: str = "Alice") -> None:
+        self.profiles[token] = PlatformProfile(external_user_id, display_name)
+
+    def revoke(self, token: str) -> None:
+        self.profiles.pop(token, None)
+
+    async def fetch(self, credentials: PlatformCredentials) -> PlatformProfile:
+        self.calls += 1
+        if self.failure is not None:
+            raise self.failure
+        profile = self.profiles.get(credentials.access_token)
+        if profile is None:
+            raise PlatformAuthError(self.platform, "stub: токен не принят")
+        return profile
+
+
+class StubProfileRegistry:
+    def __init__(self, *fetchers: StubProfileFetcher) -> None:
+        self._fetchers = {f.platform: f for f in fetchers}
+
+    def fetcher(self, platform: Platform) -> StubProfileFetcher:
+        if platform not in self._fetchers:
+            self._fetchers[platform] = StubProfileFetcher(platform)
+        return self._fetchers[platform]
+
+    def get(self, platform: Platform) -> StubProfileFetcher | None:
+        return self._fetchers.get(platform)

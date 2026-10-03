@@ -1,0 +1,26 @@
+{
+  "invocationInfo": {"hostname": "music-api", "req-id": "scrubbed", "exec-duration-millis": 25},
+  "result": [
+    {
+      "id": "33311009",
+      "realId": "33311009",
+      "title": "Группа крови",
+      "available": true,
+      "type": "music",
+      "artists": [{"id": 41191, "name": "КИНО", "various": false, "composer": false}],
+      "albums": [{"id": 4006131, "title": "Группа крови", "year": 1988, "trackCount": 11}],
+      "coverUri": "avatars.yandex.net/get-music-content/97284/4006131.a.1-1/%%",
+      "durationMs": 285000
+    },
+    {
+      "id": "999001",
+      "realId": "999001",
+      "title": "Демо без альбома",
+      "available": true,
+      "type": "music",
+      "artists": [{"id": 5, "name": "Local Band"}],
+      "albums": [],
+      "durationMs": 120000
+    }
+  ]
+}

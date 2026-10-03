@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 
+import httpx
 from arq.connections import ArqRedis, create_pool
 from arq.connections import RedisSettings as ArqRedisSettings
 from dishka import AsyncContainer, Provider, Scope, make_async_container, provide
@@ -11,17 +12,37 @@ from syncplaylists.infrastructure.db.engine import create_engine
 from syncplaylists.infrastructure.db.session import create_session_factory
 from syncplaylists.infrastructure.db.uow import SqlUnitOfWork
 from syncplaylists.infrastructure.events.redis_publisher import RedisEventPublisher
+from syncplaylists.infrastructure.http.url_expander import HttpxUrlExpander
 from syncplaylists.infrastructure.queue.arq_queue import ArqTaskQueue
 from syncplaylists.infrastructure.ratelimit.redis_fixed_window import RedisFixedWindowLimiter
+from syncplaylists.infrastructure.ratelimit.redis_token_bucket import (
+    RedisTokenBucketLimiter,
+    TokenBucketLimits,
+)
 from syncplaylists.infrastructure.security.aes_gcm import AesGcmTokenCipher
-from syncplaylists.integrations.platforms.fake.factory import FakeGatewayFactory
+from syncplaylists.integrations.platforms.fake.factory import (
+    FakeProfileFetcher,
+    build_fake_gateway,
+)
 from syncplaylists.integrations.platforms.fake.oauth import FakeOAuthProvider
+from syncplaylists.integrations.platforms.registry import (
+    DictProfileRegistry,
+    GatewayBuilder,
+    PlatformGatewayFactory,
+)
+from syncplaylists.integrations.platforms.yandex.factory import (
+    YandexClientFactory,
+    YandexGatewayBuilder,
+    YandexProfileFetcher,
+)
 from syncplaylists.modules.accounts.application.access import AccountAccessService
 from syncplaylists.modules.accounts.application.ports import (
     AccountCredentialsWriter,
     ConnectedAccountRepository,
     OAuthProviderRegistry,
     OAuthStateStore,
+    PlatformProfileFetcher,
+    PlatformProfileRegistry,
     TokenCipher,
 )
 from syncplaylists.modules.accounts.application.use_cases import (
@@ -76,9 +97,11 @@ from syncplaylists.modules.matching.domain.normalization import TrackNormalizer
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
 from syncplaylists.modules.matching.domain.scoring import MatchScorer
 from syncplaylists.modules.matching.infrastructure.repository import SqlTrackMatchRepository
+from syncplaylists.modules.transfers.application.links import ResolvePlaylistLinkUseCase
 from syncplaylists.modules.transfers.application.ports import TransferRepository
 from syncplaylists.modules.transfers.application.use_cases import (
     FailTransferItemUseCase,
+    FailTransferUseCase,
     GetTransferUseCase,
     MatchTransferItemUseCase,
     ProcessTransferUseCase,
@@ -92,9 +115,13 @@ from syncplaylists.shared_kernel.application.ports import (
     AccountAccessProvider,
     EventPublisher,
     GatewayFactory,
+    PlatformRateLimiter,
     TaskQueue,
     UnitOfWork,
 )
+from syncplaylists.shared_kernel.domain.links import LinkResolver
+from syncplaylists.shared_kernel.domain.ports import UrlExpander
+from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 
 class SettingsProvider(Provider):
@@ -167,10 +194,68 @@ class GatewayProvider(Provider):
     scope = Scope.APP
 
     @provide
-    def get_gateway_factory(self) -> GatewayFactory:
-        # Настоящих адаптеров площадок ещё нет (этап 4) — единственная реализация
-        # GatewayFactory на этом этапе отдаёт in-memory фейковую площадку.
-        return FakeGatewayFactory()
+    async def get_http_client(self) -> AsyncIterator[httpx.AsyncClient]:
+        # Один пул соединений на процесс для всех площадок и раскрытия ссылок.
+        # Таймауты задаются на каждый запрос (у каждой площадки свои).
+        async with httpx.AsyncClient(follow_redirects=False) as client:
+            yield client
+
+    @provide
+    def get_rate_limiter(self, redis: Redis, settings: Settings) -> PlatformRateLimiter:
+        yandex = settings.platforms.yandex.rate_limit
+        return RedisTokenBucketLimiter(
+            redis,
+            {
+                Platform.YANDEX: TokenBucketLimits(
+                    capacity=yandex.capacity,
+                    refill_per_second=yandex.refill_per_second,
+                    max_wait_seconds=yandex.max_wait_seconds,
+                )
+            },
+        )
+
+    @provide
+    def get_yandex_clients(
+        self, http: httpx.AsyncClient, limiter: PlatformRateLimiter, settings: Settings
+    ) -> YandexClientFactory:
+        return YandexClientFactory(
+            http,
+            timeout_seconds=settings.platforms.yandex.request_timeout_seconds,
+            limiter=limiter,
+        )
+
+    @provide
+    def get_gateway_factory(
+        self, settings: Settings, yandex_clients: YandexClientFactory
+    ) -> GatewayFactory:
+        builders: dict[Platform, GatewayBuilder] = {
+            Platform.YANDEX: YandexGatewayBuilder(
+                yandex_clients, batch_size=settings.platforms.yandex.batch_size
+            ),
+        }
+        # Фейк (dev/тесты) перекрывает настоящий адаптер площадки, если указан явно.
+        for platform in settings.platforms.fake:
+            builders[platform] = build_fake_gateway
+        return PlatformGatewayFactory(builders)
+
+    @provide
+    def get_profile_registry(
+        self, settings: Settings, yandex_clients: YandexClientFactory
+    ) -> PlatformProfileRegistry:
+        fetchers: dict[Platform, PlatformProfileFetcher] = {
+            Platform.YANDEX: YandexProfileFetcher(yandex_clients),
+        }
+        for platform in settings.platforms.fake:
+            fetchers[platform] = FakeProfileFetcher(platform)
+        return DictProfileRegistry(fetchers.values())
+
+    @provide
+    def get_url_expander(self, http: httpx.AsyncClient, settings: Settings) -> UrlExpander:
+        return HttpxUrlExpander(http, settings.platforms.link_expander_timeout_seconds)
+
+    @provide
+    def get_link_resolver(self, expander: UrlExpander) -> LinkResolver:
+        return LinkResolver(expander)
 
 
 class CatalogProvider(Provider):
@@ -338,14 +423,19 @@ class AccountsProvider(Provider):
         accounts: ConnectedAccountRepository,
         cipher: TokenCipher,
         writer: AccountCredentialsWriter,
+        profiles: PlatformProfileRegistry,
     ) -> AccountAccessProvider:
-        return AccountAccessService(accounts, cipher, writer)
+        return AccountAccessService(accounts, cipher, writer, profiles)
 
     @provide(scope=Scope.REQUEST)
     def get_connect_account(
-        self, uow: UnitOfWork, accounts: ConnectedAccountRepository, cipher: TokenCipher
+        self,
+        uow: UnitOfWork,
+        accounts: ConnectedAccountRepository,
+        cipher: TokenCipher,
+        profiles: PlatformProfileRegistry,
     ) -> ConnectAccountUseCase:
-        return ConnectAccountUseCase(uow, accounts, cipher)
+        return ConnectAccountUseCase(uow, accounts, cipher, profiles)
 
     @provide(scope=Scope.REQUEST)
     def get_disconnect_account(
@@ -390,8 +480,24 @@ class TransfersProvider(Provider):
         transfers: TransferRepository,
         task_queue: TaskQueue,
         accounts: AccountAccessProvider,
+        gateway_factory: GatewayFactory,
     ) -> StartTransferUseCase:
-        return StartTransferUseCase(uow, transfers, task_queue, accounts)
+        return StartTransferUseCase(uow, transfers, task_queue, accounts, gateway_factory)
+
+    @provide
+    def get_resolve_link(
+        self,
+        resolver: LinkResolver,
+        gateway_factory: GatewayFactory,
+        accounts: AccountAccessProvider,
+    ) -> ResolvePlaylistLinkUseCase:
+        return ResolvePlaylistLinkUseCase(resolver, gateway_factory, accounts)
+
+    @provide
+    def get_fail_transfer(
+        self, uow: UnitOfWork, transfers: TransferRepository
+    ) -> FailTransferUseCase:
+        return FailTransferUseCase(uow, transfers)
 
     @provide
     def get_process_transfer(

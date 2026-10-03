@@ -7,20 +7,90 @@ from redis.asyncio import Redis
 from sse_starlette.sse import EventSourceResponse
 
 from syncplaylists.modules.identity.presentation.dependencies import CurrentUserId
+from syncplaylists.modules.transfers.application.links import ResolvePlaylistLinkUseCase
 from syncplaylists.modules.transfers.application.use_cases import (
     GetTransferUseCase,
     ResolveUncertainItemUseCase,
     StartTransferUseCase,
     TransferNotFoundError,
 )
+from syncplaylists.modules.transfers.domain.value_objects import TrackDestination, TrackSource
 from syncplaylists.modules.transfers.presentation.schemas import (
+    LinkSchema,
+    ResolvedLinkResponse,
     ResolveItemRequest,
+    ResolveLinkRequest,
     StartTransferRequest,
     TransferResponse,
 )
 from syncplaylists.shared_kernel.application.ports import AccountNotAvailableError
+from syncplaylists.shared_kernel.domain.errors import (
+    PlatformError,
+    PlatformNotSupportedError,
+    PlatformRegionError,
+    PlaylistNotFoundError,
+    PlaylistNotWritableError,
+    UnsupportedLinkError,
+)
 
 router = APIRouter(prefix="/transfers", tags=["transfers"])
+links_router = APIRouter(prefix="/links", tags=["links"])
+
+
+def _unprocessable(code: str, message: str) -> HTTPException:
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"code": code, "message": message})
+
+
+def _link_or_platform_error(exc: Exception) -> HTTPException:
+    """Ошибки разбора ссылки и обращения к площадке → HTTP с машиночитаемым code."""
+    if isinstance(exc, UnsupportedLinkError):
+        return _unprocessable(exc.reason, str(exc))
+    if isinstance(exc, PlatformNotSupportedError):
+        return _unprocessable("platform_not_supported", str(exc))
+    if isinstance(exc, AccountNotAvailableError):
+        return _unprocessable(
+            "account_not_connected",
+            "Нет подключённого активного аккаунта для площадки источника или назначения",
+        )
+    if isinstance(exc, PlaylistNotFoundError):
+        return _unprocessable("playlist_not_found", "Плейлист не найден или закрыт")
+    if isinstance(exc, PlaylistNotWritableError):
+        return _unprocessable(
+            "playlist_not_writable", "Добавлять треки можно только в свой плейлист"
+        )
+    if isinstance(exc, PlatformRegionError):
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            {"code": "region_blocked", "message": "Площадка недоступна из региона сервера"},
+        )
+    assert isinstance(exc, PlatformError)
+    return HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        {"code": "platform_unavailable", "message": "Площадка не ответила, попробуйте позже"},
+    )
+
+
+_HANDLED_ERRORS = (
+    UnsupportedLinkError,
+    PlatformNotSupportedError,
+    AccountNotAvailableError,
+    PlatformError,
+)
+
+
+async def _resolve_request(
+    request: StartTransferRequest, user_id: UUID, resolve_link: ResolvePlaylistLinkUseCase
+) -> tuple[TrackSource, TrackDestination]:
+    if isinstance(request.source, LinkSchema):
+        source: TrackSource = (await resolve_link.execute(user_id, request.source.url)).as_source()
+    else:
+        source = request.source.to_domain()
+    if isinstance(request.destination, LinkSchema):
+        resolved = await resolve_link.execute(user_id, request.destination.url)
+        destination: TrackDestination = resolved.as_destination()
+    else:
+        destination = request.destination.to_domain()
+    return source, destination
 
 
 @router.post("", status_code=201)
@@ -29,17 +99,29 @@ async def start_transfer(
     request: StartTransferRequest,
     user_id: CurrentUserId,
     use_case: FromDishka[StartTransferUseCase],
+    resolve_link: FromDishka[ResolvePlaylistLinkUseCase],
 ) -> TransferResponse:
     try:
-        dto = await use_case.execute(
-            user_id, request.source.to_domain(), request.destination.to_domain()
-        )
-    except AccountNotAvailableError as exc:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "Нет подключённого активного аккаунта для площадки источника или назначения",
-        ) from exc
+        source, destination = await _resolve_request(request, user_id, resolve_link)
+        dto = await use_case.execute(user_id, source, destination)
+    except _HANDLED_ERRORS as exc:
+        raise _link_or_platform_error(exc) from exc
     return TransferResponse.from_dto(dto)
+
+
+@links_router.post("/resolve")
+@inject
+async def resolve_link(
+    request: ResolveLinkRequest,
+    user_id: CurrentUserId,
+    use_case: FromDishka[ResolvePlaylistLinkUseCase],
+) -> ResolvedLinkResponse:
+    """Предпросмотр ссылки для фронта: площадка, плейлист или медиатека, название."""
+    try:
+        dto = await use_case.execute(user_id, request.url)
+    except _HANDLED_ERRORS as exc:
+        raise _link_or_platform_error(exc) from exc
+    return ResolvedLinkResponse.from_dto(dto)
 
 
 @router.get("/{transfer_id}")

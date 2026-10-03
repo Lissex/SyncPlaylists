@@ -1,6 +1,12 @@
 import pytest
 
-from syncplaylists.modules.matching.domain.version import VersionTag, extract_version
+from syncplaylists.modules.matching.domain.version import (
+    VersionInfo,
+    VersionTag,
+    extract_version,
+    version_search_suffix,
+    versions_match,
+)
 
 
 @pytest.mark.parametrize(
@@ -84,3 +90,38 @@ def test_extract_version_does_not_tag_substring_of_another_word() -> None:
     remaining, version = extract_version("alive and well")
     assert remaining == "alive and well"
     assert version.tag is VersionTag.ORIGINAL
+
+
+@pytest.mark.parametrize(
+    ("version", "suffix"),
+    [
+        (VersionInfo(VersionTag.LIVE), "live"),
+        (VersionInfo(VersionTag.REMIX, "tiesto"), "tiesto remix"),
+        (VersionInfo(VersionTag.REMIX), "remix"),
+        (VersionInfo(VersionTag.ACOUSTIC), "acoustic"),
+        (VersionInfo(VersionTag.SPED_UP), "sped up"),
+        (VersionInfo(VersionTag.SLOWED), "slowed"),
+        (VersionInfo(VersionTag.EXTENDED), "extended mix"),
+        (VersionInfo(VersionTag.RADIO_EDIT), "radio edit"),
+        (VersionInfo(VersionTag.INSTRUMENTAL), "instrumental"),
+        (VersionInfo(), None),
+        (VersionInfo(VersionTag.COVER), None),
+        (VersionInfo(VersionTag.KARAOKE), None),
+    ],
+)
+def test_version_search_suffix(version: VersionInfo, suffix: str | None) -> None:
+    assert version_search_suffix(version) == suffix
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        (VersionInfo(), VersionInfo(), True),
+        (VersionInfo(VersionTag.LIVE), VersionInfo(), False),
+        (VersionInfo(VersionTag.REMIX, "a"), VersionInfo(VersionTag.REMIX, "a"), True),
+        (VersionInfo(VersionTag.REMIX, "a"), VersionInfo(VersionTag.REMIX, "b"), False),
+        (VersionInfo(VersionTag.REMIX, "a"), VersionInfo(VersionTag.REMIX), True),
+    ],
+)
+def test_versions_match(a: VersionInfo, b: VersionInfo, same: bool) -> None:
+    assert versions_match(a, b) is same

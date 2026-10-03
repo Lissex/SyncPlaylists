@@ -5,6 +5,7 @@ from typing import Protocol
 from uuid import UUID
 
 from syncplaylists.modules.accounts.domain.entities import ConnectedAccount
+from syncplaylists.shared_kernel.application.ports import PlatformCredentials
 from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 
@@ -81,3 +82,23 @@ class OAuthStateStore(Protocol):
 
     # Атомарно читает и удаляет: state одноразовый.
     async def pop(self, state: str) -> PendingOAuth | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformProfile:
+    external_user_id: str
+    display_name: str | None
+
+
+class PlatformProfileFetcher(Protocol):
+    """Профиль аккаунта площадки по токену — проверка токена при ручном подключении и
+    перепроверка после PlatformAuthError. Бросает ошибки shared_kernel.domain.errors
+    (PlatformAuthError — токен не принят)."""
+
+    platform: Platform
+
+    async def fetch(self, credentials: PlatformCredentials) -> PlatformProfile: ...
+
+
+class PlatformProfileRegistry(Protocol):
+    def get(self, platform: Platform) -> PlatformProfileFetcher | None: ...

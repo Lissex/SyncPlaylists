@@ -12,3 +12,7 @@ class AccountNotUsableError(Exception):
 
 class InvalidAccountTransitionError(Exception):
     pass
+
+
+class InvalidPlatformTokenError(Exception):
+    """Площадка не приняла токен при подключении аккаунта."""

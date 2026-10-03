@@ -41,14 +41,12 @@ async def _register(client: AsyncClient, email: str | None = None) -> str:
     return email
 
 
-async def _connect(client: AsyncClient, platform: str, external_user_id: str) -> dict[str, str]:
+async def _connect(client: AsyncClient, platform: str, account: str) -> dict[str, str]:
+    # Фейковая площадка выводит external_user_id из токена: разные `account` — разные
+    # аккаунты площадки.
     response = await client.post(
         "/accounts",
-        json={
-            "platform": platform,
-            "external_user_id": external_user_id,
-            "access_token": f"secret-{platform}-token",
-        },
+        json={"platform": platform, "access_token": f"secret-{platform}-{account}"},
     )
     assert response.status_code == 201, response.text
     body: dict[str, str] = response.json()
@@ -190,7 +188,7 @@ async def test_second_account_on_same_platform_is_409(make_client: ClientFactory
 
         response = await client.post(
             "/accounts",
-            json={"platform": "vk", "external_user_id": "vk-2", "access_token": "t"},
+            json={"platform": "vk", "access_token": "secret-vk-vk-2"},
         )
 
         assert response.status_code == 409

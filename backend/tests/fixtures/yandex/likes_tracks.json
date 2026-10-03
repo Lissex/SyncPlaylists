@@ -1,0 +1,14 @@
+{
+  "invocationInfo": {"hostname": "music-api", "req-id": "scrubbed", "exec-duration-millis": 30},
+  "result": {
+    "library": {
+      "uid": 123456789,
+      "revision": 4242,
+      "playlistUuid": "lk.11111111-2222-3333-4444-000000000003",
+      "tracks": [
+        {"id": "33311009", "albumId": "4006131", "timestamp": "2026-10-02T09:00:00+00:00"},
+        {"id": "57703", "albumId": "4766", "timestamp": "2026-09-30T09:00:00+00:00"}
+      ]
+    }
+  }
+}

@@ -67,6 +67,32 @@ class OAuthSettings(BaseModel):
     fake_platforms: list[Platform] = []
 
 
+class RateLimitSettings(BaseModel):
+    """Token bucket на (площадка, аккаунт): capacity — допустимый всплеск запросов,
+    refill_per_second — устойчивая частота. Если ждать токен дольше max_wait_seconds,
+    задача уходит в повтор с задержкой, а не держит воркер."""
+
+    capacity: int = 5
+    refill_per_second: float = 3.0
+    max_wait_seconds: float = 10.0
+
+
+class YandexSettings(BaseModel):
+    rate_limit: RateLimitSettings = RateLimitSettings()
+    request_timeout_seconds: float = 15.0
+    # Сколько треков догружать одним запросом /tracks и добавлять одной пачкой.
+    batch_size: int = 100
+
+
+class PlatformsSettings(BaseModel):
+    # Площадки, которые обслуживает in-memory фейк (dev/тесты) — вместо настоящего
+    # адаптера, если он есть. Настоящий адаптер пока только у Яндекса.
+    fake: list[Platform] = []
+    yandex: YandexSettings = YandexSettings()
+    # Раскрытие коротких ссылок (vk.cc, on.soundcloud.com, ...).
+    link_expander_timeout_seconds: float = 5.0
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # ".env" — если команды запускаются из backend/ с собственным .env;
@@ -82,3 +108,4 @@ class Settings(BaseSettings):
     security: SecuritySettings
     cors: CorsSettings = CorsSettings()
     oauth: OAuthSettings = OAuthSettings()
+    platforms: PlatformsSettings = PlatformsSettings()

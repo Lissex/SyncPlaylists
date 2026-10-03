@@ -1,8 +1,10 @@
+import logging
 from uuid import UUID
 
 from syncplaylists.modules.accounts.application.ports import (
     AccountCredentialsWriter,
     ConnectedAccountRepository,
+    PlatformProfileRegistry,
     TokenCipher,
 )
 from syncplaylists.modules.accounts.application.use_cases import encrypt_credentials, token_aad
@@ -13,7 +15,10 @@ from syncplaylists.shared_kernel.application.ports import (
     AccountNotAvailableError,
     PlatformCredentials,
 )
+from syncplaylists.shared_kernel.domain.errors import PlatformAuthError, PlatformError
 from syncplaylists.shared_kernel.domain.value_objects import Platform
+
+logger = logging.getLogger(__name__)
 
 
 class AccountAccessService:
@@ -26,10 +31,12 @@ class AccountAccessService:
         accounts: ConnectedAccountRepository,
         cipher: TokenCipher,
         writer: AccountCredentialsWriter,
+        profiles: PlatformProfileRegistry,
     ) -> None:
         self._accounts = accounts
         self._cipher = cipher
         self._writer = writer
+        self._profiles = profiles
 
     async def get(self, user_id: UUID, account_id: UUID) -> AccountAccess:
         account = await self._accounts.get(account_id)
@@ -52,6 +59,39 @@ class AccountAccessService:
         if not await self._writer.apply(account_id, change):
             raise AccountNotAvailableError(f"Аккаунт {account_id} не найден")
 
+    async def report_auth_failure(self, account_id: UUID) -> bool:
+        account = await self._accounts.get(account_id)
+        if account is None:
+            raise AccountNotAvailableError(f"Аккаунт {account_id} не найден")
+        try:
+            access = self._to_access(account)
+        except AccountNotAvailableError:
+            return True  # уже не ACTIVE — для вызывающего это тоже «аккаунт не годен»
+
+        # 401 бывает и разовым (сбой на стороне площадки): прежде чем требовать от
+        # пользователя переподключиться, один раз перепроверяем токен через профиль.
+        fetcher = self._profiles.get(account.platform)
+        if fetcher is not None:
+            try:
+                await fetcher.fetch(access.credentials)
+            except PlatformAuthError:
+                pass
+            except PlatformError as exc:
+                logger.warning(
+                    "Перепроверка токена аккаунта %s не удалась (%s), считаем ошибку разовой",
+                    account_id,
+                    type(exc).__name__,
+                )
+                return False
+            else:
+                return False
+
+        def change(target: ConnectedAccount) -> None:
+            target.mark_expired()
+
+        await self._writer.apply(account_id, change)
+        return True
+
     def _to_access(self, account: ConnectedAccount) -> AccountAccess:
         try:
             access_token = account.ensure_usable()
@@ -69,6 +109,7 @@ class AccountAccessService:
             user_id=account.user_id,
             platform=account.platform,
             transport=account.transport,
+            external_user_id=account.external_user_id,
             credentials=PlatformCredentials(
                 access_token=self._cipher.decrypt(
                     access_token.ciphertext, aad=token_aad(account.id, "access")

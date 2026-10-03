@@ -99,11 +99,8 @@ async def _login_with_accounts(client: AsyncClient) -> None:
     for platform in ("vk", "spotify"):
         connect = await client.post(
             "/accounts",
-            json={
-                "platform": platform,
-                "external_user_id": f"{platform}-e2e",
-                "access_token": "token",
-            },
+            # external_user_id сервер берёт из профиля площадки (фейк выводит его из токена).
+            json={"platform": platform, "access_token": f"{platform}-e2e-token"},
         )
         assert connect.status_code == 201, connect.text
 

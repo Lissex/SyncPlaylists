@@ -9,7 +9,7 @@ from syncplaylists.modules.matching.domain.strategies import (
     FuzzySearchStrategy,
     IsrcStrategy,
 )
-from syncplaylists.shared_kernel.domain.search import TrackCandidate
+from syncplaylists.shared_kernel.domain.search import TrackCandidate, TrackQuery
 from syncplaylists.shared_kernel.domain.value_objects import (
     ISRC,
     Duration,
@@ -150,3 +150,105 @@ async def test_fuzzy_strategy_returns_uncertain_for_weak_candidate() -> None:
     assert attempt.status is MatchStatus.UNCERTAIN
     assert attempt.match is None
     assert candidate in attempt.candidates
+
+
+# --- несовпадение версии: сначала ищем ту же версию, потом оригинал как UNCERTAIN ---
+
+
+def _target(external_id: str, title: str, duration_ms: int = 260_000) -> TrackCandidate:
+    return TrackCandidate(
+        ref=ExternalTrackRef(Platform.SPOTIFY, external_id),
+        title=title,
+        artist="The Weeknd",
+        duration=Duration(duration_ms),
+    )
+
+
+async def test_fuzzy_strategy_searches_same_version_when_first_search_has_only_original() -> None:
+    original = _target("orig", "Starboy")
+    live = _target("live", "Starboy (Live)")
+
+    def search(query: TrackQuery) -> list[TrackCandidate]:
+        return [live] if "live" in query.title else [original]
+
+    gateway = FakeMusicPlatformGateway(search_fn=search)
+    strategy = FuzzySearchStrategy(gateway, TrackNormalizer(), MatchScorer(TrackNormalizer()))
+
+    attempt = await strategy.attempt(_request(title="Starboy (Live)", duration=Duration(260_000)))
+
+    assert attempt is not None
+    assert attempt.status is MatchStatus.MATCHED
+    assert attempt.match is not None
+    assert attempt.match.target_ref == live.ref
+    assert [q.title for q in gateway.search_queries] == ["Starboy (Live)", "starboy live"]
+    # Кандидаты нужной версии — первыми (для ручного выбора).
+    assert [c.ref for c in attempt.candidates] == [live.ref, original.ref]
+
+
+async def test_fuzzy_strategy_offers_original_as_uncertain_when_version_missing() -> None:
+    original = _target("orig", "Starboy")
+    gateway = FakeMusicPlatformGateway(search_results=[original])
+    strategy = FuzzySearchStrategy(gateway, TrackNormalizer(), MatchScorer(TrackNormalizer()))
+
+    attempt = await strategy.attempt(_request(title="Starboy (Live)", duration=Duration(260_000)))
+
+    assert attempt is not None
+    assert attempt.status is MatchStatus.UNCERTAIN
+    assert attempt.match is None
+    assert [c.ref for c in attempt.candidates] == [original.ref]
+    assert gateway.search_calls == 2  # второй запрос был, но той же версии не нашёл
+
+
+async def test_fuzzy_strategy_searches_named_remix() -> None:
+    original = _target("orig", "Starboy")
+    remix = _target("remix", "Starboy (Kygo Remix)")
+
+    def search(query: TrackQuery) -> list[TrackCandidate]:
+        return [remix] if "kygo remix" in query.title else [original]
+
+    gateway = FakeMusicPlatformGateway(search_fn=search)
+    strategy = FuzzySearchStrategy(gateway, TrackNormalizer(), MatchScorer(TrackNormalizer()))
+
+    attempt = await strategy.attempt(
+        _request(title="Starboy (Kygo Remix)", duration=Duration(260_000))
+    )
+
+    assert attempt is not None
+    assert attempt.status is MatchStatus.MATCHED
+    assert attempt.match is not None
+    assert attempt.match.target_ref == remix.ref
+
+
+async def test_fuzzy_strategy_no_second_search_for_original_source() -> None:
+    gateway = FakeMusicPlatformGateway(search_results=[_target("live", "Starboy (Live)")])
+    strategy = FuzzySearchStrategy(gateway, TrackNormalizer(), MatchScorer(TrackNormalizer()))
+
+    await strategy.attempt(_request(title="Starboy", duration=Duration(260_000)))
+
+    assert gateway.search_calls == 1
+
+
+async def test_fuzzy_strategy_no_second_search_when_same_version_already_found() -> None:
+    gateway = FakeMusicPlatformGateway(search_results=[_target("live", "Starboy (Live)")])
+    strategy = FuzzySearchStrategy(gateway, TrackNormalizer(), MatchScorer(TrackNormalizer()))
+
+    attempt = await strategy.attempt(_request(title="Starboy (Live)", duration=Duration(260_000)))
+
+    assert gateway.search_calls == 1
+    assert attempt is not None
+    assert attempt.status is MatchStatus.MATCHED
+
+
+async def test_fuzzy_strategy_version_search_on_empty_first_result() -> None:
+    live = _target("live", "Starboy (Live)")
+
+    def search(query: TrackQuery) -> list[TrackCandidate]:
+        return [live] if "live" in query.title else []
+
+    gateway = FakeMusicPlatformGateway(search_fn=search)
+    strategy = FuzzySearchStrategy(gateway, TrackNormalizer(), MatchScorer(TrackNormalizer()))
+
+    attempt = await strategy.attempt(_request(title="Starboy (Live)", duration=Duration(260_000)))
+
+    assert attempt is not None
+    assert attempt.status is MatchStatus.MATCHED

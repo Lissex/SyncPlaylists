@@ -25,6 +25,10 @@ class TrackCandidate(ValueObject):
     artist: str
     duration: Duration | None = None
     isrc: ISRC | None = None
+    # artist — все артисты одной строкой через ", " (её разбирает matching);
+    # artists — тот же список по отдельности, если площадка его отдаёт.
+    artists: tuple[str, ...] = ()
+    cover_url: str | None = None
 
 
 class InsertOrder(StrEnum):
@@ -40,6 +44,18 @@ class PlaylistSnapshot(ValueObject):
     title: str
     description: str | None
     tracks: tuple[TrackCandidate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PlaylistInfo(ValueObject):
+    """Шапка плейлиста без треков — дешёвый запрос: владелец (для проверки права
+    записи), название, число треков (для предпросмотра ссылки)."""
+
+    ref: PlaylistRef
+    title: str
+    description: str | None
+    owner_external_id: str | None
+    track_count: int | None
 
 
 @dataclass(frozen=True, slots=True)

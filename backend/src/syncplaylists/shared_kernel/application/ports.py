@@ -61,6 +61,9 @@ class AccountAccess:
     user_id: UUID
     platform: Platform
     transport: Transport
+    # id аккаунта на площадке (проверен через профиль площадки при подключении) —
+    # по нему адаптер/use case узнаёт «свой» плейлист.
+    external_user_id: str
     credentials: PlatformCredentials
 
 
@@ -84,8 +87,24 @@ class AccountAccessProvider(Protocol):
         self, account_id: UUID, credentials: PlatformCredentials
     ) -> None: ...
 
+    # Площадка ответила PlatformAuthError. Токен перепроверяется через профиль
+    # площадки ещё раз: True — токен действительно не принят, аккаунт переведён в
+    # EXPIRED; False — профиль ответил нормально, ошибка была разовой (повторить запрос).
+    async def report_auth_failure(self, account_id: UUID) -> bool: ...
+
 
 class GatewayFactory(Protocol):
     # Выбирает реализацию шлюза по access.platform/access.transport
     # (official / unofficial / extension) и передаёт ей credentials.
+    # Бросает PlatformNotSupportedError, если адаптера нет.
     def for_account(self, access: AccountAccess) -> MusicPlatformGateway: ...
+
+    def supports(self, platform: Platform) -> bool: ...
+
+
+class PlatformRateLimiter(Protocol):
+    """Token bucket на (площадка, аккаунт): адаптер зовёт acquire() перед каждым
+    HTTP-запросом. Ждёт свободный токен; если ждать дольше допустимого — бросает
+    PlatformRateLimitedError (задача уйдёт в повтор с задержкой)."""
+
+    async def acquire(self, platform: Platform, account_id: UUID) -> None: ...

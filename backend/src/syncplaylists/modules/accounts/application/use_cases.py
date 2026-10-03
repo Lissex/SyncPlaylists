@@ -11,15 +11,18 @@ from syncplaylists.modules.accounts.application.ports import (
     OAuthProviderRegistry,
     OAuthStateStore,
     PendingOAuth,
+    PlatformProfileRegistry,
     TokenCipher,
 )
 from syncplaylists.modules.accounts.domain.entities import ConnectedAccount
 from syncplaylists.modules.accounts.domain.errors import (
     AccountAlreadyConnectedError,
     AccountNotFoundError,
+    InvalidPlatformTokenError,
 )
 from syncplaylists.modules.accounts.domain.value_objects import EncryptedToken
 from syncplaylists.shared_kernel.application.ports import PlatformCredentials, UnitOfWork
+from syncplaylists.shared_kernel.domain.errors import PlatformAuthError, PlatformNotSupportedError
 from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
 
 
@@ -45,14 +48,50 @@ def encrypt_credentials(
 
 
 class ConnectAccountUseCase:
+    """Подключение аккаунта площадки. Ручное подключение по токену (`execute`) сначала
+    проверяет токен через профиль площадки и берёт external_user_id/display_name оттуда —
+    присланному клиентом id не доверяем. OAuth (`connect_verified`) получает профиль
+    уже от OAuthProvider вместе с токенами."""
+
     def __init__(
-        self, uow: UnitOfWork, accounts: ConnectedAccountRepository, cipher: TokenCipher
+        self,
+        uow: UnitOfWork,
+        accounts: ConnectedAccountRepository,
+        cipher: TokenCipher,
+        profiles: PlatformProfileRegistry,
     ) -> None:
         self._uow = uow
         self._accounts = accounts
         self._cipher = cipher
+        self._profiles = profiles
 
     async def execute(
+        self,
+        *,
+        user_id: UUID,
+        platform: Platform,
+        transport: Transport,
+        credentials: PlatformCredentials,
+    ) -> AccountDto:
+        """Бросает InvalidPlatformTokenError (токен не принят), PlatformNotSupportedError
+        (для площадки нет проверки профиля), PlatformError (площадка недоступна)."""
+        fetcher = self._profiles.get(platform)
+        if fetcher is None:
+            raise PlatformNotSupportedError(platform)
+        try:
+            profile = await fetcher.fetch(credentials)
+        except PlatformAuthError as exc:
+            raise InvalidPlatformTokenError(f"{platform} не принял токен") from exc
+        return await self.connect_verified(
+            user_id=user_id,
+            platform=platform,
+            transport=transport,
+            external_user_id=profile.external_user_id,
+            display_name=profile.display_name,
+            credentials=credentials,
+        )
+
+    async def connect_verified(
         self,
         *,
         user_id: UUID,
@@ -205,7 +244,7 @@ class CompleteOAuthUseCase:
             code_verifier=pending.code_verifier,
             redirect_uri=self._config.redirect_uri(platform),
         )
-        return await self._connect_account.execute(
+        return await self._connect_account.connect_verified(
             user_id=user_id,
             platform=platform,
             transport=Transport.OFFICIAL,
