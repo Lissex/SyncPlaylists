@@ -49,6 +49,9 @@ class MusicPlatformGateway(Protocol):
 
     def library_insert_order(self) -> InsertOrder: ...
 
+    # Сколько треков вмещает один плейлист площадки (SoundCloud — 500); None — без лимита.
+    def playlist_capacity(self) -> int | None: ...
+
 
 class UrlExpander(Protocol):
     """Раскрывает короткую ссылку (vk.cc, on.soundcloud.com, ...) до ссылки площадки.

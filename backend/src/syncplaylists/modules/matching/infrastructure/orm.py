@@ -17,3 +17,4 @@ class TrackMatchOrm(Base):
     method: Mapped[str] = mapped_column(String(20), nullable=False)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     confirmations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    restriction: Mapped[str | None] = mapped_column(String(20), nullable=True)

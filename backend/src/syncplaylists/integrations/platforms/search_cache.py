@@ -19,6 +19,7 @@ from syncplaylists.shared_kernel.domain.search import (
     PlaylistSnapshot,
     TrackCandidate,
     TrackQuery,
+    TrackRestriction,
 )
 from syncplaylists.shared_kernel.domain.value_objects import (
     ISRC,
@@ -50,6 +51,9 @@ def _candidate_to_dict(candidate: TrackCandidate) -> dict[str, Any]:
         "isrc": candidate.isrc.value if candidate.isrc else None,
         "artists": list(candidate.artists),
         "cover_url": candidate.cover_url,
+        "uploader": candidate.uploader,
+        "rights_holder": candidate.rights_holder,
+        "restriction": candidate.restriction.value if candidate.restriction else None,
     }
 
 
@@ -62,6 +66,9 @@ def _candidate_from_dict(data: dict[str, Any]) -> TrackCandidate:
         isrc=ISRC(data["isrc"]) if data.get("isrc") else None,
         artists=tuple(data.get("artists") or ()),
         cover_url=data.get("cover_url"),
+        uploader=data.get("uploader"),
+        rights_holder=bool(data.get("rights_holder", False)),
+        restriction=TrackRestriction(data["restriction"]) if data.get("restriction") else None,
     )
 
 
@@ -131,6 +138,9 @@ class CachedSearchGateway:
 
     def library_insert_order(self) -> InsertOrder:
         return self._inner.library_insert_order()
+
+    def playlist_capacity(self) -> int | None:
+        return self._inner.playlist_capacity()
 
     # --- внутреннее ---------------------------------------------------------------------
 

@@ -1,7 +1,10 @@
+import dataclasses
+from collections.abc import Sequence
 from uuid import uuid4
 
+from syncplaylists.modules.matching.domain.artists import parse_artist_names
 from syncplaylists.modules.matching.domain.entities import MatchMethod, TrackMatch
-from syncplaylists.modules.matching.domain.normalization import TrackNormalizer
+from syncplaylists.modules.matching.domain.normalization import NormalizedTrack, TrackNormalizer
 from syncplaylists.modules.matching.domain.pipeline import (
     MatchAttempt,
     MatchingPipeline,
@@ -10,6 +13,7 @@ from syncplaylists.modules.matching.domain.pipeline import (
 )
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
 from syncplaylists.modules.matching.domain.scoring import MatchScorer
+from syncplaylists.modules.matching.domain.upload_trust import UploadTrust
 from syncplaylists.modules.matching.domain.version import (
     VersionInfo,
     VersionTag,
@@ -76,6 +80,7 @@ class IsrcStrategy:
             target_ref=best.ref,
             method=MatchMethod.ISRC,
             score=MatchScore(1.0),
+            restriction=best.restriction,
         )
         return MatchAttempt(
             status=MatchStatus.MATCHED,
@@ -92,11 +97,13 @@ class FuzzySearchStrategy:
         normalizer: TrackNormalizer,
         scorer: MatchScorer,
         search_limit: int = 10,
+        upload_trust: UploadTrust | None = None,
     ) -> None:
         self._gateway = gateway
         self._normalizer = normalizer
         self._scorer = scorer
         self._search_limit = search_limit
+        self._upload_trust = upload_trust or UploadTrust()
 
     async def attempt(self, request: MatchRequest) -> MatchAttempt | None:
         source = request.source
@@ -120,20 +127,28 @@ class FuzzySearchStrategy:
         if not candidates:
             return MatchAttempt(status=MatchStatus.NOT_FOUND)
 
-        scored = [
-            (
-                self._scorer.best_score(
-                    source_variants,
-                    source.duration,
-                    self._normalizer.variants(candidate.title, candidate.artist),
-                    candidate.duration,
-                ),
-                candidate,
+        source_artists = self._source_artists(source_variants)
+        scored = []
+        for candidate in candidates:
+            verdict = self._upload_trust.classify(candidate, source_artists)
+            candidate_variants = self._normalizer.variants(candidate.title, candidate.artist)
+            if verdict.uploader_artist is not None:
+                candidate_variants.append(
+                    dataclasses.replace(candidate_variants[0], artist=verdict.uploader_artist)
+                )
+            score = self._scorer.best_score(
+                source_variants, source.duration, candidate_variants, candidate.duration
             )
-            for candidate in candidates
-        ]
-        best_score, best_candidate = max(scored, key=lambda pair: pair[0].value)
-        all_candidates = tuple(candidate for _, candidate in scored)
+            # Бонус официальной заливке не должен поднять над потолком несовпадающую
+            # версию (оригинал вместо live остаётся на ручное подтверждение).
+            adjusted = self._scorer.cap_version_mismatch(
+                self._upload_trust.adjust(score, verdict.kind),
+                source_version,
+                self._version_of(candidate),
+            )
+            scored.append((adjusted, verdict.kind, candidate))
+        best_score, best_candidate = self._upload_trust.pick_best(scored)
+        all_candidates = tuple(candidate for _, _, candidate in scored)
 
         # TODO(этап 6): когда появится AudioRecognitionStrategy после этой стратегии,
         # UNCERTAIN/NOT_FOUND отсюда должны стать None (передать дальше), а не терминальными.
@@ -147,6 +162,7 @@ class FuzzySearchStrategy:
             target_ref=best_candidate.ref,
             method=MatchMethod.FUZZY,
             score=best_score,
+            restriction=best_candidate.restriction,
         )
         if best_score.tier is MatchTier.AUTO:
             return MatchAttempt(
@@ -160,6 +176,15 @@ class FuzzySearchStrategy:
             candidates=all_candidates,
             method=MatchMethod.FUZZY,
         )
+
+    @staticmethod
+    def _source_artists(variants: Sequence[NormalizedTrack]) -> frozenset[str]:
+        # Артист источника по всем вариантам разбора («Artist - Title» в названии,
+        # поле артиста) — с чем сравнивать заливщика кандидата.
+        names: set[str] = set()
+        for variant in variants:
+            names |= parse_artist_names(variant.artist)
+        return frozenset(names)
 
     def _version_of(self, candidate: TrackCandidate) -> VersionInfo:
         return self._normalizer.variants(candidate.title, candidate.artist)[0].version

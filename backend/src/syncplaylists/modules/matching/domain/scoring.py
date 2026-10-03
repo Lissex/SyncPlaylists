@@ -5,7 +5,7 @@ from rapidfuzz import fuzz
 
 from syncplaylists.modules.matching.domain.artists import artist_set_similarity, parse_artist_names
 from syncplaylists.modules.matching.domain.normalization import NormalizedTrack, TrackNormalizer
-from syncplaylists.modules.matching.domain.version import versions_match
+from syncplaylists.modules.matching.domain.version import VersionInfo, versions_match
 from syncplaylists.shared_kernel.domain.value_objects import Duration, MatchScore
 
 
@@ -65,6 +65,14 @@ class MatchScorer:
             ),
             key=lambda score: score.value,
         )
+
+    def cap_version_mismatch(
+        self, score: MatchScore, source: VersionInfo, candidate: VersionInfo
+    ) -> MatchScore:
+        """Тот же потолок, что в score(), — для поправок, сделанных после скоринга."""
+        if versions_match(source, candidate) or score.value <= self._VERSION_MISMATCH_CAP:
+            return score
+        return MatchScore(self._VERSION_MISMATCH_CAP)
 
     def _text_similarity(self, a: str, b: str) -> float:
         if not a and not b:

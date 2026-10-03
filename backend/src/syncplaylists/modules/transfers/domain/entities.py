@@ -82,7 +82,9 @@ class Transfer(AggregateRoot):
     source: TrackSource
     destination: TrackDestination
     status: TransferStatus = TransferStatus.QUEUED
-    resolved_target: PlaylistRef | None = None
+    # Плейлисты, созданные под NewPlaylist. Обычно один; несколько — если треков больше,
+    # чем вмещает плейлист площадки (SoundCloud — 500): «<название> (1/N)», «(2/N)», ...
+    resolved_targets: tuple[PlaylistRef, ...] = ()
     items: list[TransferItem] = field(default_factory=list)
 
     def _ensure_status(self, *allowed: TransferStatus) -> None:
@@ -91,8 +93,14 @@ class Transfer(AggregateRoot):
                 f"Transfer {self.id}: операция недопустима в статусе {self.status}"
             )
 
-    def set_resolved_target(self, ref: PlaylistRef) -> None:
-        self.resolved_target = ref
+    @property
+    def resolved_target(self) -> PlaylistRef | None:
+        return self.resolved_targets[0] if self.resolved_targets else None
+
+    def add_resolved_target(self, ref: PlaylistRef) -> None:
+        if ref in self.resolved_targets:
+            raise InvalidTransferTransitionError(f"Плейлист {ref} уже записан в перенос")
+        self.resolved_targets = (*self.resolved_targets, ref)
 
     def _item(self, position: int) -> TransferItem:
         for item in self.items:
@@ -219,7 +227,14 @@ class Transfer(AggregateRoot):
         if chosen_ref is None:
             item.status = TransferItemStatus.FAILED
             return
-        result = MatchResult(target_ref=chosen_ref, method="manual", score=MatchScore(1.0))
+        chosen = next((c for c in item.candidates if c.ref == chosen_ref), None)
+        restriction = chosen.restriction.value if chosen and chosen.restriction else None
+        result = MatchResult(
+            target_ref=chosen_ref,
+            method="manual",
+            score=MatchScore(1.0),
+            restriction=restriction,
+        )
         item.status = TransferItemStatus.MATCHED
         item.match = result
         self.record_event(

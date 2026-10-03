@@ -47,6 +47,7 @@ class SqlTrackMatchRepository:
                 method=values.method,
                 score=values.score,
                 confirmations=values.confirmations,
+                restriction=values.restriction,
             )
             .on_conflict_do_nothing(index_elements=["source_pt_id", "target_platform"])
         )

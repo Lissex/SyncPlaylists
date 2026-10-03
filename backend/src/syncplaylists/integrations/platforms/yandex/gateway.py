@@ -141,6 +141,9 @@ class YandexGateway:
     def library_insert_order(self) -> InsertOrder:
         return InsertOrder.TOP
 
+    def playlist_capacity(self) -> int | None:
+        return None  # лимит у Яндекса есть (~10 000), но до него переносы не доходят
+
     # --- запись -----------------------------------------------------------------------
 
     async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:

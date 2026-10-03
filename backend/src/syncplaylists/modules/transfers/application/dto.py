@@ -12,7 +12,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     TransferStatus,
 )
 from syncplaylists.shared_kernel.domain.search import TrackCandidate
-from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef
+from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, PlaylistRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +77,7 @@ class TransferDto:
     destination: TrackDestination
     items: tuple[TransferItemDto, ...]
     progress: TransferProgressDto | None = None
+    resolved_targets: tuple[PlaylistRef, ...] = ()
 
     @classmethod
     def from_domain(
@@ -90,4 +91,5 @@ class TransferDto:
             destination=transfer.destination,
             items=tuple(TransferItemDto.from_domain(item) for item in transfer.items),
             progress=progress,
+            resolved_targets=transfer.resolved_targets,
         )
