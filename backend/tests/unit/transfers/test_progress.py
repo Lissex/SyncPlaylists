@@ -114,3 +114,18 @@ async def test_progress_of_foreign_transfer_is_hidden() -> None:
     transfer = await _running_transfer(repo, [])
 
     assert await GetTransferProgressUseCase(repo).execute(uuid4(), transfer.id) is None
+
+
+async def test_paused_by_quota_shows_resume_time_instead_of_eta() -> None:
+    repo = FakeTransferRepository()
+    now = datetime.now(UTC)
+    transfer = await _running_transfer(repo, _every(0.5, 10, end=now))
+    resume_at = now + timedelta(minutes=10)
+    await repo.pause_for_quota(transfer.id, resume_at)
+
+    dto = await GetTransferProgressUseCase(repo).execute(transfer.user_id, transfer.id)
+
+    assert dto is not None
+    assert dto.status == "paused_quota"
+    assert dto.resume_at == resume_at  # фронт: «продолжим в HH:MM»
+    assert dto.eta_seconds is None

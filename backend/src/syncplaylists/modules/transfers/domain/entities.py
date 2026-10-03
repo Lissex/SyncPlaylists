@@ -11,6 +11,8 @@ from syncplaylists.modules.transfers.domain.events import (
     TrackProcessingFailed,
     TransferCompleted,
     TransferFailed,
+    TransferPausedForQuota,
+    TransferResumed,
     TransferStarted,
     TransferWritingStarted,
 )
@@ -29,6 +31,9 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     MatchScore,
     PlaylistRef,
 )
+
+# Фазы, где идут запросы к площадке и её квота может кончиться.
+_QUOTA_PAUSABLE = (TransferStatus.QUEUED, TransferStatus.RUNNING, TransferStatus.WRITING)
 
 _UNRESOLVED_ITEM_STATUSES = (
     TransferItemStatus.PENDING,
@@ -85,6 +90,9 @@ class Transfer(AggregateRoot):
     # Плейлисты, созданные под NewPlaylist. Обычно один; несколько — если треков больше,
     # чем вмещает плейлист площадки (SoundCloud — 500): «<название> (1/N)», «(2/N)», ...
     resolved_targets: tuple[PlaylistRef, ...] = ()
+    # PAUSED_QUOTA: когда продолжить и в какую фазу вернуться.
+    resume_at: datetime | None = None
+    paused_from: TransferStatus | None = None
     items: list[TransferItem] = field(default_factory=list)
 
     def _ensure_status(self, *allowed: TransferStatus) -> None:
@@ -151,8 +159,9 @@ class Transfer(AggregateRoot):
     ) -> None:
         """Событие о результате сопоставления одного item. Не требует загруженного
         списка items: run_match работает с «шапкой» переноса и одним item, которые
-        сохраняются точечно (параллельные джобы не перетирают друг друга)."""
-        self._ensure_status(TransferStatus.RUNNING)
+        сохраняются точечно (параллельные джобы не перетирают друг друга). На паузе по
+        квоте тоже: трек, начатый до паузы, дописывает свой результат."""
+        self._ensure_status(TransferStatus.RUNNING, TransferStatus.PAUSED_QUOTA)
         if item.transfer_id != self.id:
             raise InvalidTransferTransitionError("item принадлежит другому переносу")
         event: TrackMatched | TrackNeedsReview | TrackNotFound | TrackProcessingFailed
@@ -194,6 +203,33 @@ class Transfer(AggregateRoot):
         if next_status is TransferStatus.WRITING:
             self.record_event(TransferWritingStarted(occurred_at=now, transfer_id=self.id))
         return next_status
+
+    def pause_for_quota(self, resume_at: datetime, now: datetime) -> bool:
+        """Квота площадки: пауза всего переноса до resume_at. Уже на паузе — срок только
+        сдвигается позже (более ранний 429 не сокращает чужую паузу). True — срок
+        изменился (есть событие)."""
+        self._ensure_status(*_QUOTA_PAUSABLE, TransferStatus.PAUSED_QUOTA)
+        if self.status is not TransferStatus.PAUSED_QUOTA:
+            self.paused_from = self.status
+            self.status = TransferStatus.PAUSED_QUOTA
+        elif self.resume_at is not None and resume_at <= self.resume_at:
+            return False
+        self.resume_at = resume_at
+        self.record_event(
+            TransferPausedForQuota(occurred_at=now, transfer_id=self.id, resume_at=resume_at)
+        )
+        return True
+
+    def resume_after_quota(self, now: datetime) -> TransferStatus:
+        self._ensure_status(TransferStatus.PAUSED_QUOTA)
+        assert self.paused_from is not None, "PAUSED_QUOTA без paused_from"
+        self.status = self.paused_from
+        self.paused_from = None
+        self.resume_at = None
+        self.record_event(
+            TransferResumed(occurred_at=now, transfer_id=self.id, status=self.status.value)
+        )
+        return self.status
 
     def pause_for_captcha(self, reason: str, now: datetime) -> None:
         self._ensure_status(TransferStatus.RUNNING)

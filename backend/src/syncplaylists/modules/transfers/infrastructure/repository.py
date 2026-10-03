@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -24,6 +24,9 @@ from syncplaylists.modules.transfers.infrastructure.mappers import (
 from syncplaylists.modules.transfers.infrastructure.orm import TransferItemOrm, TransferOrm
 
 # Какой счётчик transfers растёт при переходе item из PENDING в этот статус.
+# Фазы с запросами к площадке — из них переносы уходят на паузу по квоте.
+_QUOTA_PAUSABLE = (TransferStatus.QUEUED, TransferStatus.RUNNING, TransferStatus.WRITING)
+
 _COUNTER_FOR_STATUS = {
     TransferItemStatus.MATCHED: TransferOrm.matched,
     TransferItemStatus.UNCERTAIN: TransferOrm.uncertain,
@@ -80,6 +83,7 @@ class SqlTransferRepository:
                     TransferOrm.not_found,
                     TransferOrm.added,
                     TransferOrm.failed,
+                    TransferOrm.resume_at,
                 ).where(TransferOrm.id == transfer_id)
             )
         ).one_or_none()
@@ -109,6 +113,7 @@ class SqlTransferRepository:
                 failed=header.failed,
             ),
             recent_processed_at=tuple(at for at in processed if at is not None),
+            resume_at=header.resume_at,
         )
 
     async def get_header(self, transfer_id: UUID) -> Transfer | None:
@@ -191,6 +196,61 @@ class SqlTransferRepository:
             .returning(TransferOrm.id)
         )
         return result.first() is not None
+
+    async def pause_for_quota(self, transfer_id: UUID, resume_at: datetime) -> datetime | None:
+        paused = TransferStatus.PAUSED_QUOTA.value
+        result = await self._session.execute(
+            update(TransferOrm)
+            .where(
+                TransferOrm.id == transfer_id,
+                TransferOrm.status.in_([s.value for s in _QUOTA_PAUSABLE] + [paused]),
+            )
+            .values(
+                paused_from=case(
+                    (TransferOrm.status == paused, TransferOrm.paused_from),
+                    else_=TransferOrm.status,
+                ),
+                status=paused,
+                resume_at=func.greatest(func.coalesce(TransferOrm.resume_at, resume_at), resume_at),
+            )
+            .returning(TransferOrm.resume_at)
+        )
+        row = result.first()
+        return row[0] if row is not None else None
+
+    async def resume_from_quota(self, transfer_id: UUID, now: datetime) -> TransferStatus | None:
+        result = await self._session.execute(
+            update(TransferOrm)
+            .where(
+                TransferOrm.id == transfer_id,
+                TransferOrm.status == TransferStatus.PAUSED_QUOTA.value,
+                TransferOrm.resume_at <= now,
+            )
+            .values(status=TransferOrm.paused_from, paused_from=None, resume_at=None)
+            .returning(TransferOrm.status)
+        )
+        row = result.first()
+        return TransferStatus(row[0]) if row is not None else None
+
+    async def pending_positions(self, transfer_id: UUID) -> list[int]:
+        rows = await self._session.scalars(
+            select(TransferItemOrm.position)
+            .where(
+                TransferItemOrm.transfer_id == transfer_id,
+                TransferItemOrm.status == TransferItemStatus.PENDING.value,
+            )
+            .order_by(TransferItemOrm.position)
+        )
+        return list(rows)
+
+    async def find_overdue_paused(self, due_before: datetime) -> list[UUID]:
+        rows = await self._session.scalars(
+            select(TransferOrm.id).where(
+                TransferOrm.status == TransferStatus.PAUSED_QUOTA.value,
+                TransferOrm.resume_at < due_before,
+            )
+        )
+        return list(rows)
 
     async def find_stale_ids(
         self, statuses: Sequence[TransferStatus], older_than: datetime

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from syncplaylists.modules.transfers.domain.value_objects import MatchResult
@@ -36,6 +37,21 @@ class TrackNotFound(DomainEvent):
 class CaptchaRequired(DomainEvent):
     transfer_id: UUID
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TransferPausedForQuota(DomainEvent):
+    """Площадка попросила подождать дольше разумного повтора — перенос на паузе до
+    resume_at (повторный 429 сдвигает срок и даёт событие снова)."""
+
+    transfer_id: UUID
+    resume_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TransferResumed(DomainEvent):
+    transfer_id: UUID
+    status: str  # фаза, в которую вернулись: queued | running | writing
 
 
 @dataclass(frozen=True, slots=True)

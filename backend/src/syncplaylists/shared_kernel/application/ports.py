@@ -38,6 +38,12 @@ class EventPublisher(Protocol):
 class TaskQueue(Protocol):
     async def enqueue(self, task_name: str, *args: Any, **kwargs: Any) -> None: ...
 
+    # Отложенная задача: выполнится не раньше `when`. `dedupe_key` — одна задача на ключ
+    # (повторная постановка с тем же ключом ничего не добавляет).
+    async def enqueue_at(
+        self, task_name: str, when: datetime, *args: Any, dedupe_key: str | None = None
+    ) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class PlatformCredentials:

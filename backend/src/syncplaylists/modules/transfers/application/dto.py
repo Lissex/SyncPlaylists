@@ -47,6 +47,8 @@ class TransferProgressDto:
     # Оценка оставшегося времени матчинга, секунды. Только для RUNNING; None — пока
     # мало данных или перенос не в фазе матчинга.
     eta_seconds: int | None
+    # PAUSED_QUOTA: когда перенос продолжится сам (квота площадки).
+    resume_at: datetime | None = None
 
     @classmethod
     def from_sample(cls, sample: ProgressSample, now: datetime) -> "TransferProgressDto":
@@ -65,6 +67,7 @@ class TransferProgressDto:
             added=progress.added,
             failed=progress.failed,
             eta_seconds=eta_seconds,
+            resume_at=sample.resume_at if sample.status is TransferStatus.PAUSED_QUOTA else None,
         )
 
 

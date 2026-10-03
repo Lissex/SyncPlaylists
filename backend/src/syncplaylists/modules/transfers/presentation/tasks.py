@@ -13,7 +13,9 @@ from syncplaylists.modules.transfers.application.use_cases import (
     FailTransferItemUseCase,
     FailTransferUseCase,
     MatchTransferItemUseCase,
+    PauseTransferForQuotaUseCase,
     ProcessTransferUseCase,
+    ResumeTransferUseCase,
     SweepStaleTransfersUseCase,
     WriteTransferUseCase,
 )
@@ -25,13 +27,38 @@ logger = logging.getLogger(__name__)
 MATCH_MAX_TRIES: Final = 3
 # То же для run_transfer/run_write — повторяются только временные ошибки площадки.
 PLATFORM_MAX_TRIES: Final = 3
-# «Подождите» от площадки (429) или от нашего token bucket — не сбой: площадка
-# просит паузу, трек от неё не становится хуже. Поэтому у rate limit свой, больший
-# бюджет попыток, иначе после трёх 429 подряд трек ушёл бы в FAILED. ARQ считает
-# попытки общим счётчиком: WorkerSettings.max_tries должен быть не меньше этого.
+# «Подождите» от площадки (429) или от нашего token bucket — не сбой: трек от этого не
+# становится хуже. Короткое ожидание — обычный повтор задачи (свой бюджет попыток);
+# долгое (квота площадки, Retry-After от QUOTA_PAUSE_MIN_SECONDS) или исчерпанный
+# бюджет — пауза ВСЕГО переноса (PAUSED_QUOTA) до срока: ни один трек не уходит в FAILED
+# из-за квоты (этап 4b-3). ARQ считает попытки общим счётчиком: WorkerSettings.max_tries
+# должен быть не меньше RATE_LIMITED_MAX_TRIES.
 RATE_LIMITED_MAX_TRIES: Final = 12
+QUOTA_PAUSE_MIN_SECONDS: Final = 60.0
 _MATCH_RETRY_BASE_DELAY: Final = timedelta(seconds=5)
 _PLATFORM_UNAVAILABLE: Final = "platform_unavailable"
+
+
+def _is_quota_pause(exc: BaseException, job_try: int) -> bool:
+    return isinstance(exc, PlatformRateLimitedError) and (
+        exc.retry_after_seconds >= QUOTA_PAUSE_MIN_SECONDS or job_try >= RATE_LIMITED_MAX_TRIES
+    )
+
+
+async def _pause(
+    pause: PauseTransferForQuotaUseCase,
+    task: str,
+    transfer_id: UUID,
+    exc: PlatformRateLimitedError,
+) -> None:
+    logger.warning(
+        "%s %s: квота площадки (%s), перенос на паузе на %.0f с",
+        task,
+        transfer_id,
+        exc,
+        exc.retry_after_seconds,
+    )
+    await pause.execute(transfer_id, exc.retry_after_seconds)
 
 
 def _max_tries(exc: BaseException, default: int) -> int:
@@ -54,9 +81,15 @@ async def run_transfer(
     transfer_id: UUID,
     use_case: FromDishka[ProcessTransferUseCase],
     fail_transfer: FromDishka[FailTransferUseCase],
+    pause: FromDishka[PauseTransferForQuotaUseCase],
 ) -> None:
     await with_platform_retries(
-        int(ctx.get("job_try", 1)), "run_transfer", transfer_id, use_case.execute, fail_transfer
+        int(ctx.get("job_try", 1)),
+        "run_transfer",
+        transfer_id,
+        use_case.execute,
+        fail_transfer,
+        pause,
     )
 
 
@@ -66,6 +99,7 @@ async def with_platform_retries(
     transfer_id: UUID,
     execute: Callable[[UUID], Awaitable[None]],
     fail_transfer: FailTransferUseCase,
+    pause: PauseTransferForQuotaUseCase,
 ) -> None:
     """run_transfer/run_write: временная ошибка площадки (сеть, 5xx, rate limit, разовый
     401) — ограниченный повтор; после последней попытки перенос FAILED. Терминальные
@@ -73,6 +107,9 @@ async def with_platform_retries(
     try:
         await execute(transfer_id)
     except PlatformError as exc:
+        if isinstance(exc, PlatformRateLimitedError) and _is_quota_pause(exc, job_try):
+            await _pause(pause, task, transfer_id, exc)
+            return
         if job_try < _max_tries(exc, PLATFORM_MAX_TRIES):
             # str(exc) — код и имя ошибки площадки, без токенов.
             logger.warning(
@@ -95,8 +132,11 @@ async def run_match(
     position: int,
     use_case: FromDishka[MatchTransferItemUseCase],
     fail_item: FromDishka[FailTransferItemUseCase],
+    pause: FromDishka[PauseTransferForQuotaUseCase],
 ) -> None:
-    await match_with_retries(int(ctx.get("job_try", 1)), transfer_id, position, use_case, fail_item)
+    await match_with_retries(
+        int(ctx.get("job_try", 1)), transfer_id, position, use_case, fail_item, pause
+    )
 
 
 async def match_with_retries(
@@ -105,10 +145,15 @@ async def match_with_retries(
     position: int,
     use_case: MatchTransferItemUseCase,
     fail_item: FailTransferItemUseCase,
+    pause: PauseTransferForQuotaUseCase,
 ) -> None:
     try:
         await use_case.execute(transfer_id, position)
     except Exception as exc:
+        if isinstance(exc, PlatformRateLimitedError) and _is_quota_pause(exc, job_try):
+            # Трек остаётся PENDING; его (и остальные) поставит заново resume_transfer.
+            await _pause(pause, f"run_match/{position}", transfer_id, exc)
+            return
         # ARQ сам не повторяет джобу на обычном исключении — без этого упавший трек
         # навсегда оставил бы перенос в RUNNING с вечным PENDING. Транзакция use case
         # к этому моменту уже откачена (UnitOfWork.__aexit__).
@@ -132,10 +177,18 @@ async def run_write(
     transfer_id: UUID,
     use_case: FromDishka[WriteTransferUseCase],
     fail_transfer: FromDishka[FailTransferUseCase],
+    pause: FromDishka[PauseTransferForQuotaUseCase],
 ) -> None:
     await with_platform_retries(
-        int(ctx.get("job_try", 1)), "run_write", transfer_id, use_case.execute, fail_transfer
+        int(ctx.get("job_try", 1)), "run_write", transfer_id, use_case.execute, fail_transfer, pause
     )
+
+
+@inject
+async def resume_transfer(
+    ctx: dict[str, Any], transfer_id: UUID, use_case: FromDishka[ResumeTransferUseCase]
+) -> None:
+    await use_case.execute(transfer_id)
 
 
 @inject

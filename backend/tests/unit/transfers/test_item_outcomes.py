@@ -8,6 +8,7 @@ from arq.worker import Retry
 from syncplaylists.modules.transfers.application.use_cases import (
     FailTransferItemUseCase,
     MatchTransferItemUseCase,
+    PauseTransferForQuotaUseCase,
 )
 from syncplaylists.modules.transfers.domain.entities import Transfer
 from syncplaylists.modules.transfers.domain.errors import InvalidTransferTransitionError
@@ -27,6 +28,7 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     PlaylistRef,
 )
 from tests.fakes import FakeEventPublisher, FakeUnitOfWork
+from tests.fakes.transfers import RecordingPause
 from tests.unit.transfers.test_use_cases import _SPOTIFY_MATCH_1, _VK_TRACK_1, Env
 
 _NOW = datetime(2026, 10, 3, tzinfo=UTC)
@@ -218,6 +220,7 @@ async def test_run_match_retries_until_tries_exhausted(job_try: int) -> None:
             0,
             cast(MatchTransferItemUseCase, _FailingMatch()),
             cast(FailTransferItemUseCase, fail_item),
+            cast(PauseTransferForQuotaUseCase, RecordingPause()),
         )
     assert fail_item.calls == []
 
@@ -232,6 +235,7 @@ async def test_run_match_marks_item_failed_after_last_try() -> None:
         3,
         cast(MatchTransferItemUseCase, _FailingMatch()),
         cast(FailTransferItemUseCase, fail_item),
+        cast(PauseTransferForQuotaUseCase, RecordingPause()),
     )
 
     assert fail_item.calls == [(transfer_id, 3, "RuntimeError")]

@@ -121,8 +121,10 @@ from syncplaylists.modules.transfers.application.use_cases import (
     GetTransferProgressUseCase,
     GetTransferUseCase,
     MatchTransferItemUseCase,
+    PauseTransferForQuotaUseCase,
     ProcessTransferUseCase,
     ResolveUncertainItemUseCase,
+    ResumeTransferUseCase,
     StartTransferUseCase,
     SweepStaleTransfersUseCase,
     WriteTransferUseCase,
@@ -693,6 +695,18 @@ class TransfersProvider(Provider):
         accounts: AccountAccessProvider,
     ) -> WriteTransferUseCase:
         return WriteTransferUseCase(uow, transfers, gateway_factory, accounts)
+
+    @provide
+    def get_pause_for_quota(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> PauseTransferForQuotaUseCase:
+        return PauseTransferForQuotaUseCase(uow, transfers, task_queue)
+
+    @provide
+    def get_resume_transfer(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> ResumeTransferUseCase:
+        return ResumeTransferUseCase(uow, transfers, task_queue)
 
     @provide
     def get_get_transfer(self, transfers: TransferRepository) -> GetTransferUseCase:

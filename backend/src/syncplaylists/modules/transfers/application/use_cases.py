@@ -1,3 +1,4 @@
+import contextlib
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -52,7 +53,9 @@ from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, P
 _RUN_TRANSFER = "run_transfer"
 _RUN_MATCH = "run_match"
 _RUN_WRITE = "run_write"
+_RESUME_TRANSFER = "resume_transfer"
 _STALE_AFTER = timedelta(minutes=10)
+_RESUME_GRACE = timedelta(minutes=5)
 _ACCOUNT_UNAVAILABLE = "account_unavailable"
 _ACCOUNT_EXPIRED = "account_expired"
 _PLATFORM_NOT_SUPPORTED = "platform_not_supported"
@@ -422,6 +425,100 @@ class FailTransferUseCase:
             await _fail_transfer(uow, self._transfers, transfer, reason)
 
 
+class PauseTransferForQuotaUseCase:
+    """Площадка исчерпала квоту (429 с долгим Retry-After): весь перенос — на паузу до
+    resume_at, а не повторы по каждому треку с риском уйти в FAILED. Трек, на котором
+    случился 429, остаётся PENDING; новые run_match на паузе ничего не делают
+    (_load_pending_item); продолжит ResumeTransferUseCase в resume_at.
+
+    Условным UPDATE, без полного save: во время паузы ещё могут дописываться результаты
+    run_match, начатых до неё (как в 11c)."""
+
+    def __init__(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._task_queue = task_queue
+
+    async def execute(self, transfer_id: UUID, retry_after_seconds: float) -> None:
+        now = datetime.now(UTC)
+        wanted = now + timedelta(seconds=retry_after_seconds)
+        async with self._uow as uow:
+            # Шапка — до UPDATE: доменный переход идёт из её прежнего статуса.
+            header = await self._transfers.get_header(transfer_id)
+            assert header is not None, f"Transfer {transfer_id} не найден"
+            resume_at = await self._transfers.pause_for_quota(transfer_id, wanted)
+            if resume_at is None:
+                return  # перенос уже не в фазе с запросами к площадке
+            if resume_at == wanted:  # срок задали мы — событие (иначе чужая пауза длиннее)
+                with contextlib.suppress(InvalidTransferTransitionError):
+                    header.pause_for_quota(resume_at, now)
+                uow.track(header)
+            await uow.commit()
+        # Ключ — с моментом: продление паузы ставит новую задачу на новый срок, а старая
+        # при раннем срабатывании просто увидит, что ещё рано.
+        await self._task_queue.enqueue_at(
+            _RESUME_TRANSFER,
+            resume_at,
+            transfer_id,
+            dedupe_key=f"{_RESUME_TRANSFER}:{transfer_id}:{int(resume_at.timestamp())}",
+        )
+
+
+class ResumeTransferUseCase:
+    """Таск `resume_transfer`: срок паузы по квоте прошёл — перенос возвращается в фазу,
+    из которой ушёл, и задачи ставятся заново: QUEUED → run_transfer, RUNNING → run_match
+    по оставшимся PENDING (уже найденное не повторяется), WRITING → run_write. Если
+    пока перенос стоял, дописались последние треки (pending == 0), — сразу переход к
+    REVIEW/WRITING, как в _commit_item_outcome."""
+
+    def __init__(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._task_queue = task_queue
+
+    async def execute(self, transfer_id: UUID) -> None:
+        now = datetime.now(UTC)
+        tasks: list[tuple[str, tuple[object, ...]]] = []
+        async with self._uow as uow:
+            header = await self._transfers.get_header(transfer_id)
+            if header is None or header.status is not TransferStatus.PAUSED_QUOTA:
+                return  # уже продолжили (повторная доставка) или перенос завершён
+            phase = await self._transfers.resume_from_quota(transfer_id, now)
+            if phase is None:
+                return  # срок сдвинули позже — сработает задача на новый срок
+            header.resume_after_quota(now)
+            if phase is TransferStatus.QUEUED:
+                tasks.append((_RUN_TRANSFER, (transfer_id,)))
+            elif phase is TransferStatus.WRITING:
+                tasks.append((_RUN_WRITE, (transfer_id,)))
+            else:
+                positions = await self._transfers.pending_positions(transfer_id)
+                tasks.extend((_RUN_MATCH, (transfer_id, p)) for p in positions)
+                if not positions:
+                    tasks.extend(await self._finish_matching(header, now))
+            uow.track(header)
+            await uow.commit()
+        for task, args in tasks:
+            await self._task_queue.enqueue(task, *args)
+
+    async def _finish_matching(
+        self, header: Transfer, now: datetime
+    ) -> list[tuple[str, tuple[object, ...]]]:
+        sample = await self._transfers.progress_sample(header.id, recent=0)
+        assert sample is not None
+        next_status = sample.progress.status_after_matching()
+        if next_status is None or not await self._transfers.transition_status(
+            header.id, TransferStatus.RUNNING, next_status
+        ):
+            return []
+        header.finish_matching(sample.progress, now)
+        return [(_RUN_WRITE, (header.id,))] if next_status is TransferStatus.WRITING else []
+
+
 async def _load_pending_item(
     transfers: TransferRepository, transfer_id: UUID, position: int
 ) -> tuple[Transfer, TransferItem] | None:
@@ -698,7 +795,11 @@ class SweepStaleTransfersUseCase:
         self._stale_after = stale_after
 
     async def execute(self) -> None:
-        threshold = datetime.now(UTC) - self._stale_after
+        now = datetime.now(UTC)
+        # Пауза по квоте, срок которой давно прошёл, — задача resume_transfer потерялась.
+        for transfer_id in await self._transfers.find_overdue_paused(now - _RESUME_GRACE):
+            await self._task_queue.enqueue(_RESUME_TRANSFER, transfer_id)
+        threshold = now - self._stale_after
         stale_ids = await self._transfers.find_stale_ids(
             (TransferStatus.QUEUED, TransferStatus.RUNNING), threshold
         )
