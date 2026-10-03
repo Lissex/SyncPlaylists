@@ -1,0 +1,43 @@
+{
+  "collection": [
+    {
+      "created_at": "2026-09-29T10:00:00Z",
+      "kind": "like",
+      "track": {
+        "id": 1004,
+        "kind": "track",
+        "title": "Lucid Dreams (Remix)",
+        "user": {
+          "id": 700003,
+          "kind": "user",
+          "username": "Some Label",
+          "permalink": "some-label",
+          "verified": false,
+          "avatar_url": "https://i1.sndcdn.com/avatars-700003-large.jpg",
+          "urn": "soundcloud:users:700003"
+        },
+        "user_id": 700003,
+        "duration": 30000,
+        "full_duration": 240483,
+        "policy": "SNIP",
+        "monetization_model": "MONETIZE",
+        "publisher_metadata": {
+          "id": 1004,
+          "artist": "Juice WRLD, Lil Uzi Vert",
+          "isrc": "USUG12100801"
+        },
+        "streamable": true,
+        "sharing": "public",
+        "artwork_url": "https://i1.sndcdn.com/artworks-1004-large.jpg",
+        "permalink_url": "https://soundcloud.com/some-label/t1004",
+        "urn": "soundcloud:tracks:1004"
+      }
+    },
+    {
+      "created_at": "2026-09-28T10:00:00Z",
+      "kind": "like"
+    }
+  ],
+  "next_href": null,
+  "query_urn": null
+}

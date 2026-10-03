@@ -33,7 +33,7 @@ ps: ## Состояние сервисов
 logs: ## Логи api и worker (Ctrl+C — выход)
 	docker compose logs -f api worker
 
-e2e: up migrate ## Ручной e2e Яндекс → новый плейлист: make e2e LINK="..." [ACCEPT=1] [TITLE="..."]
+e2e: up migrate ## Ручной e2e Яндекс/SoundCloud → новый плейлист Яндекса: make e2e LINK="..." [ACCEPT=1] [TITLE="..."]
 	./scripts/e2e-yandex.ps1 -Link '$(LINK)' -Title '$(TITLE)' $(if $(filter 1,$(ACCEPT)),-AcceptUncertain,)
 
 test: ## Unit-тесты и тесты адаптеров без Docker

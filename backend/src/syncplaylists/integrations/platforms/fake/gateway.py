@@ -90,3 +90,6 @@ class FakeMusicPlatformGateway:
 
     def library_insert_order(self) -> InsertOrder:
         return InsertOrder.TOP
+
+    def playlist_capacity(self) -> int | None:
+        return None

@@ -3,6 +3,7 @@ from uuid import UUID
 from syncplaylists.modules.catalog.application.ports import PlatformTrackRepository
 from syncplaylists.modules.matching.domain.entities import MatchMethod, TrackMatch
 from syncplaylists.modules.matching.infrastructure.orm import TrackMatchOrm
+from syncplaylists.shared_kernel.domain.search import TrackRestriction
 from syncplaylists.shared_kernel.domain.value_objects import (
     ExternalTrackRef,
     MatchScore,
@@ -25,6 +26,7 @@ async def match_to_orm(
         method=match.method.value,
         score=match.score.value,
         confirmations=match.confirmations,
+        restriction=match.restriction.value if match.restriction else None,
     )
 
 
@@ -41,6 +43,7 @@ async def match_to_domain(
         method=MatchMethod(orm.method),
         score=MatchScore(orm.score),
         confirmations=orm.confirmations,
+        restriction=TrackRestriction(orm.restriction) if orm.restriction else None,
     )
 
 

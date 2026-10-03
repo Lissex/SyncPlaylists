@@ -106,6 +106,8 @@ class MatchResult(ValueObject):
     target_ref: ExternalTrackRef
     method: str
     score: MatchScore
+    # TrackRestriction.value найденного трека ("preview_only") — пометка для отчёта.
+    restriction: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

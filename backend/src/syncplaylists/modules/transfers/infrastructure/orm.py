@@ -55,7 +55,11 @@ class TransferOrm(Base):
     )
 
     resolved_target_platform: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    resolved_target_playlist_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # external_id созданных плейлистов по порядку частей (1/N, 2/N, ...), площадка —
+    # resolved_target_platform.
+    resolved_target_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
 
     cursor: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -112,6 +116,7 @@ class TransferItemOrm(Base):
     match_target_external_id: Mapped[str | None] = mapped_column(String, nullable=True)
     match_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
     match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    match_restriction: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     candidates: Mapped[list[dict[str, object]]] = mapped_column(JSONB, nullable=False, default=list)
     # Когда item вышел из PENDING (результат run_match) — по последним таким отметкам

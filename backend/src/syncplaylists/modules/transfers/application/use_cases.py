@@ -357,6 +357,9 @@ class MatchTransferItemUseCase:
                         target_ref=attempt.match.target_ref,
                         method=attempt.match.method.value,
                         score=attempt.match.score,
+                        restriction=(
+                            attempt.match.restriction.value if attempt.match.restriction else None
+                        ),
                     )
                 )
             elif attempt.status is MatchStatus.UNCERTAIN:
@@ -505,9 +508,11 @@ class WriteTransferUseCase:
     """Таск `run_write`.
 
     Создание нового плейлиста — побочный эффект вовне, который откатом транзакции не
-    отменить. Поэтому это отдельный шаг: создали → сразу закоммитили resolved_target →
+    отменить. Поэтому это отдельный шаг: создали → сразу закоммитили resolved_targets →
     снова взяли лок на перенос и проверили статус. Если запись треков потом упадёт и
-    run_write повторится, он переиспользует уже созданный плейлист, а не создаст второй.
+    run_write повторится, он переиспользует уже созданные плейлисты, а не создаст новые.
+    Если треков больше, чем вмещает плейлист площадки (`playlist_capacity`), создаётся
+    несколько: «<название> (1/N)», «(2/N)», ... — каждый тем же шагом с коммитом.
     Остаётся только окно между ответом площадки на create и нашим коммитом (сбой
     процесса ровно в этот момент) — см. ARCHITECTURE.md, 11d.
     """
@@ -537,10 +542,12 @@ class WriteTransferUseCase:
                 await _fail_transfer(uow, self._transfers, transfer)
                 return
             try:
-                if self._needs_new_playlist(transfer):
-                    await self._create_playlist(transfer, access)
+                gateway = self._gateway_factory.for_account(access)
+                parts = _playlist_parts(transfer, gateway)
+                while self._needs_new_playlist(transfer, len(parts)):
+                    await self._create_playlist(transfer, gateway, len(parts))
                     await self._transfers.save(transfer)
-                    await uow.commit()  # resolved_target зафиксирован до записи треков
+                    await uow.commit()  # плейлист зафиксирован до записи треков
                     # Коммит снял лок — берём снова: параллельная доставка run_write могла
                     # успеть дописать перенос, пока лока не было.
                     reloaded = await self._transfers.get_for_update(transfer_id)
@@ -548,7 +555,7 @@ class WriteTransferUseCase:
                     if reloaded.status is not TransferStatus.WRITING:
                         return
                     transfer = reloaded
-                await self._write(transfer, access)
+                await self._write(transfer, gateway, parts)
             except PlatformNotSupportedError:
                 await _fail_transfer(uow, self._transfers, transfer, _PLATFORM_NOT_SUPPORTED)
                 return
@@ -566,25 +573,29 @@ class WriteTransferUseCase:
             await self._transfers.save(transfer)
             await uow.commit()
 
-    async def _write(self, transfer: Transfer, access: AccountAccess) -> None:
-        gateway = self._gateway_factory.for_account(access)
+    async def _write(
+        self,
+        transfer: Transfer,
+        gateway: MusicPlatformGateway,
+        parts: list[list[ExternalTrackRef]],
+    ) -> None:
         destination = transfer.destination
-
-        matched_items = [i for i in transfer.items if i.status is TransferItemStatus.MATCHED]
-        if isinstance(destination, LibraryDestination) and (
-            gateway.library_insert_order() is InsertOrder.TOP
-        ):
-            # Самый свежий лайк источника должен оказаться сверху и в назначении.
-            matched_items = list(reversed(matched_items))
-        refs = [item.match.target_ref for item in matched_items if item.match is not None]
-
+        matched_items = _matched_items(transfer)
         if isinstance(destination, LibraryDestination):
-            result = await gateway.add_to_library(refs)
+            if gateway.library_insert_order() is InsertOrder.TOP:
+                # Самый свежий лайк источника должен оказаться сверху и в назначении.
+                matched_items = list(reversed(matched_items))
+            refs = [item.match.target_ref for item in matched_items if item.match is not None]
+            failed_refs = set((await gateway.add_to_library(refs)).failed)
+        elif isinstance(destination, ExistingPlaylist):
+            refs = [item.match.target_ref for item in matched_items if item.match is not None]
+            failed_refs = set((await gateway.add_tracks(destination.ref, refs)).failed)
         else:
-            playlist_ref = await self._resolve_playlist(transfer, destination, gateway)
-            result = await gateway.add_tracks(playlist_ref, refs)
+            # NewPlaylist: плейлисты созданы и закоммичены отдельным шагом в execute().
+            failed_refs = set()
+            for playlist_ref, part in zip(transfer.resolved_targets, parts, strict=False):
+                failed_refs.update((await gateway.add_tracks(playlist_ref, part)).failed)
 
-        failed_refs = set(result.failed)
         for item in matched_items:
             if item.match is not None and item.match.target_ref in failed_refs:
                 transfer.mark_write_failed(item.position)
@@ -592,25 +603,48 @@ class WriteTransferUseCase:
                 transfer.mark_added(item.position)
 
     @staticmethod
-    def _needs_new_playlist(transfer: Transfer) -> bool:
-        return isinstance(transfer.destination, NewPlaylist) and transfer.resolved_target is None
-
-    async def _create_playlist(self, transfer: Transfer, access: AccountAccess) -> None:
-        destination = transfer.destination
-        assert isinstance(destination, NewPlaylist)
-        gateway = self._gateway_factory.for_account(access)
-        ref = await gateway.create_playlist(destination.title, destination.description)
-        transfer.set_resolved_target(ref)
+    def _needs_new_playlist(transfer: Transfer, part_count: int) -> bool:
+        return (
+            isinstance(transfer.destination, NewPlaylist)
+            and len(transfer.resolved_targets) < part_count
+        )
 
     @staticmethod
-    async def _resolve_playlist(
-        transfer: Transfer, destination: TrackDestination, gateway: MusicPlatformGateway
-    ) -> PlaylistRef:
-        if isinstance(destination, ExistingPlaylist):
-            return destination.ref
-        # NewPlaylist: плейлист создан и закоммичен отдельным шагом в execute().
-        assert transfer.resolved_target is not None
-        return transfer.resolved_target
+    async def _create_playlist(
+        transfer: Transfer, gateway: MusicPlatformGateway, part_count: int
+    ) -> None:
+        destination = transfer.destination
+        assert isinstance(destination, NewPlaylist)
+        title = destination.title
+        if part_count > 1:
+            title = f"{title} ({len(transfer.resolved_targets) + 1}/{part_count})"
+        ref = await gateway.create_playlist(title, destination.description)
+        transfer.add_resolved_target(ref)
+
+
+def _matched_items(transfer: Transfer) -> list[TransferItem]:
+    return [i for i in transfer.items if i.status is TransferItemStatus.MATCHED]
+
+
+def _playlist_parts(
+    transfer: Transfer, gateway: MusicPlatformGateway
+) -> list[list[ExternalTrackRef]]:
+    """Треки нового плейлиста, разложенные по частям вместимостью playlist_capacity.
+    Повторы (два трека источника → один трек назначения) площадка всё равно не
+    добавит дважды — место под них не занимаем. Хотя бы одна часть есть всегда: пустой
+    перенос всё равно создаёт плейлист."""
+    if not isinstance(transfer.destination, NewPlaylist):
+        return []
+    unique: list[ExternalTrackRef] = []
+    seen: set[ExternalTrackRef] = set()
+    for item in _matched_items(transfer):
+        if item.match is not None and item.match.target_ref not in seen:
+            seen.add(item.match.target_ref)
+            unique.append(item.match.target_ref)
+    capacity = gateway.playlist_capacity()
+    if capacity is None or len(unique) <= capacity:
+        return [unique]
+    return [unique[start : start + capacity] for start in range(0, len(unique), capacity)]
 
 
 class GetTransferUseCase:

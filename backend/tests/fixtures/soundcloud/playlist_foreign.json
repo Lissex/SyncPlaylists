@@ -1,0 +1,56 @@
+{
+  "id": 5002,
+  "kind": "playlist",
+  "title": "Чужой",
+  "description": "летние треки",
+  "user": {
+    "id": 700001,
+    "kind": "user",
+    "username": "Juice WRLD",
+    "permalink": "juice-wrld",
+    "verified": true,
+    "avatar_url": "https://i1.sndcdn.com/avatars-700001-large.jpg",
+    "urn": "soundcloud:users:700001"
+  },
+  "user_id": 700001,
+  "sharing": "public",
+  "secret_token": null,
+  "track_count": 5,
+  "set_type": "",
+  "is_album": false,
+  "permalink_url": "https://soundcloud.com/test-listener/sets/road-trip/s-AbC123",
+  "tracks": [
+    {
+      "id": 1001,
+      "kind": "track",
+      "title": "Lucid Dreams",
+      "user": {
+        "id": 700001,
+        "kind": "user",
+        "username": "Juice WRLD",
+        "permalink": "juice-wrld",
+        "verified": true,
+        "avatar_url": "https://i1.sndcdn.com/avatars-700001-large.jpg",
+        "urn": "soundcloud:users:700001"
+      },
+      "user_id": 700001,
+      "duration": 239882,
+      "full_duration": 239882,
+      "policy": "ALLOW",
+      "monetization_model": "NOT_APPLICABLE",
+      "publisher_metadata": {
+        "id": 1001,
+        "urn": "soundcloud:tracks:1001",
+        "artist": "Juice WRLD",
+        "isrc": "USUG11800685",
+        "contains_music": true,
+        "release_title": "Lucid Dreams"
+      },
+      "streamable": true,
+      "sharing": "public",
+      "artwork_url": "https://i1.sndcdn.com/artworks-1001-large.jpg",
+      "permalink_url": "https://soundcloud.com/juice-wrld/t1001",
+      "urn": "soundcloud:tracks:1001"
+    }
+  ]
+}

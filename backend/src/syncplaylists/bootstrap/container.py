@@ -32,15 +32,29 @@ from syncplaylists.integrations.platforms.registry import (
     PlatformGatewayFactory,
 )
 from syncplaylists.integrations.platforms.search_cache import CachedSearchGateway, TextCache
+from syncplaylists.integrations.platforms.soundcloud.client_id import ClientIdProvider
+from syncplaylists.integrations.platforms.soundcloud.factory import (
+    OfficialApp,
+    SoundCloudApiFactory,
+    SoundCloudGatewayBuilder,
+    SoundCloudLimits,
+    SoundCloudOAuthProvider,
+    SoundCloudProfileFetcher,
+)
+from syncplaylists.integrations.platforms.soundcloud.tokens import TokenEndpoint
 from syncplaylists.integrations.platforms.yandex.factory import (
     YandexClientFactory,
     YandexGatewayBuilder,
     YandexProfileFetcher,
 )
-from syncplaylists.modules.accounts.application.access import AccountAccessService
+from syncplaylists.modules.accounts.application.access import (
+    AccountAccessService,
+    AccountCredentialsRefresher,
+)
 from syncplaylists.modules.accounts.application.ports import (
     AccountCredentialsWriter,
     ConnectedAccountRepository,
+    OAuthProvider,
     OAuthProviderRegistry,
     OAuthStateStore,
     PlatformProfileFetcher,
@@ -116,6 +130,7 @@ from syncplaylists.modules.transfers.application.use_cases import (
 from syncplaylists.modules.transfers.infrastructure.repository import SqlTransferRepository
 from syncplaylists.shared_kernel.application.ports import (
     AccountAccessProvider,
+    CredentialsRefresher,
     EventPublisher,
     GatewayFactory,
     PlatformRateLimiter,
@@ -125,6 +140,15 @@ from syncplaylists.shared_kernel.application.ports import (
 from syncplaylists.shared_kernel.domain.links import LinkResolver
 from syncplaylists.shared_kernel.domain.ports import UrlExpander
 from syncplaylists.shared_kernel.domain.value_objects import Platform
+
+
+def _soundcloud_official_app(settings: Settings) -> OfficialApp | None:
+    official = settings.platforms.soundcloud.official
+    if official is None:
+        return None
+    return OfficialApp(
+        client_id=official.client_id, client_secret=official.client_secret.get_secret_value()
+    )
 
 
 class SettingsProvider(Provider):
@@ -205,15 +229,19 @@ class GatewayProvider(Provider):
 
     @provide
     def get_rate_limiter(self, redis: Redis, settings: Settings) -> PlatformRateLimiter:
-        yandex = settings.platforms.yandex.rate_limit
+        limits = {
+            Platform.YANDEX: settings.platforms.yandex.rate_limit,
+            Platform.SOUNDCLOUD: settings.platforms.soundcloud.rate_limit,
+        }
         return RedisTokenBucketLimiter(
             redis,
             {
-                Platform.YANDEX: TokenBucketLimits(
-                    capacity=yandex.capacity,
-                    refill_per_second=yandex.refill_per_second,
-                    max_wait_seconds=yandex.max_wait_seconds,
+                platform: TokenBucketLimits(
+                    capacity=limit.capacity,
+                    refill_per_second=limit.refill_per_second,
+                    max_wait_seconds=limit.max_wait_seconds,
                 )
+                for platform, limit in limits.items()
             },
         )
 
@@ -232,19 +260,92 @@ class GatewayProvider(Provider):
         return RedisTextCache(redis)
 
     @provide
+    def get_soundcloud_client_ids(
+        self,
+        http: httpx.AsyncClient,
+        cache: TextCache,
+        limiter: PlatformRateLimiter,
+        settings: Settings,
+    ) -> ClientIdProvider:
+        soundcloud = settings.platforms.soundcloud
+
+        async def count_request() -> None:
+            await limiter.count_request(Platform.SOUNDCLOUD)
+
+        return ClientIdProvider(
+            http,
+            cache,
+            ttl_seconds=soundcloud.client_id_ttl_seconds,
+            min_refresh_seconds=soundcloud.client_id_min_refresh_seconds,
+            timeout_seconds=soundcloud.request_timeout_seconds,
+            override=soundcloud.client_id_override,
+            on_request=count_request,
+        )
+
+    @provide
+    def get_soundcloud_token_endpoint(
+        self, http: httpx.AsyncClient, settings: Settings
+    ) -> TokenEndpoint:
+        return TokenEndpoint(
+            http, timeout_seconds=settings.platforms.soundcloud.request_timeout_seconds
+        )
+
+    @provide
+    def get_credentials_refresher(
+        self, cipher: TokenCipher, writer: AccountCredentialsWriter
+    ) -> CredentialsRefresher:
+        return AccountCredentialsRefresher(cipher, writer)
+
+    @provide
+    def get_soundcloud_apis(
+        self,
+        http: httpx.AsyncClient,
+        client_ids: ClientIdProvider,
+        token_endpoint: TokenEndpoint,
+        limiter: PlatformRateLimiter,
+        refresher: CredentialsRefresher,
+        settings: Settings,
+    ) -> SoundCloudApiFactory:
+        return SoundCloudApiFactory(
+            http,
+            client_ids,
+            token_endpoint,
+            timeout_seconds=settings.platforms.soundcloud.request_timeout_seconds,
+            limiter=limiter,
+            refresher=refresher,
+            official=_soundcloud_official_app(settings),
+        )
+
+    @provide
     def get_gateway_factory(
-        self, settings: Settings, yandex_clients: YandexClientFactory, search_cache: TextCache
+        self,
+        settings: Settings,
+        yandex_clients: YandexClientFactory,
+        soundcloud_apis: SoundCloudApiFactory,
+        search_cache: TextCache,
     ) -> GatewayFactory:
         yandex = YandexGatewayBuilder(
             yandex_clients, batch_size=settings.platforms.yandex.batch_size
         )
-        ttl = settings.platforms.search_cache_ttl_seconds
-        builders: dict[Platform, GatewayBuilder] = {
-            Platform.YANDEX: (
-                (lambda access: CachedSearchGateway(yandex(access), search_cache, ttl))
-                if ttl > 0
-                else yandex
+        soundcloud_settings = settings.platforms.soundcloud
+        soundcloud = SoundCloudGatewayBuilder(
+            soundcloud_apis,
+            SoundCloudLimits(
+                tracks_batch_size=soundcloud_settings.tracks_batch_size,
+                likes_page_size=soundcloud_settings.likes_page_size,
+                playlist_max_tracks=soundcloud_settings.playlist_max_tracks,
             ),
+        )
+        ttl = settings.platforms.search_cache_ttl_seconds
+
+        def cached(builder: GatewayBuilder) -> GatewayBuilder:
+            if ttl <= 0:
+                return builder
+            return lambda access: CachedSearchGateway(builder(access), search_cache, ttl)
+
+        builders: dict[Platform, GatewayBuilder] = {
+            Platform.YANDEX: cached(yandex),
+            Platform.SOUNDCLOUD: cached(soundcloud),
         }
         # Фейк (dev/тесты) перекрывает настоящий адаптер площадки, если указан явно.
         for platform in settings.platforms.fake:
@@ -253,10 +354,14 @@ class GatewayProvider(Provider):
 
     @provide
     def get_profile_registry(
-        self, settings: Settings, yandex_clients: YandexClientFactory
+        self,
+        settings: Settings,
+        yandex_clients: YandexClientFactory,
+        soundcloud_apis: SoundCloudApiFactory,
     ) -> PlatformProfileRegistry:
         fetchers: dict[Platform, PlatformProfileFetcher] = {
             Platform.YANDEX: YandexProfileFetcher(yandex_clients),
+            Platform.SOUNDCLOUD: SoundCloudProfileFetcher(soundcloud_apis),
         }
         for platform in settings.platforms.fake:
             fetchers[platform] = FakeProfileFetcher(platform)
@@ -409,12 +514,23 @@ class AccountsProvider(Provider):
         return FrontendRedirect(settings.oauth.frontend_redirect_url)
 
     @provide(scope=Scope.APP)
-    def get_oauth_registry(self, settings: Settings) -> OAuthProviderRegistry:
-        # Настоящих OAuth-клиентов площадок ещё нет (появятся с адаптерами) — только
-        # фейки для площадок из settings.oauth.fake_platforms (dev/тесты).
-        return DictOAuthProviderRegistry(
-            FakeOAuthProvider(platform) for platform in settings.oauth.fake_platforms
-        )
+    def get_oauth_registry(
+        self,
+        settings: Settings,
+        soundcloud_tokens: TokenEndpoint,
+        soundcloud_apis: SoundCloudApiFactory,
+    ) -> OAuthProviderRegistry:
+        providers: dict[Platform, OAuthProvider] = {}
+        # SoundCloud — только если задано приложение официального API (Artist Pro).
+        soundcloud_app = _soundcloud_official_app(settings)
+        if soundcloud_app is not None:
+            providers[Platform.SOUNDCLOUD] = SoundCloudOAuthProvider(
+                soundcloud_app, soundcloud_tokens, soundcloud_apis
+            )
+        # Фейки (dev/тесты) перекрывают настоящих провайдеров.
+        for platform in settings.oauth.fake_platforms:
+            providers[platform] = FakeOAuthProvider(platform)
+        return DictOAuthProviderRegistry(providers.values())
 
     @provide(scope=Scope.APP)
     def get_oauth_state_store(self, redis: Redis) -> OAuthStateStore:

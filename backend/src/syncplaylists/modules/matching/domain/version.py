@@ -50,6 +50,106 @@ _REMIX_BY_BRACKET = re.compile(r"[\(\[]\s*remix(?:ed)?\s+by\s+(?P<remixer>[\w .&
 _REMIX_BY_TRAILING = re.compile(r"\s+remix(?:ed)?\s+by\s+(?P<remixer>[\w .&'-]+)\s*$")
 _REMIX_BARE_BRACKET = _bracket("remix")
 _REMIX_BARE_TRAILING = _trailing(r"remix(?:ed)?")
+
+# DJ-версии с SoundCloud: «(Ed Marquis Bootleg)», «[No Romeo Schranz Edit]», «(X Rmx)»,
+# «(X Flip)», «Song - KAAI Edit». Для матчинга это тот же ремикс: нельзя молча взять
+# вместо него оригинал. Проверяются после radio/extended edit, чтобы «(Radio Edit)» не
+# стал ремиксом «radio».
+_DJ_VERSION_WORDS: Final = r"(?:bootleg(?:\s+edit)?|edit|rmx|flip|rework|vip(?:\s+mix)?|mashup)"
+_DJ_NAMED_BRACKET = re.compile(
+    rf"[\(\[]\s*(?P<remixer>[\w .&'’-]+?)\s+{_DJ_VERSION_WORDS}\b[^)\]]*[\)\]]"
+)
+# Только через дефис в конце: «Song - Name Edit». Без «remix» — «Drake - God's Plan
+# Remix» иначе стал бы ремиксом «god's plan».
+_DJ_NAMED_TRAILING = re.compile(rf"\s+[-–—]\s+(?P<remixer>[\w .&'’-]+?)\s+{_DJ_VERSION_WORDS}\s*$")
+_DJ_BARE_PATTERNS = (
+    _bracket(r"(?:bootleg|rmx|flip|rework|vip(?:\s+mix)?|mashup)"),
+    _trailing(r"(?:bootleg|rmx|vip)"),
+)
+# Служебные правки площадок — не DJ-версии: «(Clean Edit)», «(Explicit Edit)».
+_SERVICE_EDIT_WORDS: Final = frozenset(
+    {
+        "radio",
+        "extended",
+        "clean",
+        "explicit",
+        "dirty",
+        "censored",
+        "short",
+        "single",
+        "album",
+        "original",
+        "tv",
+        "main",
+        "uncensored",
+        "edit",
+    }
+)
+# Жанр перед словом версии — не часть имени ремиксера: «(Bonkers Hardstyle Remix)».
+_GENRE_WORDS: Final = frozenset(
+    {
+        "hardstyle",
+        "uptempo",
+        "schranz",
+        "techno",
+        "frenchcore",
+        "hardtekk",
+        "hard",
+        "indus",
+        "industrial",
+        "gabber",
+        "melodic",
+        "rolling",
+        "house",
+        "bassline",
+        "moombahton",
+        "jumpstyle",
+        "breakbeat",
+        "drill",
+        "phonk",
+        "trap",
+        "dnb",
+        "d&b",
+        "dubstep",
+        "club",
+        "festival",
+        "bootleg",
+        "makina",
+        "hardcore",
+        "trance",
+        "garage",
+    }
+)
+
+
+def _clean_remixer(name: str) -> str:
+    words = name.split()
+    while len(words) > 1 and words[-1] in _GENRE_WORDS:
+        words.pop()
+    return " ".join(words).strip(" -")
+
+
+def _remove_span(text: str, start: int, end: int) -> str:
+    return _WHITESPACE_PATTERN.sub(" ", text[:start] + text[end:]).strip()
+
+
+def _dj_version(text: str) -> tuple[str, VersionInfo] | None:
+    for pattern in (_DJ_NAMED_BRACKET, _DJ_NAMED_TRAILING):
+        match = pattern.search(text)
+        if match is None:
+            continue
+        remixer = _clean_remixer(match.group("remixer").strip())
+        if remixer in _SERVICE_EDIT_WORDS or not remixer:
+            continue
+        return _remove_span(text, match.start(), match.end()), VersionInfo(
+            VersionTag.REMIX, remixer
+        )
+    remaining, found = _try_remove(text, _DJ_BARE_PATTERNS)
+    if found:
+        return _WHITESPACE_PATTERN.sub(" ", remaining).strip(), VersionInfo(VersionTag.REMIX)
+    return None
+
+
 _LIVE_PATTERNS = (_bracket("live"), _trailing("live"))
 _ACOUSTIC_PATTERNS = (_bracket(r"acoustic(?:\s+version)?"), _trailing(r"acoustic(?:\s+version)?"))
 _SPED_UP_PATTERNS = (_bracket(r"sped[\s-]?up"), _trailing(r"sped[\s-]?up"))
@@ -78,11 +178,23 @@ def extract_version(text: str) -> tuple[str, VersionInfo]:
         if match:
             remaining = text[: match.start()] + text[match.end() :]
             remaining = _WHITESPACE_PATTERN.sub(" ", remaining).strip()
-            return remaining, VersionInfo(VersionTag.REMIX, match.group("remixer").strip())
+            remixer = _clean_remixer(match.group("remixer").strip())
+            return remaining, VersionInfo(VersionTag.REMIX, remixer)
 
-    checks: tuple[tuple[VersionTag, tuple[re.Pattern[str], ...]], ...] = (
+    edit_checks: tuple[tuple[VersionTag, tuple[re.Pattern[str], ...]], ...] = (
         (VersionTag.RADIO_EDIT, _RADIO_EDIT_PATTERNS),
         (VersionTag.EXTENDED, _EXTENDED_PATTERNS),
+    )
+    for tag, patterns in edit_checks:
+        remaining, found = _try_remove(text, patterns)
+        if found:
+            return _WHITESPACE_PATTERN.sub(" ", remaining).strip(), VersionInfo(tag)
+
+    dj_version = _dj_version(text)
+    if dj_version is not None:
+        return dj_version
+
+    checks: tuple[tuple[VersionTag, tuple[re.Pattern[str], ...]], ...] = (
         (VersionTag.REMIX, (_REMIX_BARE_BRACKET, _REMIX_BARE_TRAILING)),
         (VersionTag.LIVE, _LIVE_PATTERNS),
         (VersionTag.ACOUSTIC, _ACOUSTIC_PATTERNS),

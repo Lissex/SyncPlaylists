@@ -132,6 +132,10 @@ class TrackCandidateSchema(BaseModel):
     isrc: str | None = None
     artists: list[str] = []
     cover_url: str | None = None
+    uploader: str | None = None
+    rights_holder: bool = False
+    # "preview_only" — без подписки площадки слышно только превью (SoundCloud Go+).
+    restriction: str | None = None
 
 
 class MatchResultSchema(BaseModel):
@@ -139,6 +143,9 @@ class MatchResultSchema(BaseModel):
     target_external_id: str
     method: str
     score: float
+    # Пометка для отчёта: "preview_only" — найденный трек полностью доступен только с
+    # подпиской площадки (SoundCloud Go+).
+    restriction: str | None = None
 
 
 class TransferItemResponse(BaseModel):
@@ -157,6 +164,7 @@ class TransferItemResponse(BaseModel):
                 target_external_id=dto.match.target_ref.external_id,
                 method=dto.match.method,
                 score=dto.match.score.value,
+                restriction=dto.match.restriction,
             )
             if dto.match is not None
             else None
@@ -177,6 +185,9 @@ class TransferItemResponse(BaseModel):
                     isrc=c.isrc.value if c.isrc else None,
                     artists=list(c.artists),
                     cover_url=c.cover_url,
+                    uploader=c.uploader,
+                    rights_holder=c.rights_holder,
+                    restriction=c.restriction.value if c.restriction else None,
                 )
                 for c in dto.candidates
             ],
@@ -219,6 +230,9 @@ class TransferResponse(BaseModel):
     destination: ExistingPlaylistSchema | NewPlaylistSchema | LibraryDestinationSchema
     items: list[TransferItemResponse]
     progress: TransferProgressSchema | None = None
+    # Созданные под NewPlaylist плейлисты: обычно один, несколько — если треков больше,
+    # чем вмещает плейлист площадки («<название> (1/N)», ...).
+    resolved_targets: list[str] = []
 
     @classmethod
     def from_dto(cls, dto: TransferDto) -> "TransferResponse":
@@ -230,6 +244,7 @@ class TransferResponse(BaseModel):
             destination=destination_to_schema(dto.destination),
             items=[TransferItemResponse.from_dto(item) for item in dto.items],
             progress=TransferProgressSchema.from_dto(dto.progress) if dto.progress else None,
+            resolved_targets=[ref.external_id for ref in dto.resolved_targets],
         )
 
 

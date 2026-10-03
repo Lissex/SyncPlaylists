@@ -18,7 +18,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     TransferStatus,
 )
 from syncplaylists.modules.transfers.infrastructure.orm import TransferItemOrm, TransferOrm
-from syncplaylists.shared_kernel.domain.search import TrackCandidate
+from syncplaylists.shared_kernel.domain.search import TrackCandidate, TrackRestriction
 from syncplaylists.shared_kernel.domain.value_objects import (
     ISRC,
     Duration,
@@ -39,6 +39,12 @@ class _TrackCandidateDTO(BaseModel):
     artist: str
     duration_ms: int | None = None
     isrc: str | None = None
+    # Поля ниже появились позже (4b-2) — у старых строк их нет, отсюда значения по умолчанию.
+    artists: list[str] = []
+    cover_url: str | None = None
+    uploader: str | None = None
+    rights_holder: bool = False
+    restriction: str | None = None
 
     @classmethod
     def from_domain(cls, candidate: TrackCandidate) -> "_TrackCandidateDTO":
@@ -49,6 +55,11 @@ class _TrackCandidateDTO(BaseModel):
             artist=candidate.artist,
             duration_ms=candidate.duration.milliseconds if candidate.duration else None,
             isrc=candidate.isrc.value if candidate.isrc else None,
+            artists=list(candidate.artists),
+            cover_url=candidate.cover_url,
+            uploader=candidate.uploader,
+            rights_holder=candidate.rights_holder,
+            restriction=candidate.restriction.value if candidate.restriction else None,
         )
 
     def to_domain(self) -> TrackCandidate:
@@ -58,6 +69,11 @@ class _TrackCandidateDTO(BaseModel):
             artist=self.artist,
             duration=Duration(self.duration_ms) if self.duration_ms is not None else None,
             isrc=ISRC(self.isrc) if self.isrc is not None else None,
+            artists=tuple(self.artists),
+            cover_url=self.cover_url,
+            uploader=self.uploader,
+            rights_holder=self.rights_holder,
+            restriction=TrackRestriction(self.restriction) if self.restriction else None,
         )
 
 
@@ -144,18 +160,19 @@ def _columns_to_destination(orm: TransferOrm) -> TrackDestination:
 
 
 def _resolved_target_to_columns(transfer: Transfer) -> dict[str, object | None]:
-    if transfer.resolved_target is None:
-        return {"resolved_target_platform": None, "resolved_target_playlist_id": None}
+    if not transfer.resolved_targets:
+        return {"resolved_target_platform": None, "resolved_target_ids": []}
     return {
-        "resolved_target_platform": transfer.resolved_target.platform.value,
-        "resolved_target_playlist_id": transfer.resolved_target.external_id,
+        "resolved_target_platform": transfer.resolved_targets[0].platform.value,
+        "resolved_target_ids": [ref.external_id for ref in transfer.resolved_targets],
     }
 
 
-def _columns_to_resolved_target(orm: TransferOrm) -> PlaylistRef | None:
-    if orm.resolved_target_platform is None or orm.resolved_target_playlist_id is None:
-        return None
-    return PlaylistRef(Platform(orm.resolved_target_platform), orm.resolved_target_playlist_id)
+def _columns_to_resolved_targets(orm: TransferOrm) -> tuple[PlaylistRef, ...]:
+    if orm.resolved_target_platform is None:
+        return ()
+    platform = Platform(orm.resolved_target_platform)
+    return tuple(PlaylistRef(platform, external_id) for external_id in orm.resolved_target_ids)
 
 
 def item_result_columns(item: TransferItem) -> dict[str, object]:
@@ -166,6 +183,7 @@ def item_result_columns(item: TransferItem) -> dict[str, object]:
         "match_target_external_id": item.match.target_ref.external_id if item.match else None,
         "match_method": item.match.method if item.match else None,
         "match_score": item.match.score.value if item.match else None,
+        "match_restriction": item.match.restriction if item.match else None,
         "candidates": [_TrackCandidateDTO.from_domain(c).model_dump() for c in item.candidates],
     }
 
@@ -212,6 +230,7 @@ async def item_to_domain(
             ),
             method=orm.match_method,
             score=MatchScore(orm.match_score),
+            restriction=orm.match_restriction,
         )
     return TransferItem(
         id=orm.id,
@@ -250,7 +269,7 @@ async def transfer_to_domain(
         source=_columns_to_source(orm),
         destination=_columns_to_destination(orm),
         status=TransferStatus(orm.status),
-        resolved_target=_columns_to_resolved_target(orm),
+        resolved_targets=_columns_to_resolved_targets(orm),
         items=items,
     )
 
@@ -263,6 +282,6 @@ def transfer_header_to_domain(orm: TransferOrm) -> Transfer:
         source=_columns_to_source(orm),
         destination=_columns_to_destination(orm),
         status=TransferStatus(orm.status),
-        resolved_target=_columns_to_resolved_target(orm),
+        resolved_targets=_columns_to_resolved_targets(orm),
         items=[],
     )

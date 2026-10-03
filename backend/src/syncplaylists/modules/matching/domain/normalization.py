@@ -13,16 +13,42 @@ from syncplaylists.shared_kernel.domain.base import ValueObject
 _JUNK_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\(\s*feat\.?[^)]*\)"),
     re.compile(r"\[\s*feat\.?[^\]]*\]"),
+    re.compile(r"\(\s*ft\.?\s[^)]*\)"),
+    re.compile(r"\[\s*ft\.?\s[^\]]*\]"),
     re.compile(r"\bfeat\.?\s+[^\-([,]+"),
     re.compile(r"\bft\.?\s+[^\-([,]+"),
     re.compile(r"\(\s*remaster(?:ed)?[^)]*\)"),
     re.compile(r"\bremaster(?:ed)?\b"),
-    re.compile(r"\(\s*free dl\s*\)"),
-    re.compile(r"\bfree dl\b"),
-    re.compile(r"\[\s*prod\.[^\]]*\]"),
-    re.compile(r"\(\s*prod\.[^)]*\)"),
+    # Теги загрузчиков SoundCloud (по реальным названиям из поиска api-v2, 2026-10-03):
+    # «[FREE DL]», «(Free Download)», «*FREE DOWNLOAD*», «BUY = Free Download», «(FREE D/L)».
+    re.compile(r"[\(\[]\s*(?:buy\s*=\s*)?free\s*(?:dl|d/l|download)\b[^)\]]*[\)\]]"),
+    re.compile(r"(?:\bbuy\s*=\s*)?\*?\bfree\s*(?:dl|d/l|download)\b\*?"),
+    re.compile(r"[\(\[\{][^)\]\}]*\bout now\b[^)\]\}]*[\)\]\}]"),
+    re.compile(r"(?:\b(?:music\s+vid(?:eo)?|is)\s+)?\bout now\b(?:\s+on\s+[\w .]+)?!*\s*$"),
+    # «Premiere:», «PREMIERE060:», «GTG Premiere |», «TC Premiere:» — префикс канала.
+    re.compile(r"^[^|:\-–—]{0,30}?\bpremiere\s*\d*\s*(?::|\||/+|[-–—])\s*"),
+    re.compile(r"[\(\[]\s*premiere\s*[\)\]]"),
+    re.compile(
+        r"[\(\[]\s*official\s+(?:audio|video|music\s+video|lyric\s+video|visuali[sz]er)\s*[\)\]]"
+    ),
+    # Без скобок — «| Official Audio |», «... Official Audio 2018» в конце.
+    re.compile(
+        r"(?:[|/=]\s*)?\bofficial\s+(?:audio|video|music\s+video|lyric\s+video)\b(?:\s+\d{4})?"
+    ),
+    re.compile(r"[\(\[]\s*(?:preview|snippet|hq|hd|4k)\s*[\)\]]"),
+    re.compile(r"\b\d{3}\s*kbps\b"),
+    re.compile(r"(?:^|\s)#\w+"),
+    # Каталожный номер лейбла: «[MR047]», «[PHPEP019]».
+    re.compile(r"\[\s*[a-z][a-z0-9]{1,15}\s?\d{2,4}\s*\]"),
+    # «[prod. X]», «(prod X)», «(ProdByX)», «(@ProdByX)», «[Prod.By X]».
+    re.compile(r"[\(\[]\s*@?prod(?:\.?\s|\.?\s*by)[^)\]]*[\)\]]"),
     re.compile(r"\bprod\.?\s+(?:by\s+)?\S+"),
 )
+# Что остаётся после вырезания тегов: пустые скобки и висящие разделители по краям
+# («FREE DL | Artist - Title» → «| artist - title»), иначе ломается разбор «Artist - Title».
+_EMPTY_BRACKETS: Final = re.compile(r"[\(\[]\s*[\)\]]")
+_EDGE_SEPARATORS: Final = re.compile(r"^[\s|*/\-–—]+|[\s|*/\-–—]+$")
+_DOUBLE_DASH: Final = re.compile(r"\s[-–—](?:\s+[-–—])+\s")
 
 _ARTIST_TITLE_PATTERN: Final = re.compile(r"^(?P<artist>.+?)\s[-–—]\s(?P<title>.+)$")
 _WHITESPACE_PATTERN: Final = re.compile(r"\s+")
@@ -102,6 +128,9 @@ class TrackNormalizer:
         text, version = extract_version(text)
         for pattern in _JUNK_PATTERNS:
             text = pattern.sub(" ", text)
+        text = _EMPTY_BRACKETS.sub(" ", text)
+        text = _DOUBLE_DASH.sub(" - ", _WHITESPACE_PATTERN.sub(" ", text))
+        text = _EDGE_SEPARATORS.sub("", text)
         return _WHITESPACE_PATTERN.sub(" ", text).strip(), version
 
     def _clean_artist_field(self, text: str) -> str:

@@ -249,10 +249,20 @@ class SpotifySettings(BaseModel):
     client_secret: SecretStr
     redirect_uri: str
 
-class SoundCloudSettings(BaseModel):
+class SoundCloudOfficialSettings(BaseModel):   # этап 4b-2: приложение официального API
     client_id: str
     client_secret: SecretStr
-    redirect_uri: str
+
+class SoundCloudSettings(BaseModel):     # этап 4b-2
+    rate_limit: RateLimitSettings = RateLimitSettings(capacity=3, refill_per_second=1.0)
+    request_timeout_seconds: float = 15.0
+    tracks_batch_size: int = 50          # /tracks?ids= — до 50 id
+    likes_page_size: int = 200
+    playlist_max_tracks: int = 500       # больше SoundCloud в сет не принимает
+    client_id_ttl_seconds: int = 86400   # client_id веб-клиента в Redis
+    client_id_min_refresh_seconds: int = 60
+    client_id_override: str | None = None
+    official: SoundCloudOfficialSettings | None = None   # None — OAuth SoundCloud выключен
 
 class RateLimitSettings(BaseModel):      # этап 4b: token bucket на (площадка, аккаунт)
     capacity: int = 3                    # под Яндекс, подобрано по e2e (11d)
@@ -267,6 +277,7 @@ class YandexSettings(BaseModel):         # этап 4b; секретов нет 
 class PlatformsSettings(BaseModel):      # этап 4b
     fake: list[Platform] = []            # площадки на in-memory фейке (dev/тесты)
     yandex: YandexSettings = YandexSettings()
+    soundcloud: SoundCloudSettings = SoundCloudSettings()   # 4b-2
     link_expander_timeout_seconds: float = 5.0
 
 class RecognitionSettings(BaseModel):
@@ -290,7 +301,6 @@ class Settings(BaseSettings):
     oauth: OAuthSettings = OAuthSettings()
     platforms: PlatformsSettings = PlatformsSettings()
     spotify: SpotifySettings
-    soundcloud: SoundCloudSettings
     recognition: RecognitionSettings = RecognitionSettings()
 ```
 
@@ -396,6 +406,26 @@ acoustic | sped_up | slowed | cover | instrumental | karaoke | extended | radio_
 трек и есть своё соответствие — MATCHED, `method=same_platform`, score 1.0, ноль запросов к
 площадке. В `track_matches` такое соответствие не пишется (как и попадание в кэш).
 
+**DJ-версии (этап 4b-2, по реальным названиям SoundCloud).** `(Ed Marquis Bootleg)`,
+`[No Romeo Schranz Edit]`, `(X Rmx)`, `(X Flip)`, `(X Rework)`, `Song - KAAI Edit`, а также
+`(Bootleg)`/`(VIP)`/`(Mashup)` без имени — это `remix(<ремиксер>)`, а не оригинал. Жанровое
+слово перед ним (`hardstyle`, `schranz`, ...) в имя ремиксера не входит. Служебные правки
+площадок (`radio`/`extended`/`clean`/`explicit edit`, голое `(Edit)`) ремиксом не считаются.
+Мусор загрузчиков (`[FREE DL]`, `free download`, `BUY = …`, `OUT NOW …`, префиксы
+`Premiere:`/`GTG Premiere |`, `Official Audio` без скобок, `[HQ]`, каталожные номера
+`[MR047]`, хэштеги, `prod.by`) вырезается, после чего убираются пустые скобки и висящие по
+краям разделители. Иначе ведущее `FREE DL |` ломало разбор «Artist - Title».
+
+**Официальная заливка vs перезалив (этап 4b-2).** У площадок с пользовательскими заливками
+(SoundCloud) один трек часто лежит и у артиста/лейбла, и у фан-страниц с тем же названием и
+длительностью. `TrackCandidate` несёт `uploader` и `rights_holder` (есть `publisher_metadata`
+с артистом/ISRC или `user.verified`). `matching.domain.UploadTrust`: официальная заливка
+(`rights_holder` или ник заливщика ≈ артист источника, в т.ч. «JuiceWRLDofficial», «kinoband»)
+получает `+0.03`, и скорер сравнивает артиста по артисту источника. Перезалив
+(`uploader` ≠ артист) получает `−0.05`. При баллах ближе `0.02` побеждает официальная.
+Бонус не поднимает несовпадающую версию выше её потолка. Единственный перезалив по-прежнему
+находится.
+
 **Поиск той же версии (реализовано на этапе 4b).** Если версия источника не `original`, а среди
 результатов первого поиска нет кандидата той же версии (`versions_match`: тот же тег; у ремиксов —
 тот же ремиксер, если он указан с обеих сторон), `FuzzySearchStrategy` делает **второй запрос**:
@@ -447,9 +477,12 @@ class MusicPlatformGateway(Protocol):
     # с этапа 4b:
     async def playlist_info(self, ref: PlaylistRef) -> PlaylistInfo: ...   # шапка без треков, owner_external_id
     async def is_own_library(self, ref: PlaylistRef) -> bool: ...          # ссылка на «свою» медиатеку
+    def playlist_capacity(self) -> int | None: ...   # 4b-2: SoundCloud — 500; None — без лимита
     # Все методы бросают ошибки shared_kernel/domain/errors.py (см. ниже).
 
 # TrackCandidate с этапа 4b: + artists: tuple[str, ...], cover_url: str | None.
+# С 4b-2: + uploader: str | None (кто залил), rights_holder: bool (заливка правообладателя),
+# restriction: TrackRestriction | None (PREVIEW_ONLY — без подписки только превью, Go+).
 # Версию отдельным полем не заводим: адаптер склеивает её в title ("Starboy (Live)"),
 # matching извлекает её оттуда же, откуда и у остальных площадок.
 
@@ -505,6 +538,14 @@ class PlatformRateLimiter(Protocol):     # 4b; RedisTokenBucketLimiter (infrastr
     async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None: ...  # 429 → пауза аккаунта
     async def recent_requests(self, platform: Platform, account_id: UUID, minutes: int) -> int: ...  # для логов
 
+class CredentialsRefresher(Protocol):    # 4b-2; accounts.application.AccountCredentialsRefresher
+    # renew(current) вызывается под SELECT ... FOR UPDATE строки аккаунта (своя транзакция):
+    # параллельный воркер дождётся и получит уже продлённые токены, а не пойдёт продлевать
+    # ротированным refresh_token. Новые токены шифруются и сохраняются там же.
+    async def refresh(self, account_id: UUID, stale: PlatformCredentials,
+                      renew: Callable[[PlatformCredentials], Awaitable[PlatformCredentials]]
+                      ) -> PlatformCredentials: ...
+
 class AccountAccessProvider(Protocol):   # реализация — accounts.application.AccountAccessService
     async def get(self, user_id: UUID, account_id: UUID) -> AccountAccess: ...
     async def for_platform(self, user_id: UUID, platform: Platform) -> AccountAccess: ...
@@ -519,7 +560,7 @@ class TokenCipher(Protocol):         # реализация — infrastructure/s
 class PlatformProfileFetcher(Protocol):   # 4b: профиль по токену; Yandex/FakeProfileFetcher
     platform: Platform
     async def fetch(self, credentials: PlatformCredentials) -> PlatformProfile: ...  # external_user_id, display_name
-class OAuthProvider(Protocol):       # пока только FakeOAuthProvider (integrations/platforms/fake)
+class OAuthProvider(Protocol):       # FakeOAuthProvider; 4b-2: SoundCloudOAuthProvider (по флагу)
     platform: Platform
     def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str: ...
     async def exchange_code(self, *, code: str, code_verifier: str, redirect_uri: str) -> OAuthGrant: ...
@@ -569,7 +610,7 @@ class UnitOfWork(Protocol):
 | Spotify | Client Credentials (официально) | расширение / «свой Client ID» / OAuth dev-mode (≤5 польз.) | нет (DRM) — не нужно, есть ISRC |
 | Яндекс | `yandex-music` | `yandex-music` → расширение | да |
 | VK | токен (`vkpymusic`), пароли не храним | токен → расширение | да |
-| SoundCloud | официальный API (нужен Artist Pro у разработчика) | официальный API → v2 | да |
+| SoundCloud | api-v2 по токену из cookie сайта (UNOFFICIAL, по умолчанию); официальный API — если в Settings есть приложение (Artist Pro) | то же | да |
 | YouTube Music | `ytmusicapi` | `ytmusicapi` | да (`yt-dlp`) |
 
 **Браузерное расширение** — отдельный транспорт: бэкенд кладёт задачу
@@ -594,15 +635,18 @@ canonical_tracks    id, isrc, title_norm, artist_norm, duration_ms, mbid
 platform_tracks     id, platform, external_id, canonical_id, raw_title, raw_artist, duration_ms, isrc,
                     raw jsonb, UNIQUE(platform, external_id)
 track_matches       id, source_pt_id, target_platform, target_pt_id, method, score, confirmations,
-                    UNIQUE(source_pt_id, target_platform)
+                    restriction (4b-2: preview_only), UNIQUE(source_pt_id, target_platform)
 recognitions        id, platform_track_id, provider, result jsonb, created_at
 transfers           id, user_id,
                     source_kind (playlist|library), source_platform, source_playlist_id,
                     destination_kind (existing|new|library), target_platform, target_playlist_id,
-                    new_playlist_title, cursor jsonb (для возобновления),
+                    new_playlist_title, resolved_target_platform,
+                    resolved_target_ids jsonb (4b-2: созданные плейлисты «(1/N)…»),
+                    cursor jsonb (для возобновления),
                     status, total, pending, matched, uncertain, not_found, added, failed
                     (счётчики — 11c; recognized — этап 6), created_at, updated_at (NOT NULL)
-transfer_items      id, transfer_id, position, source_pt_id, match_id, status, candidates jsonb
+transfer_items      id, transfer_id, position, source_pt_id, match_id, status, candidates jsonb,
+                    match_restriction (4b-2), processed_at
 artworks            canonical_id, provider, url, width, height, dominant_color, fetched_at
 lyrics_refs         canonical_id, provider, page_url, has_synced, cached_until
                     -- сам текст: только кэш в Redis с TTL, не в Postgres
@@ -983,8 +1027,115 @@ concurrency/rate-limit по площадкам, описанные в табли
 - `playlist_info` у Яндекса читает плейлист целиком (отдельного лёгкого эндпоинта шапки нет).
 - `get_library` читает «Мне нравится» одним запросом id + догрузка пачками; постраничного
   чтения через `cursor` переноса (11a) по-прежнему нет.
-- Остальные площадки только парсятся; адаптеры — SoundCloud → YT Music → VK → Spotify (4b-2…).
-- Rate limit настроен только для Яндекса; у фейка лимита нет.
+- ~~Остальные площадки только парсятся.~~ SoundCloud — 4b-2 (11e); дальше YT Music → VK → Spotify.
+- Rate limit настроен для Яндекса и SoundCloud; у фейка лимита нет.
+
+### 11e. Этап 4b-2 (SoundCloud) — что сделано и какой долг оставлен
+
+**Сделано**
+- **SoundCloudGateway** (`integrations/platforms/soundcloud/`). Логика одна, транспорта два:
+  `SoundCloudApi` → `V2Api` (`api-v2.soundcloud.com`, UNOFFICIAL, по умолчанию) и
+  `OfficialApi` (`api.soundcloud.com`, OFFICIAL). Пути v2 сверены с таблицей эндпоинтов в JS
+  сайта (2026-10-03): лайк — `PUT users/:userId/track_likes/:id`, id лайков —
+  `GET me/track_likes/ids`, сет — `POST playlists` / `PUT playlists/:id`.
+  - `external_id` плейлиста — путь из ссылки (`<user>/sets/<slug>[/s-<secret>]`, через
+    `/resolve`), числовой `"<id>[:s-<secret>]"` (так храним созданные нами) или `<user>/likes`
+    (чужие лайки, только чтение). `SoundCloudPlaylistId.parse` — единственное место разбора.
+  - В ответе сета полными приходят только первые ~5 треков, остальные — заглушки `{id, policy}`.
+    Они догружаются `GET /tracks?ids=` пачками по 50, для приватного сета — с
+    `playlistId`/`playlistSecretToken`. Порядок — как в сете, удалённые пропускаются.
+  - Запись в сет — замена списка целиком (`PUT`), ревизий нет. То, что уже есть, не
+    добавляется и считается добавленным. Сверх `playlist_max_tracks` (500) — в
+    `AddResult.failed`.
+  - Лайки — по одному запросу, свежие сверху (`library_insert_order = TOP`). Уже
+    лайкнутые отсеиваются по `me/track_likes/ids`.
+  - Маппинг: артист — `publisher_metadata.artist`, иначе заливщик (`uploader`). ISRC — из
+    `publisher_metadata.isrc`, невалидный отбрасывается. Длительность — `full_duration`:
+    у `policy=SNIP` `duration` — 30-секундное превью. `SNIP` → `restriction=PREVIEW_ONLY`.
+    `BLOCK` (гео) в поиске отсеивается. `search_by_isrc` → `[]`.
+- **client_id веб-клиента** (`ClientIdProvider`) берётся из JS-бандлов главной страницы
+  (`client_id:"<32>"`, на 2026-10-03 — в последнем бандле). Скачивание только с allowlist
+  (`soundcloud.com`, `a-v2.sndcdn.com`). Кэш — в процессе и в Redis `soundcloud:client_id`
+  (сутки). Обновление: compare-and-refresh (если другой воркер уже положил новый, сайт не
+  качаем), `asyncio.Lock`, не чаще раза в минуту. `client_id_override` — ручной запасной
+  вариант.
+- **401 токена ≠ 401 client_id.** Проверено: v2 отвечает одинаковым пустым 401 и на битый
+  client_id, и на битый токен. Транспорт на 401 обновляет client_id и повторяет запрос.
+  Затем, если есть refresh_token, продлевает токен и повторяет ещё раз. Только 401 после этого
+  становится `PlatformAuthError` → `report_auth_failure` (перепроверка `/me`) → EXPIRED.
+  403 с HTML DataDome (антибот) → `PlatformUnavailableError` (временная, client_id не
+  трогаем); прочий 403 → по контексту `PlaylistNotFound`/`PlaylistNotWritable`. 429 →
+  `Retry-After` или `reset_time` из тела → `penalize` аккаунта. Лог 429 общий для площадок
+  (`rate_limit_log.py`) и включает `bucket` (`by-client` — квота общего client_id сайта).
+- **Токены.** Cookie сайта `oauth_token` — JWT со сроком (`exp`) и `client_id` в claims.
+  Сайт продлевает его httpOnly-cookie `oauth_refresh_token` через
+  `POST secure.soundcloud.com/oauth/token`. Мы делаем то же: `AccountTokens` продлевает токен
+  заранее (за 60 с до `exp`) и после 401. Сохранение — через новый порт `CredentialsRefresher`
+  (раздел 8): row-lock строки аккаунта, без гонок при ротации refresh_token. Без
+  refresh_token токен работает до `exp`. Подключение — `POST /accounts` с `access_token` и
+  необязательным `refresh_token`, профиль проверяется через `/me`. Инструкция —
+  `docs/SOUNDCLOUD_TOKEN.md`.
+- **OFFICIAL** — `SoundCloudOAuthProvider` (authorize `secure.soundcloud.com`, PKCE S256 из
+  каркаса 4a) и `OfficialApi`. Регистрируется, только если задан
+  `PLATFORMS__SOUNDCLOUD__OFFICIAL__CLIENT_ID/SECRET`. Пустые значения из compose официальный
+  API не включают. Live не проверен: нет приложения с Artist Pro.
+- **Несколько плейлистов для NewPlaylist.** Если треков больше `playlist_capacity()`,
+  `WriteTransferUseCase` создаёт «<название> (1/N)», «(2/N)», ... Каждый создаётся отдельным
+  шагом с немедленным коммитом в `Transfer.resolved_targets`, после коммита лок берётся
+  заново. Повтор `run_write` переиспользует созданные. Дубли целевых треков место не
+  занимают. Регрессия на Postgres — `test_write_idempotency.py` (падение между частями).
+  `ExistingPlaylist` не делится: остаток уходит в `failed`.
+- **Пометка «только превью».** `restriction` выбранного кандидата проходит через
+  `TrackMatch` (колонка `track_matches.restriction`, поэтому не теряется при попадании в кэш)
+  → `MatchResult` → `transfer_items.match_restriction` → API (`match.restriction`,
+  `candidates[].restriction`). Ручной выбор берёт пометку из кандидатов item.
+- Миграция `e7b2c9d4a1f6`: `transfers.resolved_target_ids` вместо
+  `resolved_target_playlist_id` (backfill), `track_matches.restriction`,
+  `transfer_items.match_restriction`.
+- Тесты: respx на фикстурах формы api-v2 (`tests/fixtures/soundcloud`, данные вымышленные).
+  Форма сверена с публичными ответами search/resolve/tracks. Рекордер —
+  `tests/tools/record_soundcloud.py`, только чтение и вычистка; дополнительно выгружает
+  `titles.csv` для разбора нормализатором. Live — `tests/live/soundcloud` с откатом в
+  `finally`. Нормализатор проверен на 545 реальных публичных названиях из поиска; в корпус
+  `dirty_titles` добавлено 14 пар, итог 114/114 без ложных AUTO.
+
+**Live-проверка 2026-10-03 (токен владельца, домашний IP)**
+- Чтение работает: профиль `/me`, лайки, поиск. Токен из cookie оказался старого формата
+  `2-…` — не JWT, без срока и без `oauth_refresh_token`. У этой сессии refresh не нужен.
+- **Запись через api-v2 закрыта антиботом DataDome**: `POST /playlists`, `PUT track_likes`
+  → 403 `x-datadome: protected` и JSON со ссылкой на капчу. То же у анонимного запроса;
+  заголовки `Origin`/`Referer` не помогают. Сайт проходит проверку только благодаря JS
+  DataDome в браузере (cookie `datadome` и заголовок `X-Datadome-ClientId`). Обходить
+  защиту (подставлять cookie браузера, имитировать JS) **не будем**. Поэтому для
+  UNOFFICIAL SoundCloud — только источник; запись — через OFFICIAL (OAuth) или расширение
+  (этап 10). Решение владельца: расширение переносится раньше — этап 4c (раздел 14).
+- С валидным токеном v2 принимает и мусорный client_id. client_id обязателен только для
+  запросов без токена (поиск, профиль при подключении). Логика обновления по 401 от этого
+  не меняется.
+
+**Долги**
+- Запись в SoundCloud через UNOFFICIAL невозможна (DataDome, выше). Сейчас она
+  заканчивается `PlatformUnavailableError("антибот")` → повторы → `FAILED("platform_unavailable")`;
+  нужен явный отказ.
+- Ревизий у сетов нет: если пользователь правит сет параллельно с переносом, одна из правок
+  может потеряться (замена списка целиком).
+- Квота `by-client` считается на client_id сайта, то есть на весь сервер, а не на аккаунт.
+  `penalize` пока ставит на паузу только аккаунт. Если такие 429 появятся, нужен
+  серверный штраф.
+- DataDome вероятен с IP датацентров. В проде может понадобиться другой исходящий IP или
+  расширение (этап 10).
+- Хрупкость client_id: если сайт перестанет класть его в бандл, сработает
+  `PlatformUnavailableError("client_id не найден")`, а запасной вариант —
+  `client_id_override`.
+- Метод и тело `PUT playlists/:id`, `POST playlists` и порядок лайков live не подтверждены
+  (запись упирается в DataDome). Подтвердятся вместе с OFFICIAL-транспортом или
+  расширением.
+- Срок жизни веб-JWT неизвестен (live-тест печатает `exp`). Если он короткий, без
+  refresh_token долгий перенос упрётся в EXPIRED.
+- Продление refresh_token на сервере может разлогинить браузерный профиль, из которого
+  токены взяли (ротация). Это описано в инструкции.
+- Чужие лайки (`<user>/likes`) — только источник; `playlist_info` для них отдаёт
+  `likes_count` пользователя.
 
 ---
 
@@ -995,6 +1146,59 @@ concurrency/rate-limit по площадкам, описанные в табли
   **ревью сомнительных** (кандидаты, обложки, длительность, превью) → история.
 - Расширение: привязка к аккаунту одноразовым кодом, WebSocket к бэкенду,
   модули под каждую площадку, host_permissions только на нужные домены.
+
+### Подключение площадок: варианты для фронта
+
+| Площадка | Вариант | Пароль к нам попадает? |
+|---|---|---|
+| Яндекс | **device flow** (ниже) — основной для фронта; ручной ввод токена (`docs/YANDEX_TOKEN.md`) — запасной | нет |
+| SoundCloud | OAuth (если есть приложение); иначе ручной ввод `oauth_token` (+ `oauth_refresh_token`) из cookie (`docs/SOUNDCLOUD_TOKEN.md`) | нет |
+| VK, Spotify, YT Music | на своих этапах | нет — пароли площадок не принимаем никогда |
+
+**Яндекс Музыка через device flow (исследование 2026-10-03, кода нет).**
+- Яндекс OAuth официально поддерживает вход по коду на странице авторизации
+  (yandex.ru/dev/id/doc/ru/codes/screen-code-oauth):
+  `POST https://oauth.yandex.ru/device/code` (`client_id`, `device_id`, `device_name`) →
+  `device_code`, `user_code`, `verification_url` (`https://oauth.yandex.ru/device`, оно же
+  `ya.ru/device`), `interval`, `expires_in` (порядка 300 с). Дальше опрос
+  `POST https://oauth.yandex.ru/token` (`grant_type=device_code`, `code=<device_code>`,
+  `client_id`, `client_secret`) → `access_token`, **`refresh_token`**, `expires_in`. Ошибки:
+  `authorization_pending` (ещё не подтвердил), `slow_down`, `invalid_grant`/`expired_token`.
+- **Установленная `yandex-music` 3.0.0 это уже умеет**: `ClientAsync.request_device_code()`
+  и `poll_device_token()` (`yandex_music/_client_async/device_auth.py`) с публичными
+  client_id/secret Android-приложения Яндекс Музыки. Это тот же client_id, что в
+  `docs/YANDEX_TOKEN.md`. Выдаётся обычный токен Музыки.
+- Пароль к нам не попадает: пользователь входит на домене Яндекса и вводит там короткий код.
+  Сервер видит только выданные токены и хранит их зашифрованными, как сейчас.
+- Поток для фронта (реализация — этап 5):
+  1. `POST /accounts/yandex/device` → бэкенд вызывает `request_device_code`, кладёт
+     `device_code` в Redis (TTL = `expires_in`, ключ привязан к `user_id`, как OAuth state в
+     4a) и отдаёт фронту `{flow_id, user_code, verification_url, expires_in, interval}`.
+  2. Фронт показывает код и кнопку «Открыть страницу Яндекса» (новая вкладка
+     `verification_url`) и раз в `interval` секунд опрашивает
+     `GET /accounts/yandex/device/{flow_id}`.
+  3. Бэкенд на каждый опрос делает один `poll_device_token` (не чаще `interval`; при
+     `slow_down` интервал растёт). `pending` → 202. Токен получен → существующий
+     `ConnectAccountUseCase` (проверка профиля `/account/status`, шифрование) → 201 с
+     аккаунтом, `device_code` удаляется. `expired`/`denied` → 410/403, фронт предлагает
+     начать заново.
+  4. Бонус: `refresh_token` и `expires_at` сохраняются, и адаптер может продлевать токен через
+     `CredentialsRefresher` (порт из 4b-2) без участия пользователя.
+- Оговорки и риски:
+  - client_id/secret чужие (приложение Яндекс Музыки), не наши. Это тот же серый статус, что у
+    всей интеграции через `yandex-music`. Яндекс может отключить device flow для этого
+    клиента, тогда остаётся ручной ввод токена.
+  - На странице подтверждения пользователь видит «Яндекс Музыка» и `device_name`. В UI нужно
+    прямо объяснить, что он выдаёт доступ к своей Музыке нашему сервису, и передавать
+    `device_name` вроде «SyncPlaylists».
+  - Фишинг device flow (злоумышленник подсовывает свой код): код показываем только
+    залогиненному пользователю в нашем UI, коды извне не принимаем, flow привязан к
+    `user_id`.
+  - Опрос идёт с сервера и считается в server-счётчике запросов (квота Яндекса может быть на
+    IP — 11d).
+- Перед реализацией — ручная live-проверка: `request_device_code` → подтвердить код в
+  браузере → `poll_device_token` → токен проходит `/account/status`. До неё вывод «работает»
+  основан на документации Яндекса и коде библиотеки; live не проверено.
 
 ---
 
@@ -1045,12 +1249,22 @@ concurrency/rate-limit по площадкам, описанные в табли
    - 4b. адаптеры площадок: Яндекс → SoundCloud → YT Music → VK → Spotify (чтение) +
      настоящие OAuth-клиенты. **4b-1 (сделано):** LinkResolver всех площадок, YandexGateway,
      token bucket, проверка токена через профиль, поиск той же версии (детали и долги — 11d).
+     **4b-2 (сделано):** SoundCloud — api-v2 по токену + официальный API по флагу,
+     перезаливы в матчинге, несколько сетов сверх 500, пометка «только превью»,
+     продление токенов (детали и долги — 11e); device flow Яндекса — исследование (раздел 12).
+     Live: запись api-v2 закрыта DataDome → SoundCloud через токен — только источник.
+   - **4c. Расширение (перенесено с этапа 10 по итогам 4b-2):** WXT, привязка к аккаунту
+     одноразовым кодом, WebSocket, транспорт `Transport.EXTENSION` в `GatewayFactory`;
+     первая площадка — **запись в SoundCloud** (создание сета, добавление треков, лайки) в
+     сессии пользователя, где антибот проходит сам браузер. Дальше этим же каналом —
+     Spotify и fallback VK/Яндекса (бывший этап 10). Чтение SoundCloud остаётся на v2.
+     После 4c — оставшиеся адаптеры 4b (YT Music → VK → Spotify).
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).
 8. **backups**: экспорт во все форматы, импорт из файла, расписания, S3 (SeaweedFS).
 9. **library_tools**: дубли, слияние, сравнение площадок, недоступные треки.
-10. **Расширение**: запись в Spotify, fallback для VK/Яндекса.
+10. ~~**Расширение**~~ — перенесено в 4c; здесь остаётся развитие расширения под новые площадки.
 11. **Прод**: Caddy, РФ-воркер, Sentry, бэкапы Postgres.
 12. **ML-усиление матчинга** (раздел 15) — после того, как накопятся данные ручных подтверждений.
 

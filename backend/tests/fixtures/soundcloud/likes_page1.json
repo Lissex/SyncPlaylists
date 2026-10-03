@@ -1,0 +1,71 @@
+{
+  "collection": [
+    {
+      "created_at": "2026-10-01T10:00:00Z",
+      "kind": "like",
+      "track": {
+        "id": 1001,
+        "kind": "track",
+        "title": "Lucid Dreams",
+        "user": {
+          "id": 700001,
+          "kind": "user",
+          "username": "Juice WRLD",
+          "permalink": "juice-wrld",
+          "verified": true,
+          "avatar_url": "https://i1.sndcdn.com/avatars-700001-large.jpg",
+          "urn": "soundcloud:users:700001"
+        },
+        "user_id": 700001,
+        "duration": 239882,
+        "full_duration": 239882,
+        "policy": "ALLOW",
+        "monetization_model": "NOT_APPLICABLE",
+        "publisher_metadata": {
+          "id": 1001,
+          "urn": "soundcloud:tracks:1001",
+          "artist": "Juice WRLD",
+          "isrc": "USUG11800685",
+          "contains_music": true,
+          "release_title": "Lucid Dreams"
+        },
+        "streamable": true,
+        "sharing": "public",
+        "artwork_url": "https://i1.sndcdn.com/artworks-1001-large.jpg",
+        "permalink_url": "https://soundcloud.com/juice-wrld/t1001",
+        "urn": "soundcloud:tracks:1001"
+      }
+    },
+    {
+      "created_at": "2026-09-30T10:00:00Z",
+      "kind": "like",
+      "track": {
+        "id": 1005,
+        "kind": "track",
+        "title": "dark trap beat (FREE DL)",
+        "user": {
+          "id": 700004,
+          "kind": "user",
+          "username": "beatsmith",
+          "permalink": "beatsmith",
+          "verified": false,
+          "avatar_url": "https://i1.sndcdn.com/avatars-700004-large.jpg",
+          "urn": "soundcloud:users:700004"
+        },
+        "user_id": 700004,
+        "duration": 150000,
+        "full_duration": 150000,
+        "policy": "ALLOW",
+        "monetization_model": "NOT_APPLICABLE",
+        "publisher_metadata": null,
+        "streamable": true,
+        "sharing": "public",
+        "artwork_url": null,
+        "permalink_url": "https://soundcloud.com/beatsmith/t1005",
+        "urn": "soundcloud:tracks:1005"
+      }
+    }
+  ],
+  "next_href": "https://api-v2.soundcloud.com/users/900001/track_likes?offset=2026-09-30T10%3A00%3A00Z&limit=2",
+  "query_urn": null
+}

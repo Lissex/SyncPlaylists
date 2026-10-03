@@ -1,0 +1,21 @@
+{
+  "id": 5100,
+  "kind": "playlist",
+  "title": "Перенос",
+  "user": {
+    "id": 900001,
+    "kind": "user",
+    "permalink": "test-listener",
+    "username": "Test Listener",
+    "full_name": "",
+    "verified": false,
+    "avatar_url": "https://i1.sndcdn.com/avatars-000-large.jpg",
+    "uri": "https://api.soundcloud.com/users/900001",
+    "urn": "soundcloud:users:900001"
+  },
+  "user_id": 900001,
+  "sharing": "private",
+  "secret_token": "s-NeW999",
+  "tracks": [],
+  "track_count": 0
+}

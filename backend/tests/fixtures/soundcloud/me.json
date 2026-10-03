@@ -1,0 +1,11 @@
+{
+  "id": 900001,
+  "kind": "user",
+  "permalink": "test-listener",
+  "username": "Test Listener",
+  "full_name": "",
+  "verified": false,
+  "avatar_url": "https://i1.sndcdn.com/avatars-000-large.jpg",
+  "uri": "https://api.soundcloud.com/users/900001",
+  "urn": "soundcloud:users:900001"
+}

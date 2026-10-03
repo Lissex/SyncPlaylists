@@ -17,6 +17,10 @@ class LiveSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore")
 
     yandex_live_token: SecretStr | None = None
+    # cookie oauth_token сайта SoundCloud и (необязательно) oauth_refresh_token —
+    # docs/SOUNDCLOUD_TOKEN.md. Лучше от отдельного тестового аккаунта.
+    soundcloud_live_token: SecretStr | None = None
+    soundcloud_live_refresh_token: SecretStr | None = None
 
 
 @pytest.fixture(scope="session")

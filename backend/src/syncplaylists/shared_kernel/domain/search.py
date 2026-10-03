@@ -18,6 +18,13 @@ class TrackQuery(ValueObject):
     duration: Duration | None = None
 
 
+class TrackRestriction(StrEnum):
+    """Ограничение доступности трека на площадке — для пометки в отчёте переноса."""
+
+    # Без подписки слышно только превью (SoundCloud Go+: policy=SNIP).
+    PREVIEW_ONLY = "preview_only"
+
+
 @dataclass(frozen=True, slots=True)
 class TrackCandidate(ValueObject):
     ref: ExternalTrackRef
@@ -29,6 +36,12 @@ class TrackCandidate(ValueObject):
     # artists — тот же список по отдельности, если площадка его отдаёт.
     artists: tuple[str, ...] = ()
     cover_url: str | None = None
+    # Кто залил трек — у площадок с пользовательскими заливками (SoundCloud); иначе None.
+    uploader: str | None = None
+    # Заливка от правообладателя (лейбл/подтверждённый артист) — matching предпочитает
+    # её перезаливам с тем же названием.
+    rights_holder: bool = False
+    restriction: TrackRestriction | None = None
 
 
 class InsertOrder(StrEnum):

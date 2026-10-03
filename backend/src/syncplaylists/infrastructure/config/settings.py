@@ -86,11 +86,52 @@ class YandexSettings(BaseModel):
     batch_size: int = 100
 
 
+class SoundCloudOfficialSettings(BaseModel):
+    """Приложение в официальном API SoundCloud (нужен Artist Pro у разработчика). Пока
+    не задано — OAuth-подключение SoundCloud выключено, работает только v2 по токену."""
+
+    client_id: str
+    client_secret: SecretStr
+
+
+class SoundCloudSettings(BaseModel):
+    # Консервативно: фактический лимит v2 неизвестен, подбирается по логам 429.
+    rate_limit: RateLimitSettings = RateLimitSettings(capacity=3, refill_per_second=1.0)
+    request_timeout_seconds: float = 15.0
+    # /tracks?ids= принимает до 50 id за запрос.
+    tracks_batch_size: int = 50
+    likes_page_size: int = 200
+    # Больше 500 треков SoundCloud в один плейлист не принимает.
+    playlist_max_tracks: int = 500
+    # client_id веб-клиента извлекается из JS сайта и кэшируется в Redis.
+    client_id_ttl_seconds: int = 86400
+    # Не чаще: иначе протухший токен пользователя (тот же 401) скачивал бы сайт на
+    # каждый запрос.
+    client_id_min_refresh_seconds: int = 60
+    # Ручной client_id — если сайт поменяет разметку и извлечение сломается.
+    client_id_override: str | None = None
+    official: SoundCloudOfficialSettings | None = None
+
+    @field_validator("client_id_override", mode="before")
+    @classmethod
+    def _blank_override_is_none(cls, value: object) -> object:
+        # docker-compose передаёт незаданную переменную пустой строкой.
+        return value or None
+
+    @field_validator("official", mode="before")
+    @classmethod
+    def _blank_official_is_none(cls, value: object) -> object:
+        if isinstance(value, dict) and not value.get("client_id"):
+            return None  # пустые OFFICIAL__* из compose — официальный API выключен
+        return value
+
+
 class PlatformsSettings(BaseModel):
     # Площадки, которые обслуживает in-memory фейк (dev/тесты) — вместо настоящего
-    # адаптера, если он есть. Настоящий адаптер пока только у Яндекса.
+    # адаптера, если он есть. Настоящие адаптеры — у Яндекса и SoundCloud.
     fake: list[Platform] = []
     yandex: YandexSettings = YandexSettings()
+    soundcloud: SoundCloudSettings = SoundCloudSettings()
     # Раскрытие коротких ссылок (vk.cc, on.soundcloud.com, ...).
     link_expander_timeout_seconds: float = 5.0
     # Кэш результатов поиска площадок в Redis (экономия квоты); 0 — выключен.
