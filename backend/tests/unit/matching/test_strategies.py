@@ -165,7 +165,7 @@ def _target(external_id: str, title: str, duration_ms: int = 260_000) -> TrackCa
     )
 
 
-async def test_fuzzy_strategy_searches_same_version_when_first_search_has_only_original() -> None:
+async def test_fuzzy_strategy_puts_version_into_the_only_query() -> None:
     original = _target("orig", "Starboy")
     live = _target("live", "Starboy (Live)")
 
@@ -181,9 +181,8 @@ async def test_fuzzy_strategy_searches_same_version_when_first_search_has_only_o
     assert attempt.status is MatchStatus.MATCHED
     assert attempt.match is not None
     assert attempt.match.target_ref == live.ref
-    assert [q.title for q in gateway.search_queries] == ["Starboy (Live)", "starboy live"]
-    # Кандидаты нужной версии — первыми (для ручного выбора).
-    assert [c.ref for c in attempt.candidates] == [live.ref, original.ref]
+    # Версия — в первом же запросе; второго поиска «той же версии» нет (экономия квоты).
+    assert [q.title for q in gateway.search_queries] == ["starboy live"]
 
 
 async def test_fuzzy_strategy_offers_original_as_uncertain_when_version_missing() -> None:
@@ -197,7 +196,7 @@ async def test_fuzzy_strategy_offers_original_as_uncertain_when_version_missing(
     assert attempt.status is MatchStatus.UNCERTAIN
     assert attempt.match is None
     assert [c.ref for c in attempt.candidates] == [original.ref]
-    assert gateway.search_calls == 2  # второй запрос был, но той же версии не нашёл
+    assert gateway.search_calls == 1
 
 
 async def test_fuzzy_strategy_searches_named_remix() -> None:

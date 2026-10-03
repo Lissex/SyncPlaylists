@@ -3,6 +3,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Final
 
+from syncplaylists.modules.matching.domain.artists import parse_artist_names
 from syncplaylists.modules.matching.domain.transliteration import transliterate
 from syncplaylists.modules.matching.domain.version import VersionInfo, VersionTag, extract_version
 from syncplaylists.shared_kernel.domain.base import ValueObject
@@ -50,6 +51,13 @@ _EMPTY_BRACKETS: Final = re.compile(r"[\(\[]\s*[\)\]]")
 _EDGE_SEPARATORS: Final = re.compile(r"^[\s|*/\-–—]+|[\s|*/\-–—]+$")
 _DOUBLE_DASH: Final = re.compile(r"\s[-–—](?:\s+[-–—])+\s")
 
+# «(feat. X)», «[ft. X & Y]», «A feat. B - Title»: X — тоже артист трека. Вырезается из
+# названия как мусор, но перед этим добавляется к артистам — иначе «ANIKV, SALUKI» на
+# площадке совпадал бы с источником только наполовину (e2e 2026-10-03).
+_FEATURED_PATTERN: Final = re.compile(
+    r"[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+(?P<bracketed>[^)\]]+)[\)\]]"
+    r"|\b(?:feat\.?|ft\.?)\s+(?P<inline>[^\-–—(\[,]+)"
+)
 _ARTIST_TITLE_PATTERN: Final = re.compile(r"^(?P<artist>.+?)\s[-–—]\s(?P<title>.+)$")
 _WHITESPACE_PATTERN: Final = re.compile(r"\s+")
 
@@ -64,15 +72,20 @@ class NormalizedTrack(ValueObject):
 class TrackNormalizer:
     def normalize(self, raw_title: str, raw_artist: str | None = None) -> NormalizedTrack:
         cleaned_title, version = self._prepare_title(raw_title)
+        featured = self._featured(raw_title)
         match = _ARTIST_TITLE_PATTERN.match(cleaned_title)
         if match:
             return NormalizedTrack(
                 title=match.group("title").strip(),
-                artist=match.group("artist").strip() or None,
+                artist=_with_featured(match.group("artist").strip() or None, featured),
                 version=version,
             )
         cleaned_artist = self._clean_artist_field(raw_artist) if raw_artist else None
-        return NormalizedTrack(title=cleaned_title, artist=cleaned_artist or None, version=version)
+        return NormalizedTrack(
+            title=cleaned_title,
+            artist=_with_featured(cleaned_artist or None, featured),
+            version=version,
+        )
 
     def variants(self, raw_title: str, raw_artist: str | None = None) -> list[NormalizedTrack]:
         cleaned_title, title_version = self._prepare_title(raw_title)
@@ -87,9 +100,12 @@ class TrackNormalizer:
         # все варианты одной стороны: берём там, где она реально нашлась.
         version = title_version if title_version.tag is not VersionTag.ORIGINAL else artist_version
 
+        featured = self._featured(raw_title)
         cleaned_artist = self._clean_artist_field(raw_artist) if raw_artist else None
         fallback = NormalizedTrack(
-            title=cleaned_title, artist=cleaned_artist or None, version=version
+            title=cleaned_title,
+            artist=_with_featured(cleaned_artist or None, featured),
+            version=version,
         )
         results = [fallback]
 
@@ -97,7 +113,7 @@ class TrackNormalizer:
         if match:
             dash_variant = NormalizedTrack(
                 title=match.group("title").strip(),
-                artist=match.group("artist").strip() or None,
+                artist=_with_featured(match.group("artist").strip() or None, featured),
                 version=version,
             )
             if dash_variant not in results:
@@ -133,6 +149,13 @@ class TrackNormalizer:
         text = _EDGE_SEPARATORS.sub("", text)
         return _WHITESPACE_PATTERN.sub(" ", text).strip(), version
 
+    def _featured(self, raw_title: str) -> list[str]:
+        names: list[str] = []
+        for match in _FEATURED_PATTERN.finditer(self._fold(raw_title)):
+            text = match.group("bracketed") or match.group("inline") or ""
+            names.extend(sorted(parse_artist_names(text.strip())))
+        return names
+
     def _clean_artist_field(self, text: str) -> str:
         # Лёгкая очистка: без вырезания feat./ft./remaster/prod — "A feat. B" в поле
         # артиста должен дожить до parse_artist_names() и разобраться как {"a", "b"},
@@ -143,3 +166,13 @@ class TrackNormalizer:
         text = unicodedata.normalize("NFKC", text)
         text = text.lower()
         return text.replace("ё", "е")
+
+
+def _with_featured(artist: str | None, featured: list[str]) -> str | None:
+    """Артист + feat-артисты из названия, без повторов. Без основного артиста feat-имена
+    не подставляем — иначе приглашённый стал бы «главным»."""
+    if artist is None or not featured:
+        return artist
+    present = parse_artist_names(artist)
+    extra = [name for name in featured if name not in present]
+    return ", ".join([artist, *extra]) if extra else artist
