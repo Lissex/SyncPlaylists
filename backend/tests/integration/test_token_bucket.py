@@ -147,3 +147,16 @@ async def test_penalize_is_per_account(redis: Redis) -> None:
     await limiter.acquire(Platform.YANDEX, uuid4())
 
     assert sleep.waits == []
+
+
+async def test_recent_requests_counts_only_granted(redis: Redis) -> None:
+    limiter = _limiter(redis, _RecordingSleep(), capacity=2, rate=0.1, max_wait=0)
+    account = uuid4()
+
+    await limiter.acquire(Platform.YANDEX, account)
+    await limiter.acquire(Platform.YANDEX, account)
+    with pytest.raises(PlatformRateLimitedError):
+        await limiter.acquire(Platform.YANDEX, account)  # отказ — не запрос к площадке
+
+    assert await limiter.recent_requests(Platform.YANDEX, account, 10) == 2
+    assert await limiter.recent_requests(Platform.YANDEX, uuid4(), 10) == 0

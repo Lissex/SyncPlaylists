@@ -381,7 +381,7 @@ Transfer (root)
 - `MatchingPipeline` — цепочка стратегий (паттерн Chain of Responsibility):
 
 ```
-CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrategy → FingerprintVerification
+SamePlatformStrategy → CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrategy → FingerprintVerification
       ↓ нет               ↓ нет             ↓ <0.70                    ↓ нет                    ↓
                                                                                     UNCERTAIN / NOT_FOUND → ручной выбор
 ```
@@ -390,6 +390,11 @@ CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrat
 acoustic | sped_up | slowed | cover | instrumental | karaoke | extended | radio_edit`) из названия;
 `MatchScorer` ограничивает результат потолком `UNCERTAIN`, если версии источника и кандидата не
 совпадают (разный тег или разные ремиксеры) — даже при идеальном совпадении текста и длительности.
+
+**Одна площадка — без поиска (этап 4b-1.1).** Первой в цепочке стоит `SamePlatformStrategy`:
+если площадка источника совпадает с целевой (чужой плейлист к себе, лайки в плейлист, слияние),
+трек и есть своё соответствие — MATCHED, `method=same_platform`, score 1.0, ноль запросов к
+площадке. В `track_matches` такое соответствие не пишется (как и попадание в кэш).
 
 **Поиск той же версии (реализовано на этапе 4b).** Если версия источника не `original`, а среди
 результатов первого поиска нет кандидата той же версии (`versions_match`: тот же тег; у ремиксов —
@@ -497,6 +502,8 @@ class GatewayFactory(Protocol):
 
 class PlatformRateLimiter(Protocol):     # 4b; RedisTokenBucketLimiter (infrastructure/ratelimit)
     async def acquire(self, platform: Platform, account_id: UUID) -> None: ...
+    async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None: ...  # 429 → пауза аккаунта
+    async def recent_requests(self, platform: Platform, account_id: UUID, minutes: int) -> int: ...  # для логов
 
 class AccountAccessProvider(Protocol):   # реализация — accounts.application.AccountAccessService
     async def get(self, user_id: UUID, account_id: UUID) -> AccountAccess: ...
@@ -914,6 +921,30 @@ concurrency/rate-limit по площадкам, описанные в табли
     доходили).
 - Ссылки `music.yandex.ru/playlists/<uuid>` содержат uuid **без** префикса `lk.`, и API
   принимает его именно так (`GET /playlist/lk.<uuid>` → 404). Примеры в тестах исправлены.
+
+**Этап 4b-1.1 — экономия запросов** (тот же e2e, повторный прогон: 429 на первом же запросе —
+квота аккаунта, а не только частота). Ничего в поведении не меняет, кроме числа запросов:
+- **одна площадка — без поиска** (`SamePlatformStrategy`, раздел 7): перенос Яндекс → Яндекс на
+  100 треков — ~7 запросов вместо ~205;
+- **`POST /transfers` по ссылке не читает шапку плейлиста** (`ResolvePlaylistLinkUseCase(...,
+  preview=False)`): её всё равно прочитает `run_transfer`; предпросмотр — только `/links/resolve`;
+- **кэш поиска** `integrations/platforms/search_cache.py` (`CachedSearchGateway`, Redis через
+  `infrastructure/cache/RedisTextCache`): `search`/`search_by_isrc` по ключу
+  `search:<platform>:<sha256(title|artist|isrc|limit)>`, TTL `PLATFORMS__SEARCH_CACHE_TTL_SECONDS`
+  (сутки; пустой результат — не дольше часа; 0 — выключен). Публичные данные каталога — общий
+  кэш на всех. Сбой Redis не ломает поиск. Подключён только к настоящим адаптерам;
+- **данные для подбора лимита**: token bucket считает выданные разрешения по минутам
+  (`ratelimit:cnt:…`, TTL 2 ч); при 429 в логе «N запросов за 10 мин, M за 60 мин,
+  Retry-After S» — без токенов;
+- e2e-скрипт подсказывает, если прогресса нет дольше 30 с.
+
+Сознательно не делаем: парсинг сайта (квоту не обходит, SmartCaptcha, против правил), пул
+служебных аккаунтов (обход ограничений), пропуск `run_match` в `ProcessTransfer` (запросов не
+экономит, задевает счётчики/статусы).
+
+Исследовать без кода, когда квота восстановится: (1) массовый импорт Яндекса из текстового
+списка «Артист — Трек» — есть ли API (тысячи поисков → несколько запросов, но без нашего
+контроля версий); (2) квота на токен или на IP — от этого зависит, имеет ли смысл анонимный поиск.
 
 **Долги**
 - Фактический лимит Яндекса неизвестен: 3 + 1,5/с — консервативная оценка, подбирается по

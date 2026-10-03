@@ -113,3 +113,7 @@ class PlatformRateLimiter(Protocol):
     # для задачи, которая её получила, — иначе остальные параллельные задачи продолжат
     # стучаться и каждая соберёт свой 429.
     async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None: ...
+
+    # Сколько запросов выдано аккаунту за последние `minutes` минут — для логов при 429
+    # (подбор лимита под реальную квоту площадки).
+    async def recent_requests(self, platform: Platform, account_id: UUID, minutes: int) -> int: ...

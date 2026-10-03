@@ -8,6 +8,7 @@ from syncplaylists.modules.matching.domain.strategies import (
     CacheStrategy,
     FuzzySearchStrategy,
     IsrcStrategy,
+    SamePlatformStrategy,
 )
 from syncplaylists.shared_kernel.domain.search import TrackCandidate, TrackQuery
 from syncplaylists.shared_kernel.domain.value_objects import (
@@ -252,3 +253,23 @@ async def test_fuzzy_strategy_version_search_on_empty_first_result() -> None:
 
     assert attempt is not None
     assert attempt.status is MatchStatus.MATCHED
+
+
+# --- одна площадка: без поиска ---------------------------------------------------------
+
+
+async def test_same_platform_strategy_matches_track_to_itself() -> None:
+    request = MatchRequest(source=_request().source, target_platform=Platform.VK)
+
+    attempt = await SamePlatformStrategy().attempt(request)
+
+    assert attempt is not None
+    assert attempt.status is MatchStatus.MATCHED
+    assert attempt.method is MatchMethod.SAME_PLATFORM
+    assert attempt.match is not None
+    assert attempt.match.target_ref == _SOURCE_REF
+    assert attempt.candidates == (request.source,)
+
+
+async def test_same_platform_strategy_passes_cross_platform_on() -> None:
+    assert await SamePlatformStrategy().attempt(_request()) is None  # VK → Spotify

@@ -14,6 +14,8 @@ from syncplaylists.shared_kernel.domain.value_objects import Platform
 # очередь уже выданных разрешений, каждое со своим временем ожидания, поэтому
 # конкурентные воркеры не просыпаются одновременно и не штурмуют площадку пачкой.
 # Если ждать дольше max_wait — разрешение не выдаётся и не резервируется.
+# Выданные разрешения считаются по минутам в KEYS[2]..":"..<минута> (TTL 2 ч) — чтобы
+# при 429 видеть, сколько запросов площадка пропустила до отказа (подбор лимита).
 # Возвращает {granted (0/1), wait_ms}.
 _LUA: Final = """
 local t = redis.call('TIME')
@@ -37,6 +39,9 @@ local granted = 0
 if wait <= max_wait then
   tokens = tokens - 1
   granted = 1
+  local counter = KEYS[2] .. ':' .. math.floor(now / 60000)
+  redis.call('INCR', counter)
+  redis.call('EXPIRE', counter, 7200)
 end
 redis.call('HSET', KEYS[1], 'tokens', tostring(tokens), 'ts', now)
 redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate) + max_wait + 1000)
@@ -89,6 +94,7 @@ class RedisTokenBucketLimiter:
         limits: Mapping[Platform, TokenBucketLimits],
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        self._redis = redis
         self._script = redis.register_script(_LUA)
         self._penalize_script = redis.register_script(_PENALIZE_LUA)
         self._limits = dict(limits)
@@ -99,7 +105,7 @@ class RedisTokenBucketLimiter:
         if limits is None:
             return
         granted, wait_ms = await self._script(
-            keys=[_key(platform, account_id)],
+            keys=[_key(platform, account_id), _counter_prefix(platform, account_id)],
             args=[
                 limits.capacity,
                 limits.refill_per_second / 1000,
@@ -110,6 +116,15 @@ class RedisTokenBucketLimiter:
             raise PlatformRateLimitedError(platform, int(wait_ms) / 1000, "token bucket")
         if int(wait_ms) > 0:
             await self._sleep(int(wait_ms) / 1000)
+
+    async def recent_requests(self, platform: Platform, account_id: UUID, minutes: int) -> int:
+        seconds, _ = await self._redis.time()
+        current = int(seconds) // 60
+        prefix = _counter_prefix(platform, account_id)
+        values = await self._redis.mget(
+            [f"{prefix}:{m}" for m in range(current - minutes + 1, current + 1)]
+        )
+        return sum(int(v) for v in values if v is not None)
 
     async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None:
         limits = self._limits.get(platform)
@@ -123,3 +138,7 @@ class RedisTokenBucketLimiter:
 
 def _key(platform: Platform, account_id: UUID) -> str:
     return f"ratelimit:tb:{platform.value}:{account_id}"
+
+
+def _counter_prefix(platform: Platform, account_id: UUID) -> str:
+    return f"ratelimit:cnt:{platform.value}:{account_id}"

@@ -116,3 +116,33 @@ async def test_bad_link_is_rejected_with_reason() -> None:
     with pytest.raises(UnsupportedLinkError) as caught:
         await env.use_case.execute(env.user_id, "https://music.yandex.ru/album/1")
     assert caught.value.reason == "not_a_playlist"
+
+
+async def test_without_preview_playlist_header_is_not_read() -> None:
+    env = _Env()
+    env.accounts.connect(env.user_id, Platform.YANDEX)
+    gateway = FakeMusicPlatformGateway(platform=Platform.YANDEX)
+    env.gateways.register(gateway)
+
+    dto = await env.use_case.execute(env.user_id, _PLAYLIST, preview=False)
+
+    assert dto.kind is LinkKind.PLAYLIST
+    assert dto.external_id == "alice:1001"
+    assert dto.title is None
+    assert gateway.playlist_info_calls == 0
+    assert gateway.is_own_library_calls == 1  # своя медиатека распознаётся и без предпросмотра
+
+
+async def test_without_preview_own_likes_still_become_library() -> None:
+    env = _Env()
+    access = env.accounts.connect(env.user_id, Platform.YANDEX)
+    env.gateways.register(
+        FakeMusicPlatformGateway(
+            platform=Platform.YANDEX, own_library_refs={PlaylistRef(Platform.YANDEX, "alice:3")}
+        )
+    )
+
+    dto = await env.use_case.execute(env.user_id, _LIKES, preview=False)
+
+    assert dto.kind is LinkKind.LIBRARY
+    assert dto.account_id == access.account_id

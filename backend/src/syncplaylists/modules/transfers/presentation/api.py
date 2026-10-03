@@ -82,11 +82,12 @@ async def _resolve_request(
     request: StartTransferRequest, user_id: UUID, resolve_link: ResolvePlaylistLinkUseCase
 ) -> tuple[TrackSource, TrackDestination]:
     if isinstance(request.source, LinkSchema):
-        source: TrackSource = (await resolve_link.execute(user_id, request.source.url)).as_source()
+        resolved_source = await resolve_link.execute(user_id, request.source.url, preview=False)
+        source: TrackSource = resolved_source.as_source()
     else:
         source = request.source.to_domain()
     if isinstance(request.destination, LinkSchema):
-        resolved = await resolve_link.execute(user_id, request.destination.url)
+        resolved = await resolve_link.execute(user_id, request.destination.url, preview=False)
         destination: TrackDestination = resolved.as_destination()
     else:
         destination = request.destination.to_domain()

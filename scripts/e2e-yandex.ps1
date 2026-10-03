@@ -72,10 +72,23 @@ function Wait-Api {
 
 function Wait-Transfer($transferId, [string[]]$activeStatuses) {
   $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+  $lastState = ""
+  $lastChange = Get-Date
+  $hinted = $false
   do {
     $transfer = Api GET "/transfers/$transferId"
     $counts = ($transfer.items | Group-Object status | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join " "
     Write-Host ("{0}  {1,-8} {2}" -f (Get-Date -Format HH:mm:ss), $transfer.status, $counts)
+    $state = "$($transfer.status) $counts"
+    if ($state -ne $lastState) {
+      $lastState = $state
+      $lastChange = Get-Date
+      $hinted = $false
+    } elseif (-not $hinted -and ((Get-Date) - $lastChange).TotalSeconds -gt 30) {
+      Write-Host "  Прогресса нет больше 30 с — вероятно, площадка попросила паузу (429)." -ForegroundColor Yellow
+      Write-Host "  Задачи продолжат сами после паузы; подробности: make logs" -ForegroundColor Yellow
+      $hinted = $true
+    }
     if ($transfer.status -notin $activeStatuses) { return $transfer }
     Start-Sleep 3
   } while ((Get-Date) -lt $deadline)
@@ -88,11 +101,13 @@ function Show-Summary($transferId) {
   $countsSql = "SELECT status, count(*) AS tracks FROM transfer_items WHERE transfer_id = '$transferId' GROUP BY status ORDER BY status;"
   # Оценки отдельных кандидатов не хранятся — показываем первого: кандидаты той же
   # версии стоят первыми, дальше — порядок поиска площадки.
+  # Без двойных кавычек: PowerShell 5.1 выбрасывает их из аргументов внешних программ
+  # (psql получил бы битый запрос) — поэтому подписи колонок латиницей без кавычек.
   $listSql = @"
-SELECT ti.position AS "#", ti.status,
-       pt.raw_artist || ' — ' || pt.raw_title AS "источник",
-       COALESCE((ti.candidates->0->>'artist') || ' — ' || (ti.candidates->0->>'title'), '—') AS "первый кандидат",
-       jsonb_array_length(ti.candidates) AS "кандидатов"
+SELECT ti.position AS pos, ti.status,
+       pt.raw_artist || ' - ' || pt.raw_title AS source_track,
+       COALESCE((ti.candidates->0->>'artist') || ' - ' || (ti.candidates->0->>'title'), '-') AS first_candidate,
+       jsonb_array_length(ti.candidates) AS candidates
 FROM transfer_items ti
 JOIN platform_tracks pt ON pt.id = ti.source_pt_id
 WHERE ti.transfer_id = '$transferId' AND ti.status IN ('uncertain', 'not_found')

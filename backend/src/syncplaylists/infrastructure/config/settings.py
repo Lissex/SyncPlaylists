@@ -93,6 +93,8 @@ class PlatformsSettings(BaseModel):
     yandex: YandexSettings = YandexSettings()
     # Раскрытие коротких ссылок (vk.cc, on.soundcloud.com, ...).
     link_expander_timeout_seconds: float = 5.0
+    # Кэш результатов поиска площадок в Redis (экономия квоты); 0 — выключен.
+    search_cache_ttl_seconds: int = 86400
 
 
 class Settings(BaseSettings):

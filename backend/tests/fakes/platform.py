@@ -46,6 +46,8 @@ class FakeMusicPlatformGateway:
         self.search_calls = 0
         self.search_queries: list[TrackQuery] = []
         self.search_by_isrc_calls = 0
+        self.playlist_info_calls = 0
+        self.is_own_library_calls = 0
         self.created_playlists: list[tuple[str, str | None]] = []
         self.added_to_playlist: list[ExternalTrackRef] = []
         self.added_to_library: list[ExternalTrackRef] = []
@@ -73,6 +75,7 @@ class FakeMusicPlatformGateway:
 
     async def playlist_info(self, ref: PlaylistRef) -> PlaylistInfo:
         self._maybe_fail("playlist_info")
+        self.playlist_info_calls += 1
         return PlaylistInfo(
             ref=ref,
             title=self._playlist.title if self._playlist else "Fake playlist",
@@ -82,6 +85,7 @@ class FakeMusicPlatformGateway:
         )
 
     async def is_own_library(self, ref: PlaylistRef) -> bool:
+        self.is_own_library_calls += 1
         return ref in self._own_library_refs
 
     async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:

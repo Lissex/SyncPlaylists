@@ -7,6 +7,7 @@
 """
 
 import json
+import logging
 from typing import Any, Final
 from uuid import UUID
 
@@ -24,6 +25,8 @@ from syncplaylists.shared_kernel.domain.errors import (
     PlaylistNotFoundError,
 )
 from syncplaylists.shared_kernel.domain.value_objects import Platform
+
+logger = logging.getLogger(__name__)
 
 _PLATFORM: Final = Platform.YANDEX
 _DEFAULT_RETRY_AFTER_SECONDS: Final = 5.0
@@ -91,7 +94,31 @@ class HttpxYandexRequest(Request):  # type: ignore[misc]  # yandex-music без 
             # Пауза на весь аккаунт: параллельные задачи будут ждать в token bucket (или
             # сразу уйдут в повтор с тем же сроком), а не соберут по 429 каждая.
             await self._limiter.penalize(_PLATFORM, self._account_id, error.retry_after_seconds)
+            await self._log_rate_limited(self._limiter, self._account_id, error.retry_after_seconds)
         raise error
+
+    @staticmethod
+    async def _log_rate_limited(
+        limiter: PlatformRateLimiter, account_id: UUID, retry_after_seconds: float
+    ) -> None:
+        # Только числа и account_id — по ним подбирается лимит под квоту Яндекса.
+        try:
+            last_10 = await limiter.recent_requests(_PLATFORM, account_id, 10)
+            last_60 = await limiter.recent_requests(_PLATFORM, account_id, 60)
+        except Exception as exc:  # статистика не должна мешать обработке 429
+            logger.warning(
+                "Яндекс 429 (аккаунт %s), счётчик недоступен: %s",
+                account_id,
+                type(exc).__name__,
+            )
+            return
+        logger.warning(
+            "Яндекс 429 (аккаунт %s): %s запросов за 10 мин, %s за 60 мин, Retry-After %.0f с",
+            account_id,
+            last_10,
+            last_60,
+            retry_after_seconds,
+        )
 
 
 def _error_name(response: httpx.Response) -> str:

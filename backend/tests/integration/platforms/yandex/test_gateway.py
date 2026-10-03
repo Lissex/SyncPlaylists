@@ -63,6 +63,9 @@ class CountingLimiter:
     async def penalize(self, platform: Platform, account_id: UUID, seconds: float) -> None:
         self.penalties.append(seconds)
 
+    async def recent_requests(self, platform: Platform, account_id: UUID, minutes: int) -> int:
+        return {10: 42, 60: 310}[minutes]
+
 
 @pytest.fixture
 def api() -> Iterator[respx.MockRouter]:
@@ -526,3 +529,15 @@ async def test_other_errors_do_not_pause_account(
         await gateway.search(TrackQuery(title="x"))
 
     assert limiter.penalties == []
+
+
+async def test_429_log_has_request_counts_but_no_token(
+    api: respx.MockRouter, gateway: YandexGateway, caplog: pytest.LogCaptureFixture
+) -> None:
+    api.get("/search").respond(429, headers={"Retry-After": "600"})
+
+    with caplog.at_level("WARNING"), pytest.raises(PlatformRateLimitedError):
+        await gateway.search(TrackQuery(title="x"))
+
+    assert "42 запросов за 10 мин, 310 за 60 мин, Retry-After 600" in caplog.text
+    assert "y0_test-token" not in caplog.text

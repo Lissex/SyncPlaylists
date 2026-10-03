@@ -25,6 +25,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     LibraryDestination,
     LibrarySource,
     MatchResult,
+    NewPlaylist,
     PlaylistSource,
     TransferItemStatus,
     TransferStatus,
@@ -473,3 +474,35 @@ async def test_resolve_item_of_foreign_transfer_is_not_found() -> None:
 
     with pytest.raises(TransferNotFoundError):
         await use_case.execute(uuid4(), transfer.id, 0, None)
+
+
+async def test_same_platform_transfer_matches_without_any_search() -> None:
+    env = Env()
+    second = TrackCandidate(
+        ref=ExternalTrackRef(Platform.VK, "src-2"), title="Track (Live)", artist="Band"
+    )
+    source = PlaylistSource(ref=PlaylistRef(Platform.VK, "someones-playlist"))
+    destination = NewPlaylist(platform=Platform.VK, title="Копия", description=None)
+    transfer = Transfer(id=uuid4(), user_id=env.user_id, source=source, destination=destination)
+    await env.seed_transfer(transfer)
+    vk = FakeMusicPlatformGateway(
+        platform=Platform.VK,
+        playlist=PlaylistSnapshot(
+            ref=source.ref, title="t", description=None, tracks=(_VK_TRACK_1, second)
+        ),
+    )
+    env.register_gateway(vk)
+
+    await env.process_transfer_use_case().execute(transfer.id)
+    for position in (0, 1):
+        await env.match_transfer_item_use_case().execute(transfer.id, position)
+
+    stored = await env.transfers.get(transfer.id)
+    assert stored is not None
+    assert stored.status is TransferStatus.WRITING  # без REVIEW: сомнительных нет
+    assert [item.match.target_ref for item in stored.items if item.match] == [
+        _VK_TRACK_1.ref,
+        second.ref,
+    ]
+    assert vk.search_calls == 0
+    assert vk.search_by_isrc_calls == 0
