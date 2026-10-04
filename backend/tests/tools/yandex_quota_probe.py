@@ -112,7 +112,7 @@ async def main(max_b: int) -> None:
         print("  → Неоднозначно (у B ошибки не 429) — смотрите строки выше.")
 
 
-async def single(max_searches: int, network: str, interval: float) -> None:
+async def single(max_searches: int, network: str, interval: float, parallel: int) -> None:
     """Один токен, две сети. Шаг `home`: поиски токеном A до первого 429 (квота
     исчерпана). Шаг `other` — тот же токен из ДРУГОЙ сети (раздача с телефона): прошёл →
     квота на IP, снова 429 → квота на токен."""
@@ -125,14 +125,19 @@ async def single(max_searches: int, network: str, interval: float) -> None:
     first_429: int | None = None
     retry_429 = "-"
     async with httpx.AsyncClient(base_url=_API, timeout=20) as http:
-        for n in range(1, limit + 1):
-            status, retry = await _search(http, token, n)
-            _line(f"A/{network}", n, status, retry)
-            if status == 429:
-                first_429, retry_429 = n, retry
-                break
-            if status == 200:
-                ok += 1
+        n = 0
+        while n < limit and first_429 is None:
+            # Пачка из `parallel` одновременных поисков — как воркер с несколькими
+            # run_match разом; parallel=1 — строго по одному.
+            batch = list(range(n + 1, min(n + parallel, limit) + 1))
+            results = await asyncio.gather(*(_search(http, token, i) for i in batch))
+            for i, (status, retry) in zip(batch, results, strict=True):
+                _line(f"A/{network}", i, status, retry)
+                if status == 429 and first_429 is None:
+                    first_429, retry_429 = i, retry
+                elif status == 200:
+                    ok += 1
+            n = batch[-1]
             await asyncio.sleep(interval)
 
     print("\nИтог:")
@@ -159,12 +164,15 @@ if __name__ == "__main__":
         "--interval", type=float, default=1.0, help="пауза между поисками, с (один токен)"
     )
     parser.add_argument(
+        "--parallel", type=int, default=1, help="одновременных поисков в пачке (один токен)"
+    )
+    parser.add_argument(
         "--network",
         choices=("home", "other"),
         help="режим одного токена: home — исчерпать квоту, other — проверить из другой сети",
     )
     args = parser.parse_args()
     if args.network:
-        asyncio.run(single(args.max, args.network, args.interval))
+        asyncio.run(single(args.max, args.network, args.interval, args.parallel))
     else:
         asyncio.run(main(args.max))
