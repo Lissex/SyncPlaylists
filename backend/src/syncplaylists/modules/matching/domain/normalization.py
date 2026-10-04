@@ -3,7 +3,10 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Final
 
-from syncplaylists.modules.matching.domain.artists import parse_artist_names
+from syncplaylists.modules.matching.domain.artists import (
+    artist_set_similarity,
+    parse_artist_names,
+)
 from syncplaylists.modules.matching.domain.transliteration import transliterate
 from syncplaylists.modules.matching.domain.version import VersionInfo, VersionTag, extract_version
 from syncplaylists.shared_kernel.domain.base import ValueObject
@@ -43,7 +46,8 @@ _JUNK_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\[\s*[a-z][a-z0-9]{1,15}\s?\d{2,4}\s*\]"),
     # «[prod. X]», «(prod X)», «(ProdByX)», «(@ProdByX)», «[Prod.By X]».
     re.compile(r"[\(\[]\s*@?prod(?:\.?\s|\.?\s*by)[^)\]]*[\)\]]"),
-    re.compile(r"\bprod\.?\s+(?:by\s+)?\S+"),
+    re.compile(r"\bprod\.?\s+(?:by\s+)?\S+(?:\s+(?:x|&|and)\s+\S+)*"),
+    re.compile(r"[\(\[]\s*(?:полная|full)\s+(?:версия|version)\s*[\)\]]"),
 )
 # Что остаётся после вырезания тегов: пустые скобки и висящие разделители по краям
 # («FREE DL | Artist - Title» → «| artist - title»), иначе ломается разбор «Artist - Title».
@@ -58,8 +62,9 @@ _FEATURED_PATTERN: Final = re.compile(
     r"[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+(?P<bracketed>[^)\]]+)[\)\]]"
     r"|\b(?:feat\.?|ft\.?)\s+(?P<inline>[^\-–—(\[,]+)"
 )
-_ARTIST_TITLE_PATTERN: Final = re.compile(r"^(?P<artist>.+?)\s[-–—]\s(?P<title>.+)$")
+_ARTIST_TITLE_PATTERN: Final = re.compile(r"^(?P<artist>.+?)(?:\s[-–—]\s?|[-–—]\s)(?P<title>.+)$")
 _WHITESPACE_PATTERN: Final = re.compile(r"\s+")
+_SAME_ARTIST: Final = 0.9
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +72,9 @@ class NormalizedTrack(ValueObject):
     title: str
     artist: str | None
     version: VersionInfo = field(default_factory=VersionInfo)
+    # Поля поменяны местами (площадка перепутала title/artist). Сравнивать два таких
+    # варианта между собой бессмысленно — это просто вес артиста вместо названия.
+    swapped: bool = False
 
 
 class TrackNormalizer:
@@ -74,13 +82,16 @@ class TrackNormalizer:
         cleaned_title, version = self._prepare_title(raw_title)
         featured = self._featured(raw_title)
         match = _ARTIST_TITLE_PATTERN.match(cleaned_title)
+        cleaned_artist = self._clean_artist_field(raw_artist) if raw_artist else None
         if match:
+            reversed_parse = self._title_then_artist(match, cleaned_artist, featured, version)
+            if reversed_parse is not None:
+                return reversed_parse
             return NormalizedTrack(
                 title=match.group("title").strip(),
                 artist=_with_featured(match.group("artist").strip() or None, featured),
                 version=version,
             )
-        cleaned_artist = self._clean_artist_field(raw_artist) if raw_artist else None
         return NormalizedTrack(
             title=cleaned_title,
             artist=_with_featured(cleaned_artist or None, featured),
@@ -118,6 +129,9 @@ class TrackNormalizer:
             )
             if dash_variant not in results:
                 results.append(dash_variant)
+            reversed_parse = self._title_then_artist(match, cleaned_artist, featured, version)
+            if reversed_parse is not None and reversed_parse not in results:
+                results.append(reversed_parse)
 
         # Площадка могла перепутать поля местами (title и artist поменяны местами) —
         # пробуем и такую интерпретацию, раз raw_artist вообще есть.
@@ -126,6 +140,7 @@ class TrackNormalizer:
                 title=swapped_title,
                 artist=self._clean_artist_field(raw_title) or None,
                 version=version,
+                swapped=True,
             )
             if swapped_variant not in results:
                 results.append(swapped_variant)
@@ -137,6 +152,7 @@ class TrackNormalizer:
             title=transliterate(track.title),
             artist=transliterate(track.artist) if track.artist is not None else None,
             version=track.version,
+            swapped=track.swapped,
         )
 
     def _prepare_title(self, raw_title: str) -> tuple[str, VersionInfo]:
@@ -148,6 +164,31 @@ class TrackNormalizer:
         text = _DOUBLE_DASH.sub(" - ", _WHITESPACE_PATTERN.sub(" ", text))
         text = _EDGE_SEPARATORS.sub("", text)
         return _WHITESPACE_PATTERN.sub(" ", text).strip(), version
+
+    @staticmethod
+    def _title_then_artist(
+        match: re.Match[str],
+        cleaned_artist: str | None,
+        featured: list[str],
+        version: VersionInfo,
+    ) -> NormalizedTrack | None:
+        """«SISTERS & BROTHERS- Kanye West» при артисте «Kanye West, Ye»: справа от тире —
+        артист, слева — название. Только когда артист из поля совпадает с правой частью и
+        не совпадает с левой, иначе обычный порядок «Artist - Title»."""
+        if not cleaned_artist:
+            return None
+        known = parse_artist_names(cleaned_artist)
+        left = parse_artist_names(match.group("artist").strip())
+        right = parse_artist_names(match.group("title").strip())
+        if artist_set_similarity(right, known) < _SAME_ARTIST or (
+            artist_set_similarity(left, known) >= _SAME_ARTIST
+        ):
+            return None
+        return NormalizedTrack(
+            title=match.group("artist").strip(),
+            artist=_with_featured(cleaned_artist, featured),
+            version=version,
+        )
 
     def _featured(self, raw_title: str) -> list[str]:
         names: list[str] = []

@@ -88,6 +88,8 @@ class HttpxYandexRequest(Request):  # type: ignore[misc]  # yandex-music без 
         if response.is_success:
             return response.content
         error = _error_for(response)
+        if isinstance(error, PlatformRateLimitedError):
+            _log_rate_limit_response(method, url, response)
         if isinstance(error, PlatformRateLimitedError) and self._limiter is not None:
             if self._account_id is not None:
                 # Пауза на весь аккаунт: параллельные задачи будут ждать в token bucket
@@ -105,6 +107,29 @@ class HttpxYandexRequest(Request):  # type: ignore[misc]  # yandex-music без 
             await self._limiter.count_request(_PLATFORM)
         except Exception as exc:  # статистика не должна мешать запросу
             logger.debug("Счётчик запросов недоступен: %s", type(exc).__name__)
+
+
+# Заголовки ответа 429, по которым видно, кто и почему отказал (лимит API или антибот).
+_DIAGNOSTIC_HEADERS: Final = (
+    "content-type",
+    "retry-after",
+    "x-yandex-req-id",
+    "x-request-id",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "x-yandex-captcha",
+    "server",
+)
+
+
+def _log_rate_limit_response(method: str, url: str, response: httpx.Response) -> None:
+    """Что именно ответил Яндекс на 429: метод, путь (без query — в нём текст поиска),
+    служебные заголовки и начало тела. Токен в ответ не попадает."""
+    path = httpx.URL(url).path
+    headers = {k: v for k, v in response.headers.items() if k.lower() in _DIAGNOSTIC_HEADERS}
+    body = response.text[:300].replace("\n", " ") if response.content else ""
+    logger.warning("Яндекс 429 на %s %s: заголовки %s, тело %r", method, path, headers, body)
 
 
 def _error_name(response: httpx.Response) -> str:
@@ -138,6 +163,10 @@ def _error_for(response: httpx.Response) -> PlatformError:
     if status == 404:
         return PlaylistNotFoundError(_PLATFORM, message)
     if status == 429:
+        if "x-yandex-captcha" in response.headers:
+            # Антибот Яндекса (HTML-страница с капчей), а не лимит API: запросы сочли
+            # автоматическими. Обходить не пытаемся — ждём Retry-After и идём медленнее.
+            message = "HTTP 429 антибот Яндекса (captcha)"
         return PlatformRateLimitedError(_PLATFORM, _retry_after(response), message)
     if status == 451:
         return PlatformRegionError(_PLATFORM, message)

@@ -562,3 +562,23 @@ async def test_every_request_is_counted_for_server_including_profile_check(
 
     assert limiter.counted == 1  # учтён на сервер (IP)
     assert limiter.calls == []  # но без аккаунта токены bucket не тратятся
+
+
+async def test_antirobot_429_is_recognized_and_logged(
+    api: respx.MockRouter, gateway: YandexGateway, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Форма ответа — как в e2e 2026-10-04: HTML-страница капчи, не JSON API.
+    api.get("/search").respond(
+        429,
+        headers={"x-yandex-captcha": "429", "Retry-After": "600", "content-type": "text/html"},
+        text="<!DOCTYPE html><html><head><title>429</title></head><body></body></html>",
+    )
+
+    with caplog.at_level("WARNING"), pytest.raises(PlatformRateLimitedError) as exc_info:
+        await gateway.search(TrackQuery(title="x"))
+
+    assert exc_info.value.retry_after_seconds == 600
+    assert "антибот Яндекса" in str(exc_info.value)
+    assert "Яндекс 429 на GET /search" in caplog.text
+    assert "x-yandex-captcha" in caplog.text
+    assert "y0_test-token" not in caplog.text
