@@ -18,6 +18,11 @@ class MatchScorer:
     # Чуть ниже порога AUTO — потолок, а не пол: плохое совпадение с несовпадающей
     # версией остаётся NOT_FOUND, а не подтягивается до UNCERTAIN.
     _VERSION_MISMATCH_CAP: ClassVar[float] = MatchScore.AUTO_THRESHOLD - 1e-9
+    # Названия почти не совпадают — это другая песня, даже если артист и длительность те
+    # же («ЛСП — Монетка» ≠ «ЛСП — Холостяк»): не выше NOT_FOUND, чтобы не засорять
+    # ручную проверку (e2e 2026-10-04).
+    _TITLE_GATE: ClassVar[float] = 0.5
+    _DIFFERENT_TITLE_CAP: ClassVar[float] = MatchScore.UNCERTAIN_THRESHOLD - 1e-9
 
     def __init__(self, normalizer: TrackNormalizer) -> None:
         self._normalizer = normalizer
@@ -47,6 +52,8 @@ class MatchScorer:
 
         if not versions_match(source_lat.version, candidate_lat.version):
             total = min(total, self._VERSION_MISMATCH_CAP)
+        if title_sim < self._TITLE_GATE:
+            total = min(total, self._DIFFERENT_TITLE_CAP)
 
         return MatchScore(value=min(1.0, max(0.0, total)))
 
@@ -62,6 +69,8 @@ class MatchScorer:
                 self.score(source_variant, source_duration, candidate_variant, candidate_duration)
                 for source_variant in source_variants
                 for candidate_variant in candidate_variants
+                # Оба перевёрнуты — это сравнение артистов с весом названия, не прочтение.
+                if not (source_variant.swapped and candidate_variant.swapped)
             ),
             key=lambda score: score.value,
         )
