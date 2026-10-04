@@ -30,6 +30,8 @@ import httpx
 from tests.live.conftest import LiveSettings
 
 _API: Final = "https://api.music.yandex.net"
+# --user-agent: подменить заголовок (например, на «Yandex-Music-API», как у библиотеки).
+_USER_AGENT: list[str | None] = [None]
 _QUERIES: Final = (
     "Кино Группа крови",
     "Queen Bohemian Rhapsody",
@@ -56,6 +58,7 @@ async def _search(http: httpx.AsyncClient, token: str, n: int) -> tuple[int, str
         headers={
             "Authorization": f"OAuth {token}",
             "X-Yandex-Music-Client": "YandexMusicAndroid/24023621",
+            **({"User-Agent": _USER_AGENT[0]} if _USER_AGENT[0] else {}),
         },
     )
     return response.status_code, response.headers.get("retry-after", "-")
@@ -169,11 +172,15 @@ if __name__ == "__main__":
         "--parallel", type=int, default=1, help="одновременных поисков в пачке (один токен)"
     )
     parser.add_argument(
+        "--user-agent", default=None, help="User-Agent запросов (по умолчанию httpx)"
+    )
+    parser.add_argument(
         "--network",
         choices=("home", "other"),
         help="режим одного токена: home — исчерпать квоту, other — проверить из другой сети",
     )
     args = parser.parse_args()
+    _USER_AGENT[0] = args.user_agent
     if args.network:
         asyncio.run(single(args.max, args.network, args.interval, args.parallel))
     else:
