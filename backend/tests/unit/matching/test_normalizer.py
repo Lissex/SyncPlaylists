@@ -26,7 +26,7 @@ def test_normalize_falls_back_to_raw_artist_when_no_dash_in_title() -> None:
 def test_normalize_strips_feat_and_remaster() -> None:
     normalizer = TrackNormalizer()
     result = normalizer.normalize("The Weeknd ft. Daft Punk - Starboy (Remastered 2022)")
-    assert result.artist == "the weeknd"
+    assert result.artist == "the weeknd, daft punk"  # feat — тоже артист трека
     assert result.title == "starboy"
 
 
@@ -65,7 +65,7 @@ def test_normalize_does_not_tag_bare_word_in_middle_of_title() -> None:
 def test_normalize_hyphen_inside_artist_name_does_not_break_split() -> None:
     normalizer = TrackNormalizer()
     result = normalizer.normalize("Jay-Z feat. Alicia Keys - Empire State of Mind (Remaster)")
-    assert result.artist == "jay-z"
+    assert result.artist == "jay-z, alicia keys"
     assert result.title == "empire state of mind"
 
 

@@ -17,6 +17,9 @@ class TransferStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     PAUSED_CAPTCHA = "paused_captcha"
+    # Площадка исчерпала квоту (429 с долгим Retry-After): перенос ждёт целиком до
+    # resume_at, ни один трек из-за этого не уходит в FAILED (этап 4b-3).
+    PAUSED_QUOTA = "paused_quota"
     REVIEW = "review"
     WRITING = "writing"
     DONE = "done"

@@ -82,6 +82,11 @@ function Wait-Transfer($transferId, [string[]]$activeStatuses) {
     if ($transfer.progress -and $null -ne $transfer.progress.eta_seconds) {
       $eta = "  (осталось ~$($transfer.progress.eta_seconds) с)"
     }
+    if ($transfer.progress -and $transfer.progress.resume_at) {
+      # Квота площадки: перенос на паузе целиком и продолжится сам.
+      $resumeAt = ([DateTimeOffset]::Parse($transfer.progress.resume_at)).ToLocalTime().ToString("HH:mm")
+      $eta = "  (квота площадки, продолжим в $resumeAt)"
+    }
     Write-Host ("{0}  {1,-8} {2}{3}" -f (Get-Date -Format HH:mm:ss), $transfer.status, $counts, $eta)
     $state = "$($transfer.status) $counts"
     if ($state -ne $lastState) {
@@ -177,7 +182,7 @@ $transferId = $transfer.id
 Write-Host "перенос: $transferId → новый плейлист «$Title»"
 
 Step "Матчинг"
-$transfer = Wait-Transfer $transferId @("queued", "running", "writing")
+$transfer = Wait-Transfer $transferId @("queued", "running", "writing", "paused_quota")
 Show-Summary $transferId
 
 # --- 6. Ревью -----------------------------------------------------------------------
@@ -195,7 +200,7 @@ if ($transfer.status -eq "review") {
       Api POST "/transfers/$transferId/items/$($item.position)/resolve" $body | Out-Null
     }
     Step "Запись"
-    $transfer = Wait-Transfer $transferId @("review", "writing")
+    $transfer = Wait-Transfer $transferId @("review", "writing", "paused_quota")
   } else {
     Step "Перенос ждёт ручного решения ($($uncertain.Count) uncertain)"
     Write-Host "Принять всех первых кандидатов и дописать плейлист — перезапустите с -AcceptUncertain"

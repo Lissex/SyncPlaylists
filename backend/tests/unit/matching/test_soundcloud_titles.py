@@ -43,7 +43,7 @@ from syncplaylists.modules.matching.domain.version import VersionTag, extract_ve
         ("PREMIERE060: SMVGGLERS x KØDA - ME FLIPA", "smvgglers x køda", "me flipa"),
         ("PREMIERE /// Jonathan Ross - Fallin'", "jonathan ross", "fallin'"),
         ("Phil Berg - Dārin [MR047]", "phil berg", "dārin"),
-        ("Lil Peep - nuts [ft. lil skil] (prod. willie g)", "lil peep", "nuts"),
+        ("Lil Peep - nuts [ft. lil skil] (prod. willie g)", "lil peep, lil skil", "nuts"),
         ("KA$HDAMI - Reparations! (prod Milanezie)", "ka$hdami", "reparations!"),
         ("GTG Premiere | Phil Berg — Seiko [MR047]", "phil berg", "seiko"),
         ("TC Premiere: Luis Mendizabal - Smoke", "luis mendizabal", "smoke"),

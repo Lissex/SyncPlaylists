@@ -16,9 +16,7 @@ from syncplaylists.modules.matching.domain.scoring import MatchScorer
 from syncplaylists.modules.matching.domain.upload_trust import UploadTrust
 from syncplaylists.modules.matching.domain.version import (
     VersionInfo,
-    VersionTag,
     version_search_suffix,
-    versions_match,
 )
 from syncplaylists.shared_kernel.domain.ports import MusicPlatformGateway
 from syncplaylists.shared_kernel.domain.search import TrackCandidate, TrackQuery
@@ -107,23 +105,11 @@ class FuzzySearchStrategy:
 
     async def attempt(self, request: MatchRequest) -> MatchAttempt | None:
         source = request.source
-        query = TrackQuery(
-            title=source.title, artist=source.artist, isrc=source.isrc, duration=source.duration
-        )
-        candidates = await self._gateway.search(query, limit=self._search_limit)
-
         source_variants = self._normalizer.variants(source.title, source.artist)
         source_version = source_variants[0].version  # одна на все варианты (см. variants)
-        if source_version.tag is not VersionTag.ORIGINAL and not any(
-            versions_match(source_version, self._version_of(c)) for c in candidates
-        ):
-            # Источник — live/ремикс/..., а первый поиск той же версии не нашёл. Сначала
-            # ищем её отдельным запросом и только потом соглашаемся на оригинал — его
-            # скорер всё равно ограничит потолком ниже AUTO (UNCERTAIN → ручной выбор),
-            # а не возьмёт молча (ARCHITECTURE.md, раздел 7).
-            candidates = await self._search_same_version(
-                source, source_variants[0].title, source_version, candidates
-            )
+        query = self._query(source)
+        candidates = await self._gateway.search(query, limit=self._search_limit)
+
         if not candidates:
             return MatchAttempt(status=MatchStatus.NOT_FOUND)
 
@@ -189,24 +175,21 @@ class FuzzySearchStrategy:
     def _version_of(self, candidate: TrackCandidate) -> VersionInfo:
         return self._normalizer.variants(candidate.title, candidate.artist)[0].version
 
-    async def _search_same_version(
-        self,
-        source: TrackCandidate,
-        clean_title: str,
-        version: VersionInfo,
-        found: list[TrackCandidate],
-    ) -> list[TrackCandidate]:
-        suffix = version_search_suffix(version)
-        if suffix is None:
-            return found
-        query = TrackQuery(
-            title=f"{clean_title} {suffix}", artist=source.artist, duration=source.duration
+    def _query(self, source: TrackCandidate) -> TrackQuery:
+        """Запрос к площадке — из разобранного источника, а не из сырых полей: у
+        SoundCloud/VK поле артиста часто ник заливщика («Finesse Music»), а настоящий
+        артист — в названии «Artist – Title»; мусор («(Prod Me)», «[FREE DL]») поиск
+        площадки только сбивает (e2e 2026-10-03: пустая выдача). Версия — сразу в
+        запросе («starboy kygo remix»): отдельный второй поиск «той же версии» стоил
+        лишнего запроса к квоте площадки на каждый такой трек."""
+        parsed = self._normalizer.normalize(source.title, source.artist)
+        title = parsed.title or source.title
+        suffix = version_search_suffix(parsed.version)
+        if suffix:
+            title = f"{title} {suffix}"
+        return TrackQuery(
+            title=title, artist=parsed.artist, isrc=source.isrc, duration=source.duration
         )
-        extra = await self._gateway.search(query, limit=self._search_limit)
-        seen = {candidate.ref for candidate in found}
-        # Найденные вторым запросом — первыми: при ручном выборе пользователь сначала
-        # видит кандидатов нужной версии.
-        return [c for c in extra if c.ref not in seen] + found
 
 
 def build_default_pipeline(

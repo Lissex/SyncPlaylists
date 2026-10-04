@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -206,6 +207,9 @@ class TransferProgressSchema(BaseModel):
     # Оценка оставшегося времени матчинга по скорости последних треков, секунды.
     # Только для status=running; null — данных пока мало или фаза не матчинг.
     eta_seconds: int | None
+    # status=paused_quota: площадка исчерпала квоту, перенос продолжится сам в это время
+    # (UTC) — фронт показывает «продолжим в HH:MM».
+    resume_at: datetime | None = None
 
     @classmethod
     def from_dto(cls, dto: TransferProgressDto) -> "TransferProgressSchema":
@@ -219,6 +223,7 @@ class TransferProgressSchema(BaseModel):
             added=dto.added,
             failed=dto.failed,
             eta_seconds=dto.eta_seconds,
+            resume_at=dto.resume_at,
         )
 
 

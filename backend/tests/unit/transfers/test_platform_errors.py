@@ -11,6 +11,7 @@ from syncplaylists.modules.transfers.application.use_cases import (
     FailTransferItemUseCase,
     FailTransferUseCase,
     MatchTransferItemUseCase,
+    PauseTransferForQuotaUseCase,
     WriteTransferUseCase,
 )
 from syncplaylists.modules.transfers.domain.entities import Transfer
@@ -43,6 +44,7 @@ from syncplaylists.shared_kernel.domain.errors import (
 )
 from syncplaylists.shared_kernel.domain.value_objects import MatchScore, Platform, PlaylistRef
 from tests.fakes import FakeMusicPlatformGateway, FakeUnitOfWork
+from tests.fakes.transfers import RecordingPause
 from tests.unit.transfers.test_use_cases import _SPOTIFY_MATCH_1, _VK_TRACK_1, Env
 
 
@@ -252,6 +254,7 @@ async def test_platform_retries_defer_at_least_retry_after() -> None:
             uuid4(),
             _FailingExecute(PlatformRateLimitedError(Platform.YANDEX, 42)),
             cast(FailTransferUseCase, fail),
+            cast(PauseTransferForQuotaUseCase, RecordingPause()),
         )
 
     assert caught.value.defer_score is not None
@@ -269,6 +272,7 @@ async def test_platform_retries_fail_transfer_after_last_try() -> None:
         transfer_id,
         _FailingExecute(PlatformUnavailableError(Platform.YANDEX)),
         cast(FailTransferUseCase, fail),
+        cast(PauseTransferForQuotaUseCase, RecordingPause()),
     )
 
     assert fail.calls == [(transfer_id, "platform_unavailable")]
@@ -282,6 +286,7 @@ async def test_platform_retries_do_not_swallow_bugs() -> None:
             uuid4(),
             _FailingExecute(ZeroDivisionError()),
             cast(FailTransferUseCase, _RecordingFailTransfer()),
+            cast(PauseTransferForQuotaUseCase, RecordingPause()),
         )
 
 
@@ -363,30 +368,55 @@ class _RecordingFailItem:
         self.calls.append((transfer_id, position, reason))
 
 
-@pytest.mark.parametrize("job_try", [MATCH_MAX_TRIES, RATE_LIMITED_MAX_TRIES - 1])
-async def test_rate_limited_match_is_retried_beyond_normal_budget(job_try: int) -> None:
+@pytest.mark.parametrize("job_try", [1, MATCH_MAX_TRIES, RATE_LIMITED_MAX_TRIES - 1])
+async def test_quota_429_pauses_transfer_instead_of_retrying(job_try: int) -> None:
+    """Долгий Retry-After (квота) — пауза всего переноса, а не повтор задачи: трек
+    остаётся PENDING и не тратит попытки (этап 4b-3)."""
     fail_item = _RecordingFailItem()
+    pause = RecordingPause()
+    transfer_id = uuid4()
+
+    await match_with_retries(
+        job_try,
+        transfer_id,
+        0,
+        cast(
+            MatchTransferItemUseCase,
+            _FailingMatch(PlatformRateLimitedError(Platform.YANDEX, 600)),
+        ),
+        cast(FailTransferItemUseCase, fail_item),
+        cast(PauseTransferForQuotaUseCase, pause),
+    )
+
+    assert pause.calls == [(transfer_id, 600)]
+    assert fail_item.calls == []
+
+
+async def test_short_rate_limit_is_retried_with_its_own_budget() -> None:
+    pause = RecordingPause()
 
     with pytest.raises(Retry) as caught:
         await match_with_retries(
-            job_try,
+            MATCH_MAX_TRIES,  # обычный бюджет уже исчерпан — у rate limit свой
             uuid4(),
             0,
             cast(
                 MatchTransferItemUseCase,
-                _FailingMatch(PlatformRateLimitedError(Platform.YANDEX, 600)),
+                _FailingMatch(PlatformRateLimitedError(Platform.YANDEX, 5)),
             ),
-            cast(FailTransferItemUseCase, fail_item),
+            cast(FailTransferItemUseCase, _RecordingFailItem()),
+            cast(PauseTransferForQuotaUseCase, pause),
         )
 
-    assert fail_item.calls == []
-    # Не раньше Retry-After площадки и с разбросом не больше 20%.
+    assert pause.calls == []
+    # Не раньше Retry-After и с разбросом не больше 20%.
     assert caught.value.defer_score is not None
-    assert 600_000 <= caught.value.defer_score <= 720_000
+    assert 5_000 <= caught.value.defer_score <= 6_000
 
 
-async def test_rate_limited_match_fails_item_after_its_own_budget() -> None:
+async def test_rate_limit_after_its_budget_pauses_instead_of_failing() -> None:
     fail_item = _RecordingFailItem()
+    pause = RecordingPause()
     transfer_id = uuid4()
 
     await match_with_retries(
@@ -395,9 +425,29 @@ async def test_rate_limited_match_fails_item_after_its_own_budget() -> None:
         7,
         cast(MatchTransferItemUseCase, _FailingMatch(PlatformRateLimitedError(Platform.YANDEX, 5))),
         cast(FailTransferItemUseCase, fail_item),
+        cast(PauseTransferForQuotaUseCase, pause),
     )
 
-    assert fail_item.calls == [(transfer_id, 7, "PlatformRateLimitedError")]
+    assert fail_item.calls == []  # ни один трек не уходит в FAILED из-за квоты
+    assert pause.calls == [(transfer_id, 5)]
+
+
+async def test_quota_429_on_write_pauses_transfer() -> None:
+    fail = _RecordingFailTransfer()
+    pause = RecordingPause()
+    transfer_id = uuid4()
+
+    await with_platform_retries(
+        1,
+        "run_write",
+        transfer_id,
+        _FailingExecute(PlatformRateLimitedError(Platform.YANDEX, 600)),
+        cast(FailTransferUseCase, fail),
+        cast(PauseTransferForQuotaUseCase, pause),
+    )
+
+    assert pause.calls == [(transfer_id, 600)]
+    assert fail.calls == []
 
 
 async def test_other_errors_keep_normal_budget() -> None:
@@ -409,6 +459,7 @@ async def test_other_errors_keep_normal_budget() -> None:
         0,
         cast(MatchTransferItemUseCase, _FailingMatch(PlatformUnavailableError(Platform.YANDEX))),
         cast(FailTransferItemUseCase, fail_item),
+        cast(PauseTransferForQuotaUseCase, RecordingPause()),
     )
 
     assert len(fail_item.calls) == 1
@@ -424,6 +475,7 @@ async def test_rate_limited_transfer_is_retried_beyond_normal_budget() -> None:
             uuid4(),
             _FailingExecute(PlatformRateLimitedError(Platform.YANDEX, 30)),
             cast(FailTransferUseCase, fail),
+            cast(PauseTransferForQuotaUseCase, RecordingPause()),
         )
     assert fail.calls == []
 

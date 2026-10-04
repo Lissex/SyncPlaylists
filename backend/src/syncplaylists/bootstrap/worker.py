@@ -9,6 +9,7 @@ from syncplaylists.bootstrap.container import make_container
 from syncplaylists.infrastructure.config.settings import Settings
 from syncplaylists.modules.transfers.presentation.tasks import (
     RATE_LIMITED_MAX_TRIES,
+    resume_transfer,
     run_match,
     run_transfer,
     run_write,
@@ -26,7 +27,7 @@ class WorkerSettings:
     # transfer/match/write — три логические очереди из этого этапа, пока один
     # физический процесс (как и docker-compose: один сервис `worker`); разные
     # concurrency/rate-limit по площадкам — задел на этап 4. См. ARCHITECTURE.md.
-    functions = (ping, run_transfer, run_match, run_write)
+    functions = (ping, run_transfer, run_match, run_write, resume_transfer)
     # Каждые 5 минут — порог "застывания" в SweepStaleTransfersUseCase — 10 минут,
     # так что застывший перенос подхватится максимум через ~15 минут после сбоя.
     cron_jobs: ClassVar[list[CronJob]] = [cron(sweep_stale_transfers, minute=set(range(0, 60, 5)))]

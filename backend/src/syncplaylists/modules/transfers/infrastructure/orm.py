@@ -63,6 +63,9 @@ class TransferOrm(Base):
 
     cursor: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
+    # PAUSED_QUOTA: когда продолжить и в какую фазу вернуться (queued|running|writing).
+    resume_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paused_from: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     # Счётчики items (TransferProgress). run_match меняет их атомарно
     # (`SET matched = matched + 1`), полное сохранение агрегата — пересчитывает из items.

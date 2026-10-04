@@ -26,9 +26,31 @@ class FakeEventPublisher:
 class FakeTaskQueue:
     def __init__(self) -> None:
         self.enqueued: list[tuple[str, tuple[Any, ...]]] = []
+        # Отложенные: (задача, когда, аргументы); один ключ dedupe — одна задача.
+        self.scheduled: list[tuple[str, datetime, tuple[Any, ...]]] = []
+        self._dedupe_keys: set[str] = set()
 
     async def enqueue(self, task_name: str, *args: Any, **kwargs: Any) -> None:
         self.enqueued.append((task_name, args))
+
+    async def enqueue_at(
+        self, task_name: str, when: datetime, *args: Any, dedupe_key: str | None = None
+    ) -> None:
+        if dedupe_key is not None:
+            if dedupe_key in self._dedupe_keys:
+                return
+            self._dedupe_keys.add(dedupe_key)
+        self.scheduled.append((task_name, when, args))
+
+
+class RecordingPause:
+    """PauseTransferForQuotaUseCase для тестов задач: только запоминает вызовы."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[UUID, float]] = []
+
+    async def execute(self, transfer_id: UUID, retry_after_seconds: float) -> None:
+        self.calls.append((transfer_id, retry_after_seconds))
 
 
 class FakeTransferRepository:
@@ -53,6 +75,7 @@ class FakeTransferRepository:
             status=stored.status,
             progress=TransferProgress.from_statuses(i.status for i in stored.items),
             recent_processed_at=tuple(times),
+            resume_at=stored.resume_at,
         )
 
     async def get_for_update(self, transfer_id: UUID) -> Transfer | None:
@@ -98,6 +121,43 @@ class FakeTransferRepository:
             return False
         stored.status = to_status
         return True
+
+    async def pause_for_quota(self, transfer_id: UUID, resume_at: datetime) -> datetime | None:
+        stored = self._storage[transfer_id]
+        pausable = (TransferStatus.QUEUED, TransferStatus.RUNNING, TransferStatus.WRITING)
+        if stored.status is TransferStatus.PAUSED_QUOTA:
+            assert stored.resume_at is not None
+            stored.resume_at = max(stored.resume_at, resume_at)
+        elif stored.status in pausable:
+            stored.paused_from, stored.status = stored.status, TransferStatus.PAUSED_QUOTA
+            stored.resume_at = resume_at
+        else:
+            return None
+        return stored.resume_at
+
+    async def resume_from_quota(self, transfer_id: UUID, now: datetime) -> TransferStatus | None:
+        stored = self._storage[transfer_id]
+        if stored.status is not TransferStatus.PAUSED_QUOTA:
+            return None
+        assert stored.resume_at is not None
+        assert stored.paused_from is not None
+        if stored.resume_at > now:
+            return None
+        stored.status, stored.paused_from, stored.resume_at = stored.paused_from, None, None
+        return stored.status
+
+    async def pending_positions(self, transfer_id: UUID) -> list[int]:
+        stored = self._storage[transfer_id]
+        return [i.position for i in stored.items if i.status is TransferItemStatus.PENDING]
+
+    async def find_overdue_paused(self, due_before: datetime) -> list[UUID]:
+        return [
+            transfer_id
+            for transfer_id, transfer in self._storage.items()
+            if transfer.status is TransferStatus.PAUSED_QUOTA
+            and transfer.resume_at is not None
+            and transfer.resume_at < due_before
+        ]
 
     async def find_stale_ids(
         self, statuses: Sequence[TransferStatus], older_than: datetime
