@@ -163,6 +163,10 @@ def _error_for(response: httpx.Response) -> PlatformError:
     if status == 404:
         return PlaylistNotFoundError(_PLATFORM, message)
     if status == 429:
+        if "x-yandex-captcha" in response.headers:
+            # Антибот Яндекса (HTML-страница с капчей), а не лимит API: запросы сочли
+            # автоматическими. Обходить не пытаемся — ждём Retry-After и идём медленнее.
+            message = "HTTP 429 антибот Яндекса (captcha)"
         return PlatformRateLimitedError(_PLATFORM, _retry_after(response), message)
     if status == 451:
         return PlatformRegionError(_PLATFORM, message)

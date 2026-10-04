@@ -72,15 +72,17 @@ class RateLimitSettings(BaseModel):
     refill_per_second — устойчивая частота. Если ждать токен дольше max_wait_seconds,
     задача уходит в повтор с задержкой, а не держит воркер."""
 
-    # Значения по умолчанию — под Яндекс: e2e 2026-10-03 при 5 разом + 3/с через
-    # ~30 с получил 429 с Retry-After 600 (ARCHITECTURE.md, 11d). Подбираются эмпирически.
+    # Общие значения по умолчанию; у каждой площадки свои (YandexSettings, SoundCloudSettings).
     capacity: int = 3
     refill_per_second: float = 1.5
     max_wait_seconds: float = 10.0
 
 
 class YandexSettings(BaseModel):
-    rate_limit: RateLimitSettings = RateLimitSettings()
+    # 429 Яндекса — антибот (x-yandex-captcha), а не квота API: срабатывал на 4–6-м
+    # запросе при старте с 3 одновременных, а по одному в секунду зонд сделал 150 поисков
+    # подряд без капчи (ARCHITECTURE.md, 11g). Поэтому без всплеска и не чаще 1/с.
+    rate_limit: RateLimitSettings = RateLimitSettings(capacity=1, refill_per_second=1.0)
     request_timeout_seconds: float = 15.0
     # Сколько треков догружать одним запросом /tracks и добавлять одной пачкой.
     batch_size: int = 100
