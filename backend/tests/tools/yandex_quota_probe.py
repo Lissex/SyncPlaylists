@@ -150,7 +150,9 @@ async def single(max_searches: int, network: str, interval: float, parallel: int
             print("  Теперь переключите компьютер на другую сеть (раздача с телефона) и сразу:")
             print("    uv run python -m tests.tools.yandex_quota_probe --network other")
     elif first_429 is None:
-        print(f"  Из другой сети тот же токен ищет ({ok}/{limit}) → квота на IP.")
+        print(f"  Из другой сети тот же токен ищет ({ok}/{limit}).")
+        print("  Это «квота на IP», ТОЛЬКО если шаг home в первой сети закончился 429;")
+        print("  иначе вывода нет — первая сеть просто не была на паузе.")
     elif ok == 0:
         print("  Из другой сети тот же токен сразу получил 429 → квота на ТОКЕН.")
     else:
