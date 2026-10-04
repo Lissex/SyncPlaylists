@@ -16,35 +16,67 @@ from syncplaylists.shared_kernel.domain.value_objects import Platform
 # Если ждать дольше max_wait — разрешение не выдаётся и не резервируется.
 # Выданные разрешения считаются по минутам в KEYS[2]..":"..<минута> (TTL 2 ч) — чтобы
 # при 429 видеть, сколько запросов площадка пропустила до отказа (подбор лимита).
+# Необязательный второй bucket — общий на сервер (KEYS[3], ARGV[4..5]): площадка видит
+# все запросы с одного IP, сколько бы аккаунтов их ни делали. Разрешение выдаётся, только
+# если ОБА укладываются в max_wait; ждать — max из двух; резервируется в обоих.
 # Возвращает {granted (0/1), wait_ms}.
 _LUA: Final = """
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local max_wait = tonumber(ARGV[3])
+
+local function load(key, capacity, rate)
+  local data = redis.call('HMGET', key, 'tokens', 'ts')
+  local tokens = tonumber(data[1])
+  local ts = tonumber(data[2])
+  if tokens == nil or ts == nil then
+    tokens = capacity
+    ts = now
+  end
+  return math.min(capacity, tokens + math.max(0, now - ts) * rate)
+end
+
+local function wait_for(tokens, rate)
+  if tokens < 1 then
+    return math.ceil((1 - tokens) / rate)
+  end
+  return 0
+end
+
+local function store(key, tokens, capacity, rate)
+  redis.call('HSET', key, 'tokens', tostring(tokens), 'ts', now)
+  redis.call('PEXPIRE', key, math.ceil(capacity / rate) + max_wait + 1000)
+end
+
 local capacity = tonumber(ARGV[1])
 local rate = tonumber(ARGV[2])
-local max_wait = tonumber(ARGV[3])
-local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
-local tokens = tonumber(data[1])
-local ts = tonumber(data[2])
-if tokens == nil or ts == nil then
-  tokens = capacity
-  ts = now
+local tokens = load(KEYS[1], capacity, rate)
+local wait = wait_for(tokens, rate)
+
+local has_global = #KEYS >= 3
+local g_capacity, g_rate, g_tokens
+if has_global then
+  g_capacity = tonumber(ARGV[4])
+  g_rate = tonumber(ARGV[5])
+  g_tokens = load(KEYS[3], g_capacity, g_rate)
+  wait = math.max(wait, wait_for(g_tokens, g_rate))
 end
-tokens = math.min(capacity, tokens + math.max(0, now - ts) * rate)
-local wait = 0
-if tokens < 1 then
-  wait = math.ceil((1 - tokens) / rate)
-end
+
 local granted = 0
 if wait <= max_wait then
   tokens = tokens - 1
+  if has_global then
+    g_tokens = g_tokens - 1
+  end
   granted = 1
   local counter = KEYS[2] .. ':' .. math.floor(now / 60000)
   redis.call('INCR', counter)
   redis.call('EXPIRE', counter, 7200)
 end
-redis.call('HSET', KEYS[1], 'tokens', tostring(tokens), 'ts', now)
-redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate) + max_wait + 1000)
+store(KEYS[1], tokens, capacity, rate)
+if has_global then
+  store(KEYS[3], g_tokens, g_capacity, g_rate)
+end
 return {granted, wait}
 """
 
@@ -103,26 +135,32 @@ class RedisTokenBucketLimiter:
         redis: Redis,
         limits: Mapping[Platform, TokenBucketLimits],
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        global_limits: Mapping[Platform, TokenBucketLimits] | None = None,
     ) -> None:
         self._redis = redis
         self._script = redis.register_script(_LUA)
         self._penalize_script = redis.register_script(_PENALIZE_LUA)
         self._count_script = redis.register_script(_COUNT_LUA)
         self._limits = dict(limits)
+        # Общий bucket на площадку для всего сервера (все аккаунты, все процессы).
+        self._global_limits = dict(global_limits or {})
         self._sleep = sleep
 
     async def acquire(self, platform: Platform, account_id: UUID) -> None:
         limits = self._limits.get(platform)
         if limits is None:
             return
-        granted, wait_ms = await self._script(
-            keys=[_key(platform, account_id), _counter_prefix(platform, account_id)],
-            args=[
-                limits.capacity,
-                limits.refill_per_second / 1000,
-                int(limits.max_wait_seconds * 1000),
-            ],
-        )
+        keys = [_key(platform, account_id), _counter_prefix(platform, account_id)]
+        args: list[float | int] = [
+            limits.capacity,
+            limits.refill_per_second / 1000,
+            int(limits.max_wait_seconds * 1000),
+        ]
+        shared = self._global_limits.get(platform)
+        if shared is not None:
+            keys.append(_global_key(platform))
+            args.extend([shared.capacity, shared.refill_per_second / 1000])
+        granted, wait_ms = await self._script(keys=keys, args=args)
         if not int(granted):
             raise PlatformRateLimitedError(platform, int(wait_ms) / 1000, "token bucket")
         if int(wait_ms) > 0:
@@ -155,10 +193,21 @@ class RedisTokenBucketLimiter:
             keys=[_key(platform, account_id)],
             args=[limits.capacity, limits.refill_per_second / 1000, int(seconds * 1000)],
         )
+        shared = self._global_limits.get(platform)
+        if shared is not None:
+            # Антибот площадки смотрит на весь трафик с IP — пауза для всех аккаунтов.
+            await self._penalize_script(
+                keys=[_global_key(platform)],
+                args=[shared.capacity, shared.refill_per_second / 1000, int(seconds * 1000)],
+            )
 
 
 def _key(platform: Platform, account_id: UUID) -> str:
     return f"ratelimit:tb:{platform.value}:{account_id}"
+
+
+def _global_key(platform: Platform) -> str:
+    return f"ratelimit:tb:{platform.value}:global"
 
 
 def _counter_prefix(platform: Platform, account_id: UUID) -> str:

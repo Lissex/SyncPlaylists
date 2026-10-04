@@ -83,6 +83,12 @@ class YandexSettings(BaseModel):
     # запросе при старте с 3 одновременных, а по одному в секунду зонд сделал 150 поисков
     # подряд без капчи (ARCHITECTURE.md, 11g). Поэтому без всплеска и не чаще 1/с.
     rate_limit: RateLimitSettings = RateLimitSettings(capacity=1, refill_per_second=1.0)
+    # Общий лимит на весь сервер (все аккаунты и процессы): антибот видит суммарный
+    # трафик с IP. ~1 rps → потолок ~3600 поисков/час на сервер (ARCHITECTURE.md, 11g).
+    # None — без общего лимита.
+    global_rate_limit: RateLimitSettings | None = RateLimitSettings(
+        capacity=1, refill_per_second=1.0
+    )
     request_timeout_seconds: float = 15.0
     # Сколько треков догружать одним запросом /tracks и добавлять одной пачкой.
     batch_size: int = 100
