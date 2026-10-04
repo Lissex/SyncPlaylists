@@ -112,7 +112,7 @@ async def main(max_b: int) -> None:
         print("  → Неоднозначно (у B ошибки не 429) — смотрите строки выше.")
 
 
-async def single(max_searches: int, network: str) -> None:
+async def single(max_searches: int, network: str, interval: float) -> None:
     """Один токен, две сети. Шаг `home`: поиски токеном A до первого 429 (квота
     исчерпана). Шаг `other` — тот же токен из ДРУГОЙ сети (раздача с телефона): прошёл →
     квота на IP, снова 429 → квота на токен."""
@@ -133,7 +133,7 @@ async def single(max_searches: int, network: str) -> None:
                 break
             if status == 200:
                 ok += 1
-            await asyncio.sleep(1)
+            await asyncio.sleep(interval)
 
     print("\nИтог:")
     if network == "home":
@@ -156,12 +156,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--max", type=int, default=30, help="не больше N поисков")
     parser.add_argument(
+        "--interval", type=float, default=1.0, help="пауза между поисками, с (один токен)"
+    )
+    parser.add_argument(
         "--network",
         choices=("home", "other"),
         help="режим одного токена: home — исчерпать квоту, other — проверить из другой сети",
     )
     args = parser.parse_args()
     if args.network:
-        asyncio.run(single(args.max, args.network))
+        asyncio.run(single(args.max, args.network, args.interval))
     else:
         asyncio.run(main(args.max))
