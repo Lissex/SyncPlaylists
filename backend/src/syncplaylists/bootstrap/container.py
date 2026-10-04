@@ -8,7 +8,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from syncplaylists.infrastructure.cache.redis_text_cache import RedisTextCache
-from syncplaylists.infrastructure.config.settings import Settings
+from syncplaylists.infrastructure.config.settings import RateLimitSettings, Settings
 from syncplaylists.infrastructure.db.engine import create_engine
 from syncplaylists.infrastructure.db.session import create_session_factory
 from syncplaylists.infrastructure.db.uow import SqlUnitOfWork
@@ -235,15 +235,22 @@ class GatewayProvider(Provider):
             Platform.YANDEX: settings.platforms.yandex.rate_limit,
             Platform.SOUNDCLOUD: settings.platforms.soundcloud.rate_limit,
         }
+        global_limits = {Platform.YANDEX: settings.platforms.yandex.global_rate_limit}
+
+        def bucket(limit: RateLimitSettings) -> TokenBucketLimits:
+            return TokenBucketLimits(
+                capacity=limit.capacity,
+                refill_per_second=limit.refill_per_second,
+                max_wait_seconds=limit.max_wait_seconds,
+            )
+
         return RedisTokenBucketLimiter(
             redis,
-            {
-                platform: TokenBucketLimits(
-                    capacity=limit.capacity,
-                    refill_per_second=limit.refill_per_second,
-                    max_wait_seconds=limit.max_wait_seconds,
-                )
-                for platform, limit in limits.items()
+            {platform: bucket(limit) for platform, limit in limits.items()},
+            global_limits={
+                platform: bucket(limit)
+                for platform, limit in global_limits.items()
+                if limit is not None
             },
         )
 

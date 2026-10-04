@@ -171,3 +171,68 @@ async def test_server_counter_counts_all_requests_across_accounts(redis: Redis) 
 
     assert await limiter.recent_requests(Platform.YANDEX, None, 10) == 3
     assert await limiter.recent_requests(Platform.SPOTIFY, None, 60) == 1
+
+
+# --- общий лимит на сервер (этап 4b-5) -------------------------------------------------
+
+
+def _limiter_with_global(
+    redis: Redis, sleep: _RecordingSleep, global_rate: float = 1.0
+) -> RedisTokenBucketLimiter:
+    # У каждого аккаунта лимит щедрый — упираться должны в общий.
+    return RedisTokenBucketLimiter(
+        redis,
+        {Platform.YANDEX: TokenBucketLimits(10, 10.0, 30)},
+        sleep=sleep,
+        global_limits={Platform.YANDEX: TokenBucketLimits(1, global_rate, 30)},
+    )
+
+
+async def test_two_accounts_in_parallel_share_global_limit(redis: Redis) -> None:
+    import asyncio
+
+    sleep = _RecordingSleep()
+    limiter = _limiter_with_global(redis, sleep, global_rate=1.0)
+    first, second = uuid4(), uuid4()
+
+    await asyncio.gather(
+        *(limiter.acquire(Platform.YANDEX, account) for account in (first, second) * 3)
+    )
+
+    # 6 разрешений на два аккаунта при общем 1 rps: одно сразу, остальные — в очереди
+    # через ~1 с друг за другом, а не по 3 сразу на каждый аккаунт.
+    waits = sorted(sleep.waits)
+    assert len(waits) == 5
+    for expected, actual in zip(range(1, 6), waits, strict=True):
+        assert actual == pytest.approx(expected, abs=0.2)
+
+
+async def test_global_limit_counts_every_account(redis: Redis) -> None:
+    sleep = _RecordingSleep()
+    limiter = _limiter_with_global(redis, sleep, global_rate=2.0)
+
+    for _ in range(3):
+        await limiter.acquire(Platform.YANDEX, uuid4())  # всё разные аккаунты
+
+    assert [round(w, 1) for w in sleep.waits] == [0.5, 1.0]
+
+
+async def test_penalty_after_429_pauses_all_accounts(redis: Redis) -> None:
+    sleep = _RecordingSleep()
+    limiter = _limiter_with_global(redis, sleep)
+
+    await limiter.penalize(Platform.YANDEX, uuid4(), 600)
+
+    with pytest.raises(PlatformRateLimitedError) as exc_info:
+        await limiter.acquire(Platform.YANDEX, uuid4())  # другой аккаунт тоже на паузе
+    assert exc_info.value.retry_after_seconds > 500
+
+
+async def test_without_global_limit_accounts_are_independent(redis: Redis) -> None:
+    sleep = _RecordingSleep()
+    limiter = _limiter(redis, sleep, capacity=1, rate=1.0)
+
+    await limiter.acquire(Platform.YANDEX, uuid4())
+    await limiter.acquire(Platform.YANDEX, uuid4())
+
+    assert sleep.waits == []
