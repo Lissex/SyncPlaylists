@@ -6,6 +6,7 @@ from uuid import UUID
 
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import TransferProgress, TransferStatus
+from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +19,15 @@ class ProgressSample:
     progress: TransferProgress
     recent_processed_at: tuple[datetime, ...]
     resume_at: datetime | None = None  # PAUSED_QUOTA: когда продолжим
+    pause_reason: str | None = None  # PAUSED_CLIENT: почему ждём расширение
+
+
+@dataclass(frozen=True, slots=True)
+class ClientPause:
+    """Итог TransferRepository.pause_for_client: с какой причиной перенос ждал
+    расширение до вызова (None — не ждал, пауза поставлена сейчас)."""
+
+    previous_reason: str | None
 
 
 class TransferRepository(Protocol):
@@ -68,6 +78,20 @@ class TransferRepository(Protocol):
     async def resume_from_quota(
         self, transfer_id: UUID, now: datetime
     ) -> TransferStatus | None: ...
+
+    # --- ожидание браузерного расширения (PAUSED_CLIENT) — тоже условными UPDATE ---
+
+    # QUEUED|RUNNING|WRITING → PAUSED_CLIENT (paused_from = прежний статус), уже на паузе —
+    # только новая причина. None — перенос не в фазе, где паузу можно поставить.
+    async def pause_for_client(self, transfer_id: UUID, reason: str) -> ClientPause | None: ...
+
+    # PAUSED_CLIENT → paused_from. Возвращает фазу, в которую вернулись; None — перенос
+    # уже не ждёт расширение (продолжили раньше или он завершён).
+    async def resume_from_client(self, transfer_id: UUID) -> TransferStatus | None: ...
+
+    # Переносы пользователя, ждущие расширение, у которых источник или назначение —
+    # эта площадка.
+    async def find_client_paused(self, user_id: UUID, platform: Platform) -> list[UUID]: ...
 
     async def pending_positions(self, transfer_id: UUID) -> list[int]: ...
 

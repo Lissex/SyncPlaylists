@@ -49,6 +49,8 @@ class TransferProgressDto:
     eta_seconds: int | None
     # PAUSED_QUOTA: когда перенос продолжится сам (квота площадки).
     resume_at: datetime | None = None
+    # PAUSED_CLIENT: почему ждём браузерное расширение (offline, captcha, ...).
+    pause_reason: str | None = None
 
     @classmethod
     def from_sample(cls, sample: ProgressSample, now: datetime) -> "TransferProgressDto":
@@ -68,6 +70,9 @@ class TransferProgressDto:
             failed=progress.failed,
             eta_seconds=eta_seconds,
             resume_at=sample.resume_at if sample.status is TransferStatus.PAUSED_QUOTA else None,
+            pause_reason=(
+                sample.pause_reason if sample.status is TransferStatus.PAUSED_CLIENT else None
+            ),
         )
 
 

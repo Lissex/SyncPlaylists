@@ -13,13 +13,20 @@ from syncplaylists.modules.transfers.application.use_cases import (
     FailTransferItemUseCase,
     FailTransferUseCase,
     MatchTransferItemUseCase,
+    PauseTransferForClientUseCase,
     PauseTransferForQuotaUseCase,
     ProcessTransferUseCase,
+    ResumeClientPausedTransfersUseCase,
     ResumeTransferUseCase,
     SweepStaleTransfersUseCase,
     WriteTransferUseCase,
 )
-from syncplaylists.shared_kernel.domain.errors import PlatformError, PlatformRateLimitedError
+from syncplaylists.shared_kernel.domain.errors import (
+    ExtensionUnavailableError,
+    PlatformError,
+    PlatformRateLimitedError,
+)
+from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +68,21 @@ async def _pause(
     await pause.execute(transfer_id, exc.retry_after_seconds)
 
 
+async def _pause_for_client(
+    pause_client: PauseTransferForClientUseCase,
+    task: str,
+    transfer_id: UUID,
+    exc: ExtensionUnavailableError,
+) -> None:
+    logger.warning(
+        "%s %s: расширение не может выполнить операцию (%s), перенос ждёт браузер",
+        task,
+        transfer_id,
+        exc.reason.value,
+    )
+    await pause_client.execute(transfer_id, exc.reason.value)
+
+
 def _max_tries(exc: BaseException, default: int) -> int:
     return RATE_LIMITED_MAX_TRIES if isinstance(exc, PlatformRateLimitedError) else default
 
@@ -82,6 +104,7 @@ async def run_transfer(
     use_case: FromDishka[ProcessTransferUseCase],
     fail_transfer: FromDishka[FailTransferUseCase],
     pause: FromDishka[PauseTransferForQuotaUseCase],
+    pause_client: FromDishka[PauseTransferForClientUseCase],
 ) -> None:
     await with_platform_retries(
         int(ctx.get("job_try", 1)),
@@ -90,6 +113,7 @@ async def run_transfer(
         use_case.execute,
         fail_transfer,
         pause,
+        pause_client=pause_client,
     )
 
 
@@ -100,13 +124,19 @@ async def with_platform_retries(
     execute: Callable[[UUID], Awaitable[None]],
     fail_transfer: FailTransferUseCase,
     pause: PauseTransferForQuotaUseCase,
+    *,
+    pause_client: PauseTransferForClientUseCase | None = None,
 ) -> None:
     """run_transfer/run_write: временная ошибка площадки (сеть, 5xx, rate limit, разовый
     401) — ограниченный повтор; после последней попытки перенос FAILED. Терминальные
-    ошибки (токен протух, плейлист чужой) use case обрабатывает сам и не пробрасывает."""
+    ошибки (токен протух, плейлист чужой) use case обрабатывает сам и не пробрасывает.
+    Расширение недоступно (браузер закрыт и т.п.) — не ошибка: перенос ждёт браузер."""
     try:
         await execute(transfer_id)
     except PlatformError as exc:
+        if isinstance(exc, ExtensionUnavailableError) and pause_client is not None:
+            await _pause_for_client(pause_client, task, transfer_id, exc)
+            return
         if isinstance(exc, PlatformRateLimitedError) and _is_quota_pause(exc, job_try):
             await _pause(pause, task, transfer_id, exc)
             return
@@ -133,9 +163,16 @@ async def run_match(
     use_case: FromDishka[MatchTransferItemUseCase],
     fail_item: FromDishka[FailTransferItemUseCase],
     pause: FromDishka[PauseTransferForQuotaUseCase],
+    pause_client: FromDishka[PauseTransferForClientUseCase],
 ) -> None:
     await match_with_retries(
-        int(ctx.get("job_try", 1)), transfer_id, position, use_case, fail_item, pause
+        int(ctx.get("job_try", 1)),
+        transfer_id,
+        position,
+        use_case,
+        fail_item,
+        pause,
+        pause_client=pause_client,
     )
 
 
@@ -146,10 +183,16 @@ async def match_with_retries(
     use_case: MatchTransferItemUseCase,
     fail_item: FailTransferItemUseCase,
     pause: PauseTransferForQuotaUseCase,
+    *,
+    pause_client: PauseTransferForClientUseCase | None = None,
 ) -> None:
     try:
         await use_case.execute(transfer_id, position)
     except Exception as exc:
+        if isinstance(exc, ExtensionUnavailableError) and pause_client is not None:
+            # Трек остаётся PENDING; его поставит заново resume_client_transfers.
+            await _pause_for_client(pause_client, f"run_match/{position}", transfer_id, exc)
+            return
         if isinstance(exc, PlatformRateLimitedError) and _is_quota_pause(exc, job_try):
             # Трек остаётся PENDING; его (и остальные) поставит заново resume_transfer.
             await _pause(pause, f"run_match/{position}", transfer_id, exc)
@@ -178,9 +221,16 @@ async def run_write(
     use_case: FromDishka[WriteTransferUseCase],
     fail_transfer: FromDishka[FailTransferUseCase],
     pause: FromDishka[PauseTransferForQuotaUseCase],
+    pause_client: FromDishka[PauseTransferForClientUseCase],
 ) -> None:
     await with_platform_retries(
-        int(ctx.get("job_try", 1)), "run_write", transfer_id, use_case.execute, fail_transfer, pause
+        int(ctx.get("job_try", 1)),
+        "run_write",
+        transfer_id,
+        use_case.execute,
+        fail_transfer,
+        pause,
+        pause_client=pause_client,
     )
 
 
@@ -189,6 +239,19 @@ async def resume_transfer(
     ctx: dict[str, Any], transfer_id: UUID, use_case: FromDishka[ResumeTransferUseCase]
 ) -> None:
     await use_case.execute(transfer_id)
+
+
+@inject
+async def resume_client_transfers(
+    ctx: dict[str, Any],
+    user_id: UUID,
+    platform: str,
+    use_case: FromDishka[ResumeClientPausedTransfersUseCase],
+) -> None:
+    """Расширение пользователя снова готово работать с площадкой — продолжить его
+    переносы, ждущие браузер. Ставит контекст extension (по имени задачи из
+    shared_kernel.application.tasks)."""
+    await use_case.execute(user_id, Platform(platform))
 
 
 @inject

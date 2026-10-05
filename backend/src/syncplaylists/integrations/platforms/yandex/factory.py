@@ -53,7 +53,7 @@ class YandexGatewayBuilder:
         self._library_batch_preserves_order = library_batch_preserves_order
 
     def __call__(self, access: AccountAccess) -> YandexGateway:
-        client = self._clients.client(access.credentials.access_token, access.account_id)
+        client = self._clients.client(access.require_credentials().access_token, access.account_id)
         return YandexGateway(
             client,
             access.external_user_id,

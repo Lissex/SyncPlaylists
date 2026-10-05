@@ -13,7 +13,7 @@ LINK ?=
 TITLE ?=
 ACCEPT ?= 0
 
-.PHONY: help up down migrate logs ps e2e test test-integration test-live lint check
+.PHONY: help up down migrate logs ps e2e e2e-extension test test-integration test-live lint check
 
 help: ## Список команд
 	@[Console]::OutputEncoding = [Text.Encoding]::UTF8; Select-String -Path Makefile -Pattern '^([a-z0-9-]+):.*## (.*)$$' | ForEach-Object { '  make {0,-18} {1}' -f $$_.Matches[0].Groups[1].Value, $$_.Matches[0].Groups[2].Value }
@@ -35,6 +35,9 @@ logs: ## Логи api и worker (Ctrl+C — выход)
 
 e2e: up migrate ## Ручной e2e Яндекс/SoundCloud → новый плейлист Яндекса: make e2e LINK="..." [ACCEPT=1] [TITLE="..."]
 	./scripts/e2e-yandex.ps1 -Link '$(LINK)' -Title '$(TITLE)' $(if $(filter 1,$(ACCEPT)),-AcceptUncertain,)
+
+e2e-extension: up migrate ## Сквозной тест расширения: фейковое расширение по WebSocket, браузер «закрывают» посреди записи
+	Set-Location backend; uv run python -m tests.tools.fake_extension e2e --api http://localhost:8000
 
 test: ## Unit-тесты и тесты адаптеров без Docker
 	Set-Location backend; uv run pytest tests/unit tests/integration/platforms

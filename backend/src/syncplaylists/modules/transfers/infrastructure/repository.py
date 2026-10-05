@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from syncplaylists.modules.catalog.application.ports import PlatformTrackRepository
-from syncplaylists.modules.transfers.application.ports import ProgressSample
+from syncplaylists.modules.transfers.application.ports import ClientPause, ProgressSample
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
     TransferItemStatus,
@@ -22,6 +22,7 @@ from syncplaylists.modules.transfers.infrastructure.mappers import (
     transfer_to_orm,
 )
 from syncplaylists.modules.transfers.infrastructure.orm import TransferItemOrm, TransferOrm
+from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 # Какой счётчик transfers растёт при переходе item из PENDING в этот статус.
 # Фазы с запросами к площадке — из них переносы уходят на паузу по квоте.
@@ -84,6 +85,7 @@ class SqlTransferRepository:
                     TransferOrm.added,
                     TransferOrm.failed,
                     TransferOrm.resume_at,
+                    TransferOrm.pause_reason,
                 ).where(TransferOrm.id == transfer_id)
             )
         ).one_or_none()
@@ -114,6 +116,7 @@ class SqlTransferRepository:
             ),
             recent_processed_at=tuple(at for at in processed if at is not None),
             resume_at=header.resume_at,
+            pause_reason=header.pause_reason,
         )
 
     async def get_header(self, transfer_id: UUID) -> Transfer | None:
@@ -231,6 +234,58 @@ class SqlTransferRepository:
         )
         row = result.first()
         return TransferStatus(row[0]) if row is not None else None
+
+    async def pause_for_client(self, transfer_id: UUID, reason: str) -> ClientPause | None:
+        paused = TransferStatus.PAUSED_CLIENT.value
+        # Прежняя причина нужна вызывающему (событие — только если она изменилась), а
+        # UPDATE ... RETURNING отдаёт уже новые значения: читаем её под тем же локом.
+        previous = (
+            await self._session.execute(
+                select(TransferOrm.status, TransferOrm.pause_reason)
+                .where(TransferOrm.id == transfer_id)
+                .with_for_update()
+            )
+        ).one_or_none()
+        pausable = {s.value for s in _QUOTA_PAUSABLE} | {paused}
+        if previous is None or previous.status not in pausable:
+            return None
+        await self._session.execute(
+            update(TransferOrm)
+            .where(TransferOrm.id == transfer_id)
+            .values(
+                paused_from=case(
+                    (TransferOrm.status == paused, TransferOrm.paused_from),
+                    else_=TransferOrm.status,
+                ),
+                status=paused,
+                pause_reason=reason,
+            )
+        )
+        return ClientPause(previous.pause_reason if previous.status == paused else None)
+
+    async def resume_from_client(self, transfer_id: UUID) -> TransferStatus | None:
+        result = await self._session.execute(
+            update(TransferOrm)
+            .where(
+                TransferOrm.id == transfer_id,
+                TransferOrm.status == TransferStatus.PAUSED_CLIENT.value,
+            )
+            .values(status=TransferOrm.paused_from, paused_from=None, pause_reason=None)
+            .returning(TransferOrm.status)
+        )
+        row = result.first()
+        return TransferStatus(row[0]) if row is not None else None
+
+    async def find_client_paused(self, user_id: UUID, platform: Platform) -> list[UUID]:
+        rows = await self._session.scalars(
+            select(TransferOrm.id).where(
+                TransferOrm.user_id == user_id,
+                TransferOrm.status == TransferStatus.PAUSED_CLIENT.value,
+                (TransferOrm.source_platform == platform.value)
+                | (TransferOrm.target_platform == platform.value),
+            )
+        )
+        return list(rows)
 
     async def pending_positions(self, transfer_id: UUID) -> list[int]:
         rows = await self._session.scalars(

@@ -168,7 +168,8 @@ SyncPlaylists/
 │  │  │  ├─ catalog/
 │  │  │  ├─ recognition/
 │  │  │  ├─ accounts/
-│  │  │  └─ identity/
+│  │  │  ├─ identity/
+│  │  │  └─ extension/              # 4c: привязка расширений, канал задач, WebSocket
 │  │  ├─ integrations/              # адаптеры внешних систем (реализуют порты модулей)
 │  │  │  ├─ platforms/
 │  │  │  │  ├─ base.py              # общие хелперы, rate limiter
@@ -372,7 +373,8 @@ Transfer (root)
  ├─ id, user_id, source: TrackSource, destination: TrackDestination, resolved_targets: tuple[PlaylistRef]
  ├─ status: QUEUED → RUNNING → (PAUSED_CAPTCHA ↔ RUNNING) → REVIEW → WRITING → DONE | FAILED
  │          QUEUED | RUNNING | WRITING ↔ PAUSED_QUOTA (квота площадки, до resume_at; 4b-3)
- ├─ resume_at, paused_from (только в PAUSED_QUOTA)
+ │          QUEUED | RUNNING | WRITING ↔ PAUSED_CLIENT (ждём браузерное расширение, без срока; 4c)
+ ├─ resume_at (PAUSED_QUOTA), paused_from (обе паузы), pause_reason (PAUSED_CLIENT)
  └─ items: list[TransferItem]
        └─ position, source_track: ExternalTrackRef, match: MatchResult | None,
           status: PENDING | MATCHED | UNCERTAIN | NOT_FOUND | ADDED | FAILED, candidates
@@ -472,7 +474,9 @@ class MusicPlatformGateway(Protocol):
     async def search(self, query: TrackQuery, limit: int = 10) -> list[TrackCandidate]: ...
     async def search_by_isrc(self, isrc: ISRC) -> list[TrackCandidate]: ...
     async def get_playlist(self, ref: PlaylistRef) -> PlaylistSnapshot: ...
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef: ...
+    async def create_playlist(self, title: str, description: str | None,
+                              *, request_id: str | None = None) -> PlaylistRef: ...
+    # 4c: request_id — ключ идемпотентности (WriteTransfer: "<transfer_id>:<часть>").
     async def add_tracks(self, playlist: PlaylistRef, tracks: Sequence[ExternalTrackRef]) -> AddResult: ...
     # Не async def: это asynchronous generator, а не корутина, возвращающая итератор —
     # вызывающий код сразу делает `async for ... in gateway.get_library()`, без await
@@ -531,7 +535,8 @@ class PlatformCredentials:           # расшифрованные токены
 class AccountAccess:
     account_id: UUID; user_id: UUID; platform: Platform; transport: Transport
     external_user_id: str                # 4b: проверен через профиль площадки
-    credentials: PlatformCredentials
+    credentials: PlatformCredentials | None   # 4c: None у транспорта EXTENSION
+    def require_credentials(self) -> PlatformCredentials: ...  # серверным адаптерам
 
 class GatewayFactory(Protocol):
     def for_account(self, access: AccountAccess) -> MusicPlatformGateway: ...
@@ -650,11 +655,15 @@ transfers           id, user_id,
                     new_playlist_title, resolved_target_platform,
                     resolved_target_ids jsonb (4b-2: созданные плейлисты «(1/N)…»),
                     cursor jsonb (для возобновления),
-                    status, total, pending, matched, uncertain, not_found, added, failed
+                    status, resume_at, paused_from, pause_reason (4c),
+                    total, pending, matched, uncertain, not_found, added, failed
                     (счётчики — 11c; recognized — этап 6), created_at, updated_at (NOT NULL)
 transfer_items      id, transfer_id, position, source_pt_id, match_id, status, candidates jsonb,
                     match_restriction (4b-2), processed_at
 artworks            canonical_id, provider, url, width, height, dominant_color, fetched_at
+extension_devices   id, user_id → users ON DELETE CASCADE, name, browser, version,
+                    token_hash UNIQUE (sha256 токена устройства), created_at,
+                    last_seen_at, revoked_at                                   -- 4c
 lyrics_refs         canonical_id, provider, page_url, has_synced, cached_until
                     -- сам текст: только кэш в Redis с TTL, не в Postgres
 cleanup_reports     id, user_id, kind (duplicates|diff|unavailable), payload jsonb, status, created_at
@@ -1342,6 +1351,74 @@ dev, e2e и небольших переносов.
   сервере `extra="forbid"`. Одна фоновая вкладка на площадку, закрывается после задач. Темп записи
   ≤ 1/с, автоматизацию не скрываем, капчу решает человек.
 - Магазины: single purpose, обоснование каждого разрешения, privacy policy (`docs/EXTENSION_PRIVACY.md`, 4c-2).
+- **Правило: Яндекс через расширение — только `fetch` с cookie сессии вкладки
+  (`credentials: "include"`). Токен Яндекса расширение не читает вообще** (ни из cookie, ни из
+  localStorage, ни из ответов), служебные заголовки сайта `x-yandex-music-*` не подставляет.
+  Спайк показал, что этого достаточно для чтения и записи.
+- **Обязательный тест идемпотентности создания плейлиста**: «задача выполнена в браузере, результат
+  потерян, повтор с тем же `request_id`» → на площадке один плейлист (4c-1 — на фейковом расширении).
+
+**4c-1 (бэкенд) — что сделано**
+- **Контекст `modules/extension`.** `ExtensionDevice` (агрегат; в БД `extension_devices`, только
+  sha256 токена). Привязка — device flow: `POST /extension/pairings` (расширение, без входа; код
+  `XXXX-XXXX` без похожих символов, TTL 5 мин, rate limit на IP) → `POST /extension/pairings/confirm`
+  (сайт, пользователь вошёл; код одноразовый — Lua в Redis, rate limit на пользователя) →
+  `POST /extension/pairings/token` (расширение опрашивает; `pairing_id` — в теле, не в URL; токен
+  отдаётся один раз). `GET /extension/me` (`Authorization: Device <токен>`) — к какому аккаунту
+  привязано; `GET/DELETE /extension/devices` — список и отзыв с сайта. В Redis — только хэши кода
+  и `pairing_id`.
+- **WebSocket `/extension/ws`** (процесс `api`). Origin: `chrome-extension://<id>` из
+  `EXTENSION__ALLOWED_EXTENSION_IDS` (пусто в dev — любой), `moz-extension://*` по схеме, веб-страницы
+  — 4403. Токен — первым сообщением `hello`, не в URL. Сообщения — pydantic `extra="forbid"`:
+  `ping` (перепроверка токена — отзыв действует не позже следующего ping), `platform_state`,
+  `connect_platform` (явное действие пользователя → аккаунт `transport=EXTENSION` без токенов через
+  `ConnectAccountUseCase.connect_via_extension`), `result`, `progress`. Тишина > 3 heartbeat —
+  соединение закрывается.
+- **Канал задач — Redis** (`RedisExtensionChannel`: и `ExtensionChannel` воркера, и `ExtensionHub`
+  WebSocket-а; схема ключей — в модуле). Воркер выбирает устройство по присутствию
+  `ext:presence:<user>:<platform>` (сессия `ok` и тот же `external_user_id`), кладёт задачу в
+  очередь устройства и ждёт `BLPOP`. **Таймауты — по операциям** (`application/operations.py`:
+  чтения 30–60 с, запись + 1,5 с на трек), `progress` отодвигает дедлайн на базовый таймаут
+  операции. Длинные чтения — постранично (`playlist_page`/`library_page`, задача = страница).
+  Причина недоступности по присутствию: нет устройства → `offline`, другой аккаунт площадки →
+  `session_mismatch`, иначе `captcha` / `logged_out` / `no_permission`. Устройство пропало во время
+  задачи → `offline` сразу, не дожидаясь таймаута. Выданные и не завершённые задачи при
+  переподключении возвращаются в очередь; результат принимается только от устройства, которому
+  задача выдана.
+- **Идемпотентность записи.** `create_playlist(request_id=…)` → ключ `create_playlist:<request_id>`.
+  Результат write-операции с ключом сервер хранит сутки (`ext:done:<user>:<key>`) — в том числе
+  досланный расширением после переподключения; повтор с тем же ключом в браузер не уходит. Второй
+  рубеж — журнал write-результатов в `storage.local` расширения. Тест — «результат потерян, повтор
+  с тем же ключом → один плейлист» (`tests/integration/extension/test_redis_channel.py`), оба пути.
+- **`PAUSED_CLIENT`** (миграция `a5c7e2f9b134`: статус и `transfers.pause_reason`).
+  `ExtensionUnavailableError` (shared_kernel, причина `ExtensionUnavailableReason`) в
+  `run_transfer`/`run_match`/`run_write` → `PauseTransferForClientUseCase` (условный UPDATE, как пауза
+  по квоте; фаза в `paused_from`), без повторов и без FAILED. Сигнал «готово»: расширение сообщило
+  `platform_state ok` (новое подключение, вход, капча пройдена, разрешение выдано) → задача
+  `resume_client_transfers(user_id, platform)` (имя — в `shared_kernel/application/tasks.py`) →
+  `ResumeClientPausedTransfersUseCase` возвращает фазу и ставит задачи (общий `_phase_tasks` с
+  возобновлением после квоты). Sweeper `PAUSED_CLIENT` не трогает. API/SSE: `status: "paused_client"`,
+  `pause_reason`. Старт переноса, если проверку делает недоступное расширение, — 409
+  `extension_unavailable`.
+- **Транспорт EXTENSION в `GatewayFactory`**: `PlatformGatewayFactory(builders, extension_builders)` —
+  по транспорту аккаунта. Общий шлюз `integrations/platforms/extension` (`ExtensionGateway`): все
+  операции в браузере, ответы — схемы `extra="forbid"` (`wire.py`), id из ответа принимаются только
+  из запроса. Площадки — `EXTENSION__GENERIC_PLATFORMS` (dev: `["vk"]` для сквозного теста);
+  SoundCloud (4c-3) получит гибридный шлюз. Общий серверный bucket (4b-5) к EXTENSION не применяется.
+- **Тесты.** unit: домен паузы, use cases, задачи, привязка, сессия, шлюз, Origin; integration
+  (testcontainers): канал на Redis (выдача, присутствие, таймаут, progress, повторная выдача, чужой
+  результат, идемпотентность), репозиторий паузы на Postgres, HTTP привязки. Сквозной —
+  `make e2e-extension`: фейковое расширение (`tests/tools/fake_extension.py`) по WebSocket против
+  запущенного приложения, «браузер закрывают» сразу после создания плейлиста → `paused_client` →
+  переподключение → `done`, на площадке один плейлист.
+
+**Долги 4c-1**
+- `external_user_id` аккаунта через расширение сервер проверить не может (токена нет) — подделать
+  его может только сам пользователь.
+- Выбор устройства — первое подходящее; балансировки между двумя браузерами одного пользователя нет.
+- Блокирующее ожидание результата занимает слот воркера на время операции (до таймаута); при
+  сотнях одновременных переносов через расширение понадобится отдельная очередь/воркер.
+- Нет in-process теста WebSocket (покрыт сквозным `make e2e-extension`).
 
 ---
 
@@ -1469,6 +1546,7 @@ dev, e2e и небольших переносов.
      После 4c — оставшиеся адаптеры 4b (YT Music → VK → Spotify).
      Подэтапы: **4c-0 (сделано)** — спайк: запись SoundCloud и поиск/запись Яндекса из контекста
      страницы проходят (11h); 4c-1 — бэкенд (привязка, канал, `PAUSED_CLIENT`, транспорт EXTENSION);
+     **4c-1 (сделано)** — детали и долги в 11h.
      4c-2 — каркас расширения (WXT, Chrome/Яндекс Браузер/Firefox); 4c-3 — SoundCloud;
      4c-4 — Яндекс; дальше Spotify → VK.
 5. **Фронтенд**: подключение, перенос, ревью.

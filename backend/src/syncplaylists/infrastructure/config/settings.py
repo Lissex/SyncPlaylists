@@ -146,6 +146,31 @@ class PlatformsSettings(BaseModel):
     search_cache_ttl_seconds: int = 86400
 
 
+class ExtensionSettings(BaseModel):
+    """Браузерное расширение (этап 4c)."""
+
+    # chrome-extension://<id> опубликованных сборок (Chrome Web Store, Яндекс Браузер).
+    # Пусто — в dev принимается любая распакованная сборка; в проде задать обязательно.
+    allowed_extension_ids: list[str] = []
+    pairing_code_ttl_seconds: int = 300
+    pairing_poll_interval_seconds: int = 3
+    # Привязка: попыток на IP (выдача кода) и на пользователя (ввод кода) в окне.
+    pairing_rate_limit_attempts: int = 10
+    pairing_rate_limit_window_seconds: int = 60
+    device_token_ttl_days: int = 180
+    heartbeat_seconds: int = 20
+    # Расширение без heartbeat дольше этого считается отключённым (браузер закрыт).
+    presence_ttl_seconds: int = 60
+    # Площадки, которые через расширение обслуживает общий шлюз (все операции — в
+    # браузере). dev/тесты: сквозной тест с фейковым расширением.
+    generic_platforms: list[Platform] = []
+
+    @field_validator("allowed_extension_ids", mode="before")
+    @classmethod
+    def _blank_is_empty(cls, value: object) -> object:
+        return value or []
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # ".env" — если команды запускаются из backend/ с собственным .env;
@@ -162,3 +187,4 @@ class Settings(BaseSettings):
     cors: CorsSettings = CorsSettings()
     oauth: OAuthSettings = OAuthSettings()
     platforms: PlatformsSettings = PlatformsSettings()
+    extension: ExtensionSettings = ExtensionSettings()

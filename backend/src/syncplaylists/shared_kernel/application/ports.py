@@ -6,6 +6,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from syncplaylists.shared_kernel.domain.base import AggregateRoot
+from syncplaylists.shared_kernel.domain.errors import PlatformNotSupportedError
 from syncplaylists.shared_kernel.domain.ports import MusicPlatformGateway
 from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
 
@@ -70,7 +71,15 @@ class AccountAccess:
     # id аккаунта на площадке (проверен через профиль площадки при подключении) —
     # по нему адаптер/use case узнаёт «свой» плейлист.
     external_user_id: str
-    credentials: PlatformCredentials
+    # None — у транспорта EXTENSION: токенов на сервере нет, запросы идут из браузера.
+    credentials: PlatformCredentials | None
+
+    def require_credentials(self) -> PlatformCredentials:
+        """Токены аккаунта — для адаптеров, которые ходят в площадку с сервера. У
+        транспорта EXTENSION их нет: такой аккаунт обслуживают только сборщики EXTENSION."""
+        if self.credentials is None:
+            raise PlatformNotSupportedError(self.platform)
+        return self.credentials
 
 
 class AccountNotAvailableError(Exception):

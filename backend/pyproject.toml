@@ -108,6 +108,7 @@ source_modules = [
     "syncplaylists.modules.enrichment.domain",
     "syncplaylists.modules.library_tools.domain",
     "syncplaylists.modules.backups.domain",
+    "syncplaylists.modules.extension.domain",
 ]
 forbidden_modules = [
     "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
@@ -129,6 +130,7 @@ source_modules = [
     "syncplaylists.modules.enrichment.domain",
     "syncplaylists.modules.library_tools.domain",
     "syncplaylists.modules.backups.domain",
+    "syncplaylists.modules.extension.domain",
 ]
 forbidden_modules = [
     "syncplaylists.shared_kernel.application",
@@ -159,6 +161,9 @@ forbidden_modules = [
     "syncplaylists.modules.backups.application",
     "syncplaylists.modules.backups.infrastructure",
     "syncplaylists.modules.backups.presentation",
+    "syncplaylists.modules.extension.application",
+    "syncplaylists.modules.extension.infrastructure",
+    "syncplaylists.modules.extension.presentation",
 ]
 
 [[tool.importlinter.contracts]]
@@ -175,6 +180,7 @@ source_modules = [
     "syncplaylists.modules.enrichment.application",
     "syncplaylists.modules.library_tools.application",
     "syncplaylists.modules.backups.application",
+    "syncplaylists.modules.extension.application",
 ]
 forbidden_modules = [
     "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
@@ -198,6 +204,8 @@ forbidden_modules = [
     "syncplaylists.modules.library_tools.presentation",
     "syncplaylists.modules.backups.infrastructure",
     "syncplaylists.modules.backups.presentation",
+    "syncplaylists.modules.extension.infrastructure",
+    "syncplaylists.modules.extension.presentation",
 ]
 
 [[tool.importlinter.contracts]]
@@ -213,6 +221,7 @@ source_modules = [
     "syncplaylists.modules.enrichment.presentation",
     "syncplaylists.modules.library_tools.presentation",
     "syncplaylists.modules.backups.presentation",
+    "syncplaylists.modules.extension.presentation",
 ]
 forbidden_modules = [
     "syncplaylists.modules.identity.infrastructure",
@@ -224,6 +233,7 @@ forbidden_modules = [
     "syncplaylists.modules.enrichment.infrastructure",
     "syncplaylists.modules.library_tools.infrastructure",
     "syncplaylists.modules.backups.infrastructure",
+    "syncplaylists.modules.extension.infrastructure",
 ]
 
 [[tool.importlinter.contracts]]
@@ -239,6 +249,7 @@ modules = [
     "syncplaylists.modules.enrichment.domain",
     "syncplaylists.modules.library_tools.domain",
     "syncplaylists.modules.backups.domain",
+    "syncplaylists.modules.extension.domain",
 ]
 
 [[tool.importlinter.contracts]]

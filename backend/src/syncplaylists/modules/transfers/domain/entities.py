@@ -11,6 +11,7 @@ from syncplaylists.modules.transfers.domain.events import (
     TrackProcessingFailed,
     TransferCompleted,
     TransferFailed,
+    TransferPausedForClient,
     TransferPausedForQuota,
     TransferResumed,
     TransferStarted,
@@ -32,8 +33,10 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     PlaylistRef,
 )
 
-# Фазы, где идут запросы к площадке и её квота может кончиться.
+# Фазы, где идут запросы к площадке: в них кончается квота площадки или оказывается
+# недоступно расширение (PAUSED_QUOTA / PAUSED_CLIENT).
 _QUOTA_PAUSABLE = (TransferStatus.QUEUED, TransferStatus.RUNNING, TransferStatus.WRITING)
+_CLIENT_PAUSABLE = _QUOTA_PAUSABLE
 
 _UNRESOLVED_ITEM_STATUSES = (
     TransferItemStatus.PENDING,
@@ -92,7 +95,10 @@ class Transfer(AggregateRoot):
     resolved_targets: tuple[PlaylistRef, ...] = ()
     # PAUSED_QUOTA: когда продолжить и в какую фазу вернуться.
     resume_at: datetime | None = None
+    # PAUSED_QUOTA и PAUSED_CLIENT: фаза, в которую вернуться.
     paused_from: TransferStatus | None = None
+    # PAUSED_CLIENT: почему ждём расширение (ExtensionUnavailableReason).
+    pause_reason: str | None = None
     items: list[TransferItem] = field(default_factory=list)
 
     def _ensure_status(self, *allowed: TransferStatus) -> None:
@@ -160,8 +166,11 @@ class Transfer(AggregateRoot):
         """Событие о результате сопоставления одного item. Не требует загруженного
         списка items: run_match работает с «шапкой» переноса и одним item, которые
         сохраняются точечно (параллельные джобы не перетирают друг друга). На паузе по
-        квоте тоже: трек, начатый до паузы, дописывает свой результат."""
-        self._ensure_status(TransferStatus.RUNNING, TransferStatus.PAUSED_QUOTA)
+        квоте или в ожидании расширения тоже: трек, начатый до паузы, дописывает свой
+        результат."""
+        self._ensure_status(
+            TransferStatus.RUNNING, TransferStatus.PAUSED_QUOTA, TransferStatus.PAUSED_CLIENT
+        )
         if item.transfer_id != self.id:
             raise InvalidTransferTransitionError("item принадлежит другому переносу")
         event: TrackMatched | TrackNeedsReview | TrackNotFound | TrackProcessingFailed
@@ -226,6 +235,33 @@ class Transfer(AggregateRoot):
         self.status = self.paused_from
         self.paused_from = None
         self.resume_at = None
+        self.record_event(
+            TransferResumed(occurred_at=now, transfer_id=self.id, status=self.status.value)
+        )
+        return self.status
+
+    def pause_for_client(self, reason: str, now: datetime) -> bool:
+        """Расширение не может выполнить операцию: пауза без срока. Уже на паузе —
+        обновляется только причина (событие — если она изменилась). True — есть событие."""
+        self._ensure_status(*_CLIENT_PAUSABLE, TransferStatus.PAUSED_CLIENT)
+        if self.status is TransferStatus.PAUSED_CLIENT:
+            if self.pause_reason == reason:
+                return False
+        else:
+            self.paused_from = self.status
+            self.status = TransferStatus.PAUSED_CLIENT
+        self.pause_reason = reason
+        self.record_event(
+            TransferPausedForClient(occurred_at=now, transfer_id=self.id, reason=reason)
+        )
+        return True
+
+    def resume_after_client(self, now: datetime) -> TransferStatus:
+        self._ensure_status(TransferStatus.PAUSED_CLIENT)
+        assert self.paused_from is not None, "PAUSED_CLIENT без paused_from"
+        self.status = self.paused_from
+        self.paused_from = None
+        self.pause_reason = None
         self.record_event(
             TransferResumed(occurred_at=now, transfer_id=self.id, status=self.status.value)
         )

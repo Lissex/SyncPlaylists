@@ -35,7 +35,12 @@ class MusicPlatformGateway(Protocol):
     # (Яндекс: users/<свой login>/playlists/3 — «Мне нравится»).
     async def is_own_library(self, ref: PlaylistRef) -> bool: ...
 
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef: ...
+    # request_id — ключ идемпотентности: повтор с тем же ключом не создаёт второй плейлист
+    # там, где площадку не спросить «есть ли уже такой» (расширение хранит журнал
+    # выполненных записей). Адаптеры, которым он не нужен, его игнорируют.
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> PlaylistRef: ...
 
     async def add_tracks(
         self, playlist: PlaylistRef, tracks: Sequence[ExternalTrackRef]

@@ -466,12 +466,76 @@ class PauseTransferForQuotaUseCase:
         )
 
 
+class PauseTransferForClientUseCase:
+    """Операцию должно выполнить браузерное расширение, а оно не может (браузер закрыт,
+    нет входа на площадку, капча, нет разрешения): перенос ждёт без срока (PAUSED_CLIENT),
+    а не уходит в FAILED. Трек, на котором это случилось, остаётся PENDING; новые
+    run_match/run_write на паузе ничего не делают. Продолжит
+    ResumeClientPausedTransfersUseCase по сигналу «расширение готово».
+
+    Условным UPDATE, как пауза по квоте: результаты run_match, начатых до паузы, ещё
+    дописываются."""
+
+    def __init__(self, uow: UnitOfWork, transfers: TransferRepository) -> None:
+        self._uow = uow
+        self._transfers = transfers
+
+    async def execute(self, transfer_id: UUID, reason: str) -> None:
+        async with self._uow as uow:
+            header = await self._transfers.get_header(transfer_id)
+            assert header is not None, f"Transfer {transfer_id} не найден"
+            paused = await self._transfers.pause_for_client(transfer_id, reason)
+            if paused is None:
+                return  # перенос уже не в фазе с запросами к площадке
+            if paused.previous_reason is not None:
+                # Уже ждал расширение — доменный переход идёт из паузы, а не из фазы.
+                header.status = TransferStatus.PAUSED_CLIENT
+                header.pause_reason = paused.previous_reason
+            with contextlib.suppress(InvalidTransferTransitionError):
+                header.pause_for_client(reason, datetime.now(UTC))
+            uow.track(header)
+            await uow.commit()
+
+
+class ResumeClientPausedTransfersUseCase:
+    """Таск `resume_client_transfers`: расширение пользователя снова готово работать с
+    площадкой (подключилось, вход выполнен, капча пройдена, разрешение выдано) — все его
+    переносы, ждущие расширение на этой площадке, возвращаются в свою фазу. Если
+    расширение на деле ещё не готово, первая же операция снова поставит паузу."""
+
+    def __init__(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._task_queue = task_queue
+
+    async def execute(self, user_id: UUID, platform: Platform) -> None:
+        async with self._uow:
+            transfer_ids = await self._transfers.find_client_paused(user_id, platform)
+        for transfer_id in transfer_ids:
+            await self._resume(transfer_id)
+
+    async def _resume(self, transfer_id: UUID) -> None:
+        now = datetime.now(UTC)
+        async with self._uow as uow:
+            header = await self._transfers.get_header(transfer_id)
+            if header is None or header.status is not TransferStatus.PAUSED_CLIENT:
+                return
+            phase = await self._transfers.resume_from_client(transfer_id)
+            if phase is None:
+                return  # параллельный сигнал успел раньше
+            header.resume_after_client(now)
+            tasks = await _phase_tasks(self._transfers, header, phase, now)
+            uow.track(header)
+            await uow.commit()
+        for task, args in tasks:
+            await self._task_queue.enqueue(task, *args)
+
+
 class ResumeTransferUseCase:
     """Таск `resume_transfer`: срок паузы по квоте прошёл — перенос возвращается в фазу,
-    из которой ушёл, и задачи ставятся заново: QUEUED → run_transfer, RUNNING → run_match
-    по оставшимся PENDING (уже найденное не повторяется), WRITING → run_write. Если
-    пока перенос стоял, дописались последние треки (pending == 0), — сразу переход к
-    REVIEW/WRITING, как в _commit_item_outcome."""
+    из которой ушёл, и задачи ставятся заново (_phase_tasks)."""
 
     def __init__(
         self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
@@ -482,7 +546,6 @@ class ResumeTransferUseCase:
 
     async def execute(self, transfer_id: UUID) -> None:
         now = datetime.now(UTC)
-        tasks: list[tuple[str, tuple[object, ...]]] = []
         async with self._uow as uow:
             header = await self._transfers.get_header(transfer_id)
             if header is None or header.status is not TransferStatus.PAUSED_QUOTA:
@@ -491,32 +554,39 @@ class ResumeTransferUseCase:
             if phase is None:
                 return  # срок сдвинули позже — сработает задача на новый срок
             header.resume_after_quota(now)
-            if phase is TransferStatus.QUEUED:
-                tasks.append((_RUN_TRANSFER, (transfer_id,)))
-            elif phase is TransferStatus.WRITING:
-                tasks.append((_RUN_WRITE, (transfer_id,)))
-            else:
-                positions = await self._transfers.pending_positions(transfer_id)
-                tasks.extend((_RUN_MATCH, (transfer_id, p)) for p in positions)
-                if not positions:
-                    tasks.extend(await self._finish_matching(header, now))
+            tasks = await _phase_tasks(self._transfers, header, phase, now)
             uow.track(header)
             await uow.commit()
         for task, args in tasks:
             await self._task_queue.enqueue(task, *args)
 
-    async def _finish_matching(
-        self, header: Transfer, now: datetime
-    ) -> list[tuple[str, tuple[object, ...]]]:
-        sample = await self._transfers.progress_sample(header.id, recent=0)
-        assert sample is not None
-        next_status = sample.progress.status_after_matching()
-        if next_status is None or not await self._transfers.transition_status(
-            header.id, TransferStatus.RUNNING, next_status
-        ):
-            return []
-        header.finish_matching(sample.progress, now)
-        return [(_RUN_WRITE, (header.id,))] if next_status is TransferStatus.WRITING else []
+
+_Tasks = list[tuple[str, tuple[object, ...]]]
+
+
+async def _phase_tasks(
+    transfers: TransferRepository, header: Transfer, phase: TransferStatus, now: datetime
+) -> _Tasks:
+    """Перенос вернулся с паузы в `phase` — какие задачи поставить заново: QUEUED →
+    run_transfer, RUNNING → run_match по оставшимся PENDING (уже найденное не
+    повторяется), WRITING → run_write. Если пока перенос стоял, дописались последние
+    треки (pending == 0), — сразу переход к REVIEW/WRITING, как в _commit_item_outcome."""
+    if phase is TransferStatus.QUEUED:
+        return [(_RUN_TRANSFER, (header.id,))]
+    if phase is TransferStatus.WRITING:
+        return [(_RUN_WRITE, (header.id,))]
+    positions = await transfers.pending_positions(header.id)
+    if positions:
+        return [(_RUN_MATCH, (header.id, p)) for p in positions]
+    sample = await transfers.progress_sample(header.id, recent=0)
+    assert sample is not None
+    next_status = sample.progress.status_after_matching()
+    if next_status is None or not await transfers.transition_status(
+        header.id, TransferStatus.RUNNING, next_status
+    ):
+        return []
+    header.finish_matching(sample.progress, now)
+    return [(_RUN_WRITE, (header.id,))] if next_status is TransferStatus.WRITING else []
 
 
 async def _load_pending_item(
@@ -713,9 +783,15 @@ class WriteTransferUseCase:
         destination = transfer.destination
         assert isinstance(destination, NewPlaylist)
         title = destination.title
+        part = len(transfer.resolved_targets) + 1
         if part_count > 1:
-            title = f"{title} ({len(transfer.resolved_targets) + 1}/{part_count})"
-        ref = await gateway.create_playlist(title, destination.description)
+            title = f"{title} ({part}/{part_count})"
+        # Ключ идемпотентности части: повтор run_write после потерянного ответа площадки
+        # (браузер закрыли сразу после создания) не создаст второй плейлист там, где
+        # транспорт это умеет (расширение — журнал выполненных записей).
+        ref = await gateway.create_playlist(
+            title, destination.description, request_id=f"{transfer.id}:{part}"
+        )
         transfer.add_resolved_target(ref)
 
 

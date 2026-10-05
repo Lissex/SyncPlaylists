@@ -73,7 +73,9 @@ class FakeMusicPlatformGateway:
     async def is_own_library(self, ref: PlaylistRef) -> bool:
         return False
 
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> PlaylistRef:
         return PlaylistRef(self.platform, f"created-{uuid4().hex[:8]}")
 
     async def add_tracks(

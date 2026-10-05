@@ -146,7 +146,9 @@ class YandexGateway:
 
     # --- запись -----------------------------------------------------------------------
 
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> PlaylistRef:
         playlist = await self._client.users_playlists_create(
             title, visibility="private", user_id=self._uid
         )
