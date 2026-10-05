@@ -210,6 +210,10 @@ class TransferProgressSchema(BaseModel):
     # status=paused_quota: площадка исчерпала квоту, перенос продолжится сам в это время
     # (UTC) — фронт показывает «продолжим в HH:MM».
     resume_at: datetime | None = None
+    # status=paused_client: перенос ждёт браузерное расширение — offline (браузер закрыт),
+    # timeout, no_permission, logged_out, session_mismatch, captcha. Продолжится сам,
+    # когда расширение будет готово.
+    pause_reason: str | None = None
 
     @classmethod
     def from_dto(cls, dto: TransferProgressDto) -> "TransferProgressSchema":
@@ -224,6 +228,7 @@ class TransferProgressSchema(BaseModel):
             failed=dto.failed,
             eta_seconds=dto.eta_seconds,
             resume_at=dto.resume_at,
+            pause_reason=dto.pause_reason,
         )
 
 

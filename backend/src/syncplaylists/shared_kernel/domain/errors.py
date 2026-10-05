@@ -2,6 +2,8 @@
 domain-пакете). Адаптеры переводят в них HTTP-коды и исключения библиотек, чтобы
 use case'ы не знали ни про httpx, ни про yandex-music."""
 
+from enum import StrEnum
+
 from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 
@@ -37,6 +39,27 @@ class PlaylistNotFoundError(PlatformError):
 
 class PlaylistNotWritableError(PlatformError):
     """Плейлист чужой (403 на запись) — аккаунт при этом исправен."""
+
+
+class ExtensionUnavailableReason(StrEnum):
+    """Почему браузерное расширение не может выполнить операцию прямо сейчас."""
+
+    OFFLINE = "offline"  # нет подключённого расширения (браузер закрыт)
+    TIMEOUT = "timeout"  # задача ушла в браузер, ответа не дождались
+    NO_PERMISSION = "no_permission"  # пользователь не дал (или отозвал) доступ к площадке
+    LOGGED_OUT = "logged_out"  # в браузере не выполнен вход на площадку
+    SESSION_MISMATCH = "session_mismatch"  # в браузере другой аккаунт площадки
+    CAPTCHA = "captcha"  # площадка просит пройти проверку — решает человек
+
+
+class ExtensionUnavailableError(PlatformError):
+    """Операцию на площадке выполняет браузерное расширение пользователя (транспорт
+    EXTENSION), а оно сейчас не может. Это не сбой площадки: перенос встаёт на паузу
+    (PAUSED_CLIENT) и продолжится, когда расширение снова будет готово."""
+
+    def __init__(self, platform: Platform, reason: ExtensionUnavailableReason) -> None:
+        super().__init__(platform, f"расширение: {reason.value}")
+        self.reason = reason
 
 
 class PlatformNotSupportedError(Exception):

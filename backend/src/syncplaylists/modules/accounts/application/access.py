@@ -17,7 +17,7 @@ from syncplaylists.shared_kernel.application.ports import (
     PlatformCredentials,
 )
 from syncplaylists.shared_kernel.domain.errors import PlatformAuthError, PlatformError
-from syncplaylists.shared_kernel.domain.value_objects import Platform
+from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,10 @@ class AccountAccessService:
             access = self._to_access(account)
         except AccountNotAvailableError:
             return True  # уже не ACTIVE — для вызывающего это тоже «аккаунт не годен»
+        if access.credentials is None:
+            # Через расширение «токен протух» не бывает: выход из площадки в браузере —
+            # пауза переноса (ExtensionUnavailableError), а не EXPIRED аккаунта.
+            return False
 
         # 401 бывает и разовым (сбой на стороне площадки): прежде чем требовать от
         # пользователя переподключиться, один раз перепроверяем токен через профиль.
@@ -94,6 +98,19 @@ class AccountAccessService:
         return True
 
     def _to_access(self, account: ConnectedAccount) -> AccountAccess:
+        if account.transport is Transport.EXTENSION:
+            try:
+                account.ensure_active()
+            except AccountNotUsableError as exc:
+                raise AccountNotAvailableError(str(exc)) from exc
+            return AccountAccess(
+                account_id=account.id,
+                user_id=account.user_id,
+                platform=account.platform,
+                transport=account.transport,
+                external_user_id=account.external_user_id,
+                credentials=None,
+            )
         try:
             access_token = account.ensure_usable()
         except AccountNotUsableError as exc:

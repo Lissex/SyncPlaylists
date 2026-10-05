@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from datetime import timedelta
 
 import httpx
 from arq.connections import ArqRedis, create_pool
@@ -21,6 +22,10 @@ from syncplaylists.infrastructure.ratelimit.redis_token_bucket import (
     TokenBucketLimits,
 )
 from syncplaylists.infrastructure.security.aes_gcm import AesGcmTokenCipher
+from syncplaylists.integrations.platforms.extension.gateway import (
+    ExtensionGatewayBuilder,
+    ExtensionPlatformTraits,
+)
 from syncplaylists.integrations.platforms.fake.factory import (
     FakeProfileFetcher,
     build_fake_gateway,
@@ -87,6 +92,31 @@ from syncplaylists.modules.catalog.infrastructure.repository import (
     SqlCanonicalTrackRepository,
     SqlPlatformTrackRepository,
 )
+from syncplaylists.modules.extension.application.ports import (
+    AttemptLimiter as ExtensionAttemptLimiter,
+)
+from syncplaylists.modules.extension.application.ports import (
+    ExtensionChannel,
+    ExtensionDeviceRepository,
+    ExtensionHub,
+    PairingStore,
+)
+from syncplaylists.modules.extension.application.use_cases import (
+    AuthenticateDeviceUseCase,
+    ClaimPairingUseCase,
+    ConfirmPairingUseCase,
+    ConnectPlatformViaExtensionUseCase,
+    ListDevicesUseCase,
+    PairingConfig,
+    RevokeDeviceUseCase,
+    StartPairingUseCase,
+)
+from syncplaylists.modules.extension.infrastructure.pairing_store import RedisPairingStore
+from syncplaylists.modules.extension.infrastructure.redis_channel import RedisExtensionChannel
+from syncplaylists.modules.extension.infrastructure.repository import (
+    SqlExtensionDeviceRepository,
+)
+from syncplaylists.modules.extension.presentation.config import ExtensionEndpointConfig
 from syncplaylists.modules.identity.application.ports import (
     AttemptLimiter,
     PasswordHasher,
@@ -121,9 +151,11 @@ from syncplaylists.modules.transfers.application.use_cases import (
     GetTransferProgressUseCase,
     GetTransferUseCase,
     MatchTransferItemUseCase,
+    PauseTransferForClientUseCase,
     PauseTransferForQuotaUseCase,
     ProcessTransferUseCase,
     ResolveUncertainItemUseCase,
+    ResumeClientPausedTransfersUseCase,
     ResumeTransferUseCase,
     StartTransferUseCase,
     SweepStaleTransfersUseCase,
@@ -217,6 +249,20 @@ class RedisProvider(Provider):
     @provide
     def get_event_publisher(self, redis: Redis) -> EventPublisher:
         return RedisEventPublisher(redis)
+
+    @provide
+    def get_extension_channel(self, redis: Redis, settings: Settings) -> RedisExtensionChannel:
+        return RedisExtensionChannel(
+            redis, presence_ttl_seconds=settings.extension.presence_ttl_seconds
+        )
+
+    @provide
+    def get_extension_channel_port(self, channel: RedisExtensionChannel) -> ExtensionChannel:
+        return channel
+
+    @provide
+    def get_extension_hub(self, channel: RedisExtensionChannel) -> ExtensionHub:
+        return channel
 
 
 class GatewayProvider(Provider):
@@ -332,6 +378,7 @@ class GatewayProvider(Provider):
         yandex_clients: YandexClientFactory,
         soundcloud_apis: SoundCloudApiFactory,
         search_cache: TextCache,
+        extension_channel: ExtensionChannel,
     ) -> GatewayFactory:
         yandex = YandexGatewayBuilder(
             yandex_clients, batch_size=settings.platforms.yandex.batch_size
@@ -359,7 +406,19 @@ class GatewayProvider(Provider):
         # Фейк (dev/тесты) перекрывает настоящий адаптер площадки, если указан явно.
         for platform in settings.platforms.fake:
             builders[platform] = build_fake_gateway
-        return PlatformGatewayFactory(builders)
+        # Транспорт EXTENSION: операции выполняет браузер пользователя. Поиск по
+        # публичному каталогу кэшируется так же, как у серверных адаптеров.
+        generic = ExtensionGatewayBuilder(
+            extension_channel,
+            {
+                platform: ExtensionPlatformTraits()
+                for platform in settings.extension.generic_platforms
+            },
+        )
+        extension_builders: dict[Platform, GatewayBuilder] = {
+            platform: cached(generic) for platform in settings.extension.generic_platforms
+        }
+        return PlatformGatewayFactory(builders, extension_builders)
 
     @provide
     def get_profile_registry(
@@ -602,6 +661,79 @@ class AccountsProvider(Provider):
         return CompleteOAuthUseCase(providers, states, config, connect_account)
 
 
+class ExtensionProvider(Provider):
+    @provide(scope=Scope.APP)
+    def get_pairing_config(self, settings: Settings) -> PairingConfig:
+        return PairingConfig(
+            code_ttl_seconds=settings.extension.pairing_code_ttl_seconds,
+            poll_interval_seconds=settings.extension.pairing_poll_interval_seconds,
+        )
+
+    @provide(scope=Scope.APP)
+    def get_endpoint_config(self, settings: Settings) -> ExtensionEndpointConfig:
+        ids = settings.extension.allowed_extension_ids
+        return ExtensionEndpointConfig(
+            allowed_extension_ids=tuple(ids),
+            allow_any_chrome_extension=not ids and settings.env == "dev",
+            heartbeat_seconds=settings.extension.heartbeat_seconds,
+            presence_ttl_seconds=settings.extension.presence_ttl_seconds,
+        )
+
+    @provide(scope=Scope.APP)
+    def get_pairing_store(self, redis: Redis) -> PairingStore:
+        return RedisPairingStore(redis)
+
+    @provide(scope=Scope.APP)
+    def get_attempt_limiter(self, redis: Redis, settings: Settings) -> ExtensionAttemptLimiter:
+        return RedisFixedWindowLimiter(
+            redis,
+            attempts=settings.extension.pairing_rate_limit_attempts,
+            window_seconds=settings.extension.pairing_rate_limit_window_seconds,
+        )
+
+    @provide(scope=Scope.REQUEST)
+    def get_device_repository(self, session: AsyncSession) -> ExtensionDeviceRepository:
+        return SqlExtensionDeviceRepository(session)
+
+    @provide(scope=Scope.REQUEST)
+    def get_start_pairing(self, store: PairingStore, config: PairingConfig) -> StartPairingUseCase:
+        return StartPairingUseCase(store, config)
+
+    @provide(scope=Scope.REQUEST)
+    def get_confirm_pairing(self, store: PairingStore) -> ConfirmPairingUseCase:
+        return ConfirmPairingUseCase(store)
+
+    @provide(scope=Scope.REQUEST)
+    def get_claim_pairing(
+        self, uow: UnitOfWork, store: PairingStore, devices: ExtensionDeviceRepository
+    ) -> ClaimPairingUseCase:
+        return ClaimPairingUseCase(uow, store, devices)
+
+    @provide(scope=Scope.REQUEST)
+    def get_authenticate_device(
+        self, uow: UnitOfWork, devices: ExtensionDeviceRepository, settings: Settings
+    ) -> AuthenticateDeviceUseCase:
+        return AuthenticateDeviceUseCase(
+            uow, devices, timedelta(days=settings.extension.device_token_ttl_days)
+        )
+
+    @provide(scope=Scope.REQUEST)
+    def get_list_devices(self, devices: ExtensionDeviceRepository) -> ListDevicesUseCase:
+        return ListDevicesUseCase(devices)
+
+    @provide(scope=Scope.REQUEST)
+    def get_revoke_device(
+        self, uow: UnitOfWork, devices: ExtensionDeviceRepository, hub: ExtensionHub
+    ) -> RevokeDeviceUseCase:
+        return RevokeDeviceUseCase(uow, devices, hub)
+
+    @provide(scope=Scope.REQUEST)
+    def get_connect_platform(
+        self, connect_account: ConnectAccountUseCase, accounts: AccountAccessProvider
+    ) -> ConnectPlatformViaExtensionUseCase:
+        return ConnectPlatformViaExtensionUseCase(connect_account, accounts)
+
+
 class TransfersProvider(Provider):
     scope = Scope.REQUEST
 
@@ -710,6 +842,18 @@ class TransfersProvider(Provider):
         return PauseTransferForQuotaUseCase(uow, transfers, task_queue)
 
     @provide
+    def get_pause_for_client(
+        self, uow: UnitOfWork, transfers: TransferRepository
+    ) -> PauseTransferForClientUseCase:
+        return PauseTransferForClientUseCase(uow, transfers)
+
+    @provide
+    def get_resume_client_paused(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> ResumeClientPausedTransfersUseCase:
+        return ResumeClientPausedTransfersUseCase(uow, transfers, task_queue)
+
+    @provide
     def get_resume_transfer(
         self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
     ) -> ResumeTransferUseCase:
@@ -739,6 +883,7 @@ def make_container(settings: Settings) -> AsyncContainer:
         SecurityProvider(),
         IdentityProvider(),
         AccountsProvider(),
+        ExtensionProvider(),
         CatalogProvider(),
         MatchingProvider(),
         TransfersProvider(),

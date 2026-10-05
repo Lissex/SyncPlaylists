@@ -175,7 +175,7 @@ class AccountTokens:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._account_id = access.account_id
-        self._credentials = access.credentials
+        self._credentials = access.require_credentials()
         self._endpoint = endpoint
         self._refresher = refresher
         self._refresh_client_id = refresh_client_id

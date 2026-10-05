@@ -114,7 +114,9 @@ class _FlakyCreateGateway(FakeMusicPlatformGateway):
         super().__init__(platform=Platform.SOUNDCLOUD, playlist_capacity=1)
         self.create_attempts = 0
 
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> PlaylistRef:
         self.create_attempts += 1
         if self.create_attempts == 2:
             raise PlatformUnavailableError(Platform.SOUNDCLOUD, "сбой между частями")

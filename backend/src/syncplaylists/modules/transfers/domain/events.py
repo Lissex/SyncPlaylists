@@ -49,6 +49,16 @@ class TransferPausedForQuota(DomainEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class TransferPausedForClient(DomainEvent):
+    """Операцию должно выполнить браузерное расширение, а оно не может (браузер закрыт,
+    нет входа на площадку, капча, ...). Перенос ждёт без срока — продолжится, когда
+    расширение сообщит, что готово. reason — ExtensionUnavailableReason."""
+
+    transfer_id: UUID
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class TransferResumed(DomainEvent):
     transfer_id: UUID
     status: str  # фаза, в которую вернулись: queued | running | writing

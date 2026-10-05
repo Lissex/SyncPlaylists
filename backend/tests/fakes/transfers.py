@@ -5,14 +5,17 @@ from types import TracebackType
 from typing import Any
 from uuid import UUID
 
-from syncplaylists.modules.transfers.application.ports import ProgressSample
+from syncplaylists.modules.transfers.application.ports import ClientPause, ProgressSample
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
     TransferItemStatus,
     TransferProgress,
     TransferStatus,
+    destination_platform,
+    source_platform,
 )
 from syncplaylists.shared_kernel.domain.base import AggregateRoot
+from syncplaylists.shared_kernel.domain.value_objects import Platform
 
 
 class FakeEventPublisher:
@@ -76,6 +79,7 @@ class FakeTransferRepository:
             progress=TransferProgress.from_statuses(i.status for i in stored.items),
             recent_processed_at=tuple(times),
             resume_at=stored.resume_at,
+            pause_reason=stored.pause_reason,
         )
 
     async def get_for_update(self, transfer_id: UUID) -> Transfer | None:
@@ -145,6 +149,37 @@ class FakeTransferRepository:
             return None
         stored.status, stored.paused_from, stored.resume_at = stored.paused_from, None, None
         return stored.status
+
+    async def pause_for_client(self, transfer_id: UUID, reason: str) -> ClientPause | None:
+        stored = self._storage[transfer_id]
+        pausable = (TransferStatus.QUEUED, TransferStatus.RUNNING, TransferStatus.WRITING)
+        if stored.status is TransferStatus.PAUSED_CLIENT:
+            previous = stored.pause_reason
+        elif stored.status in pausable:
+            previous = None
+            stored.paused_from, stored.status = stored.status, TransferStatus.PAUSED_CLIENT
+        else:
+            return None
+        stored.pause_reason = reason
+        return ClientPause(previous)
+
+    async def resume_from_client(self, transfer_id: UUID) -> TransferStatus | None:
+        stored = self._storage[transfer_id]
+        if stored.status is not TransferStatus.PAUSED_CLIENT:
+            return None
+        assert stored.paused_from is not None
+        stored.status, stored.paused_from, stored.pause_reason = stored.paused_from, None, None
+        return stored.status
+
+    async def find_client_paused(self, user_id: UUID, platform: Platform) -> list[UUID]:
+        return [
+            transfer_id
+            for transfer_id, transfer in self._storage.items()
+            if transfer.user_id == user_id
+            and transfer.status is TransferStatus.PAUSED_CLIENT
+            and platform
+            in (source_platform(transfer.source), destination_platform(transfer.destination))
+        ]
 
     async def pending_positions(self, transfer_id: UUID) -> list[int]:
         stored = self._storage[transfer_id]

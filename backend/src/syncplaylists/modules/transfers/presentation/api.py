@@ -30,6 +30,7 @@ from syncplaylists.modules.transfers.presentation.schemas import (
 )
 from syncplaylists.shared_kernel.application.ports import AccountNotAvailableError
 from syncplaylists.shared_kernel.domain.errors import (
+    ExtensionUnavailableError,
     PlatformError,
     PlatformNotSupportedError,
     PlatformRegionError,
@@ -67,6 +68,17 @@ def _link_or_platform_error(exc: Exception) -> HTTPException:
         return HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             {"code": "region_blocked", "message": "Площадка недоступна из региона сервера"},
+        )
+    if isinstance(exc, ExtensionUnavailableError):
+        # Транспорт EXTENSION: проверку (например, права записи в плейлист) делает
+        # браузер пользователя, а он сейчас недоступен — не сбой площадки.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "code": "extension_unavailable",
+                "reason": exc.reason.value,
+                "message": "Расширение в браузере сейчас недоступно",
+            },
         )
     assert isinstance(exc, PlatformError)
     return HTTPException(

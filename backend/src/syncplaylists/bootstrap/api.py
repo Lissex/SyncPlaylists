@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from syncplaylists.bootstrap.container import make_container
 from syncplaylists.infrastructure.config.settings import Settings
 from syncplaylists.modules.accounts.presentation.api import router as accounts_router
+from syncplaylists.modules.extension.presentation.api import router as extension_router
+from syncplaylists.modules.extension.presentation.ws import ws_router as extension_ws_router
 from syncplaylists.modules.identity.presentation.api import router as auth_router
 from syncplaylists.modules.transfers.presentation.api import links_router
 from syncplaylists.modules.transfers.presentation.api import router as transfers_router
@@ -40,6 +42,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(accounts_router)
     app.include_router(transfers_router)
     app.include_router(links_router)
+    app.include_router(extension_router)
+    app.include_router(extension_ws_router)
 
     container = make_container(settings)
     setup_dishka(container, app)
