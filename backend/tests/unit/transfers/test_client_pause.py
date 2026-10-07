@@ -301,9 +301,9 @@ async def test_write_passes_part_request_id_to_create_playlist() -> None:
     transfer.begin_writing(now)
     await env.seed_transfer(transfer)
 
-    await WriteTransferUseCase(env.uow, env.transfers, env.gateway_factory, env.accounts).execute(
-        transfer.id
-    )
+    await WriteTransferUseCase(
+        env.uow, env.transfers, env.gateway_factory, env.accounts, env.task_queue
+    ).execute(transfer.id)
 
     # Ключ — перенос + номер части: повтор run_write даст те же ключи.
     assert target.create_request_ids == [f"{transfer.id}:1", f"{transfer.id}:2"]

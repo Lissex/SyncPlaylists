@@ -70,6 +70,7 @@ class RecordingHub:
         self.completed: list[tuple[UUID, str, dict[str, Any]]] = []
         self.extended: list[tuple[UUID, str]] = []
         self.tasks: list[DeliveredTask] = []
+        self.online: dict[UUID, UUID] = {}  # device_id → user_id
 
     async def publish_presence(
         self,
@@ -94,6 +95,12 @@ class RecordingHub:
     async def complete(self, device_id: UUID, task_id: str, outcome: Mapping[str, Any]) -> bool:
         self.completed.append((device_id, task_id, dict(outcome)))
         return True
+
+    async def mark_online(self, user_id: UUID, device_id: UUID, ttl_seconds: int) -> None:
+        self.online[device_id] = user_id
+
+    async def drop_online(self, device_id: UUID) -> None:
+        self.online.pop(device_id, None)
 
     async def extend(self, device_id: UUID, task_id: str) -> None:
         self.extended.append((device_id, task_id))

@@ -178,6 +178,7 @@ class RevokeDeviceUseCase:
             uow.track(device)
             await uow.commit()
         await self._hub.drop_presence(user_id, device_id, list(Platform))
+        await self._hub.drop_online(device_id)
 
 
 class ConnectPlatformViaExtensionUseCase:

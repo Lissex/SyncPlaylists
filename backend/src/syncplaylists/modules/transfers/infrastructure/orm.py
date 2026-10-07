@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -69,6 +70,10 @@ class TransferOrm(Base):
     paused_from: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # PAUSED_CLIENT: почему ждём браузерное расширение (ExtensionUnavailableReason).
     pause_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Перенос через браузерное расширение (своя очередь задач, запись пачками).
+    via_client: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     # Счётчики items (TransferProgress). run_match меняет их атомарно
     # (`SET matched = matched + 1`), полное сохранение агрегата — пересчитывает из items.

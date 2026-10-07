@@ -7,14 +7,15 @@
     ext:inflight:<device_id>        LIST  task_id, выданные устройству и ещё не завершённые
     ext:res:<task_id>               LIST  результат для ждущего воркера (5 минут)
     ext:done:<user>:<key>           STR   результат записи по ключу идемпотентности (сутки)
+    ext:online:<device_id>          STR   user_id, пока WebSocket устройства жив (TTL presence)
 
 Ключи только с id и хэшами — ни токенов, ни cookie здесь нет и быть не может."""
 
 import json
 import math
 import time
-from collections.abc import Mapping, Sequence
-from typing import Any, Final
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Any, Final, Literal
 from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
@@ -30,6 +31,7 @@ from syncplaylists.modules.extension.application.ports import (
     ExtensionCall,
     PlatformPresence,
 )
+from syncplaylists.modules.extension.domain.errors import DeviceUnavailableError
 from syncplaylists.modules.extension.domain.value_objects import SessionState
 from syncplaylists.shared_kernel.domain.errors import (
     ExtensionUnavailableError,
@@ -71,6 +73,10 @@ def _done_key(user_id: UUID | str, key: str) -> str:
     return f"ext:done:{user_id}:{key}"
 
 
+def _online_key(device_id: UUID) -> str:
+    return f"ext:online:{device_id}"
+
+
 class RedisExtensionChannel:
     """ExtensionChannel (сторона воркера) и ExtensionHub (сторона WebSocket) — одна
     реализация, потому что обе стороны работают с одними и теми же ключами."""
@@ -101,26 +107,27 @@ class RedisExtensionChannel:
                 return dict(json.loads(done))
 
         device_id = await self._pick_device(call)
-        task_id = uuid4().hex
-        timeout = spec.timeout_for(call.items)
-        task = {
-            "device": str(device_id),
-            "user": str(call.user_id),
-            "platform": call.platform.value,
-            "op": wire_op(call.platform, call.operation),
-            "args": json.dumps(dict(call.args)),
-            "deadline": str(time.time() + timeout),
-            "extend": str(spec.timeout_seconds),
-            "key": call.idempotency_key or "",
-        }
-        async with self._redis.pipeline(transaction=True) as pipe:
-            pipe.hset(f"ext:task:{task_id}", mapping=task)
-            pipe.expire(f"ext:task:{task_id}", _TASK_TTL)
-            pipe.rpush(f"ext:q:{device_id}", task_id)
-            pipe.expire(f"ext:q:{device_id}", _TASK_TTL)
-            await pipe.execute()
+        task_id = await self._enqueue(
+            device_id,
+            call.user_id,
+            wire_op(call.platform, call.operation),
+            call.args,
+            timeout=spec.timeout_for(call.items),
+            extend=spec.timeout_seconds,
+            idempotency_key=call.idempotency_key,
+        )
 
-        outcome = await self._wait(call, device_id, task_id)
+        async def still_there() -> bool:
+            return await self._is_present(call.user_id, call.platform, device_id)
+
+        outcome = await self._wait(device_id, task_id, still_there)
+        if outcome == "timeout":
+            raise ExtensionUnavailableError(call.platform, ExtensionUnavailableReason.TIMEOUT)
+        if outcome == "gone":
+            # Браузер закрыли посреди задачи: не ждём таймаута, перенос встанет на
+            # паузу сразу. Если задача всё же выполнится, её результат по ключу
+            # идемпотентности сохранит complete().
+            raise ExtensionUnavailableError(call.platform, ExtensionUnavailableReason.OFFLINE)
         if outcome.get("ok"):
             data = outcome.get("data")
             return dict(data) if isinstance(data, Mapping) else {}
@@ -151,24 +158,86 @@ class RedisExtensionChannel:
                 raise ExtensionUnavailableError(call.platform, reason)
         raise ExtensionUnavailableError(call.platform, ExtensionUnavailableReason.OFFLINE)
 
-    async def _wait(self, call: ExtensionCall, device_id: UUID, task_id: str) -> dict[str, Any]:
+    async def call_device(
+        self,
+        user_id: UUID,
+        device_id: UUID,
+        operation: str,
+        args: Mapping[str, Any],
+        timeout_seconds: float,
+    ) -> Mapping[str, Any]:
+        """Операция на конкретном устройстве, без площадки (диагностика). Возвращает
+        исход как прислало расширение ({ok, data} или {ok: false, error}); бросает
+        DeviceUnavailableError — устройство не на связи или не ответило вовремя."""
+        if not await self._is_online(device_id):
+            raise DeviceUnavailableError("offline")
+        task_id = await self._enqueue(
+            device_id,
+            user_id,
+            operation,
+            args,
+            timeout=timeout_seconds,
+            extend=timeout_seconds,
+            idempotency_key=None,
+        )
+
+        async def still_there() -> bool:
+            return await self._is_online(device_id)
+
+        outcome = await self._wait(device_id, task_id, still_there)
+        if outcome == "timeout":
+            raise DeviceUnavailableError("timeout")
+        if outcome == "gone":
+            raise DeviceUnavailableError("offline")
+        return outcome
+
+    async def _enqueue(
+        self,
+        device_id: UUID,
+        user_id: UUID,
+        op: str,
+        args: Mapping[str, Any],
+        *,
+        timeout: float,
+        extend: float,
+        idempotency_key: str | None,
+    ) -> str:
+        task_id = uuid4().hex
+        task = {
+            "device": str(device_id),
+            "user": str(user_id),
+            "op": op,
+            "args": json.dumps(dict(args)),
+            "deadline": str(time.time() + timeout),
+            "extend": str(extend),
+            "key": idempotency_key or "",
+        }
+        async with self._redis.pipeline(transaction=True) as pipe:
+            pipe.hset(f"ext:task:{task_id}", mapping=task)
+            pipe.expire(f"ext:task:{task_id}", _TASK_TTL)
+            pipe.rpush(f"ext:q:{device_id}", task_id)
+            pipe.expire(f"ext:q:{device_id}", _TASK_TTL)
+            await pipe.execute()
+        return task_id
+
+    async def _wait(
+        self, device_id: UUID, task_id: str, still_there: Callable[[], Awaitable[bool]]
+    ) -> dict[str, Any] | Literal["timeout", "gone"]:
+        """Исход задачи; "timeout" — дедлайн прошёл, "gone" — устройство пропало."""
         result_key = f"ext:res:{task_id}"
         while True:
             deadline_raw = await self._redis.hget(f"ext:task:{task_id}", "deadline")  # type: ignore[misc]
             remaining = float(_text(deadline_raw) or 0) - time.time()
             if remaining <= 0:
                 await self._abandon(device_id, task_id)
-                raise ExtensionUnavailableError(call.platform, ExtensionUnavailableReason.TIMEOUT)
+                return "timeout"
             wait = max(1, math.ceil(min(remaining, _POLL_SECONDS)))
             popped = await self._redis.blpop([result_key], timeout=wait)  # type: ignore[misc]
             if popped is not None:
                 return dict(json.loads(popped[1]))
-            if not await self._is_present(call.user_id, call.platform, device_id):
-                # Браузер закрыли посреди задачи: не ждём таймаута, перенос встанет на
-                # паузу сразу. Если задача всё же выполнится, её результат по ключу
-                # идемпотентности сохранит complete().
+            if not await still_there():
                 await self._abandon(device_id, task_id)
-                raise ExtensionUnavailableError(call.platform, ExtensionUnavailableReason.OFFLINE)
+                return "gone"
 
     async def _abandon(self, device_id: UUID, task_id: str) -> None:
         # Ещё не выданную задачу не выдаём; выданную расширение может доделать — её
@@ -182,7 +251,16 @@ class RedisExtensionChannel:
         entry = json.loads(value)
         return float(entry.get("seen", 0)) >= time.time() - self._presence_ttl
 
+    async def _is_online(self, device_id: UUID) -> bool:
+        return bool(await self._redis.exists(_online_key(device_id)))
+
     # ------------------------------------------------------------------ WebSocket
+
+    async def mark_online(self, user_id: UUID, device_id: UUID, ttl_seconds: int) -> None:
+        await self._redis.set(_online_key(device_id), str(user_id), ex=ttl_seconds)
+
+    async def drop_online(self, device_id: UUID) -> None:
+        await self._redis.delete(_online_key(device_id))
 
     async def publish_presence(
         self,

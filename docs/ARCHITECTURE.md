@@ -193,8 +193,11 @@ SyncPlaylists/
 │     └─ fixtures/dirty_titles.json # реальные «грязные» названия VK/SoundCloud
 ├─ frontend/                        # React + Vite, Feature-Sliced Design
 │  └─ src/{app,pages,widgets,features,entities,shared}/
-└─ extension/                       # WXT
-   └─ entrypoints/{background.ts,content/}  +  platforms/{spotify,vk,yandex}.ts
+└─ extension/                       # WXT + TS, MV3 (Chrome = Яндекс Браузер, Firefox); 4c-2
+   ├─ src/entrypoints/{background.ts,popup/,consent/}   # без content scripts
+   ├─ src/background/                # ws-client, router, registry, journal, outbox, tabs, api
+   ├─ src/{protocol,manifest,platforms}.ts
+   └─ tests/                         # vitest (no-secrets, router, ws-client, tabs, ...)
 ```
 
 ---
@@ -698,6 +701,14 @@ concurrency/rate-limit по площадкам, описанные в табли
 единственный реальный ограничитель сейчас отсутствует (token bucket появится вместе с реальными
 адаптерами, этап 4). Разнесение по отдельным процессам/`queue_name` — вопрос конфигурации
 (`TaskQueue`-порт это абстрагирует), не переписывания кода, когда дойдёт очередь.
+
+**С 4c-2 — две физические очереди (`TaskLane`).** `TaskQueue.enqueue(..., lane=)`: `default`
+(`arq:queue`, сервис `worker`) и `client` (`arq:extension`, сервис `worker-extension`,
+`ExtensionWorkerSettings`) — задачи переносов через браузерное расширение, которые держат
+слот, пока расширение выполняет операцию. Полоса решается один раз при старте переноса
+(`Transfer.via_client`: транспорт источника или назначения — EXTENSION) и действует для всех
+его задач, включая возобновления и sweeper. `QUEUE__MAX_JOBS`/`QUEUE__CLIENT_MAX_JOBS` —
+слоты воркеров.
 
 Плюс cron-таск `sweep_stale_transfers` (каждые 5 минут, `WorkerSettings.cron_jobs`) —
 `SweepStaleTransfersUseCase` подбирает переносы в `QUEUED`/`RUNNING`, которые не обновлялись
@@ -1416,9 +1427,76 @@ dev, e2e и небольших переносов.
 - `external_user_id` аккаунта через расширение сервер проверить не может (токена нет) — подделать
   его может только сам пользователь.
 - Выбор устройства — первое подходящее; балансировки между двумя браузерами одного пользователя нет.
-- Блокирующее ожидание результата занимает слот воркера на время операции (до таймаута); при
-  сотнях одновременных переносов через расширение понадобится отдельная очередь/воркер.
+- ~~Блокирующее ожидание результата занимает слот воркера на время операции (до таймаута); при
+  сотнях одновременных переносов через расширение понадобится отдельная очередь/воркер.~~
+  Закрыт в 4c-2: своя очередь `client` и воркер `worker-extension`, запись пачками.
 - Нет in-process теста WebSocket (покрыт сквозным `make e2e-extension`).
+
+**4c-2 (каркас расширения) — что сделано (2026-10-07)**
+- **Расширение `extension/`** — WXT 0.21 + TS strict, zod, MV3 в обеих сборках (`chrome-mv3` —
+  Chrome и Яндекс Браузер; `firefox-mv3` — Firefox ≥ 128, `world: "MAIN"`). Разрешения:
+  `storage`, `alarms`, `scripting`; host — только API (`WXT_API_BASE`); сайты площадок —
+  `optional_host_permissions` (SoundCloud, Яндекс), выдаются на экране согласия. Без
+  `cookies`/`tabs`/`webRequest`/content scripts (тест `manifest.test.ts`). Без React: popup из
+  трёх экранов на DOM-хелпере (`ui.ts`, только `textContent`).
+- **Popup:** привязка (код + ссылка на страницу подтверждения, опрос токена с интервалом сервера;
+  alarm — если popup закрыли), статус соединения, площадки с переключателями (включение — вкладка
+  `consent.html`: в Firefox popup закрывается на диалоге разрешения), «Отвязать»
+  (`DELETE /extension/me`). Firefox: если host permission к API отозван — кнопка «Разрешить».
+- **Background:** `WsClient` — `hello` с токеном первым сообщением, ping по `heartbeat_seconds`
+  (трафик держит service worker живым, Chrome ≥ 116), backoff 1→60 с ±20 %, 4401 → привязка
+  стирается, 4403 → «сервер не принимает расширение», alarm `ws-keepalive` (30 с) поднимает
+  связь после остановки SW. `TaskRouter` — фиксированный реестр (`registry.ts`): неизвестная
+  операция → `unsupported_op`, аргументы по строгой схеме → `bad_args`, нет разрешения →
+  `no_permission`, журнал write-операций (`storage.local`, сутки) до отправки результата, задачи
+  одной площадки по очереди, `progress` каждые 10 с, обрыв → outbox, досылается после `welcome`.
+  `TabPool` — одна неактивная (без звука) вкладка на площадку, id в `storage.session`,
+  возврат на сайт, если вкладку увели, закрытие через 60 с простоя (alarm).
+- **MAIN world:** `executeScript({world: "MAIN", func, args: [args]})` — статическая функция
+  из бандла и только аргументы операции. Ответ страницы — `{ok, data}` / `{ok: false, code}` с
+  кодом из закрытого списка; `data` проходит `.strict()`-схему операции в background, лишнее
+  поле → `bad_result`, ничего не уходит. Исходящие сообщения — только через строгие схемы
+  (`protocol.ts`). Тест `no-secrets.test.ts`: глубокий обход ключей всех исходящих сообщений
+  (запрещено `/cookie|authorization|token|oauth|password|session/i` вне точного allowlist
+  путей `hello.token`, `platform_state.session`) + «канарейка» (страница отдаёт cookie/токен/
+  заголовки — после прогона WS → роутер ни ключей, ни значения в кадрах нет; проверено
+  мутацией: без проверки схемой тест падает).
+- **Тестовая операция `diagnostics.echo`** (сборка с `WXT_DIAGNOSTICS=true`, сервер с
+  `EXTENSION__DIAGNOSTICS_ENABLED`): `POST /extension/devices/{id}/probe` → задача
+  `probe_extension` в очереди `client` → `RedisExtensionChannel.call_device` (без площадки;
+  онлайн-метка `ext:online:<device>` от `DeviceSession`) → WS → вкладка
+  `GET /extension/diagnostics/page` (origin API — под обязательным host permission) → MAIN world
+  → схема → сервер сверяет `{nonce, page_title, path}` строго → `GET /extension/probes/{id}`.
+- **Подтверждение кода — dev-страница бэкенда** `GET /extension/pair` (+ `pair.js`, CSP
+  `script-src 'self'`), флаг `EXTENSION__DEV_PAGE_ENABLED`: вход/регистрация, ввод кода (не
+  подставляется из URL — защита от фишинга device flow), список устройств, «Отозвать»,
+  «Проверить связь». Почему не PowerShell: device flow по смыслу — подтверждение в браузере, где
+  пользователь вошёл; cookie сессии `HttpOnly; Secure; SameSite=Lax` браузер на `localhost`
+  принимает, а .NET-клиент Secure-cookie по http не шлёт; та же страница даёт отзыв с сайта и
+  пробу. На этапе 5 её заменит фронт (меняется только `WXT_PAIR_URL`).
+- **Бэкенд:** очереди `TaskLane` (раздел 11), `Transfer.via_client` (миграция `c9e4b2a7d815`),
+  **запись через расширение пачками** — `run_write` переноса `via_client` пишет не больше
+  `QUEUE__CLIENT_WRITE_BATCH` (100) треков, отмечает их, коммитит и ставит следующий `run_write`
+  (части плейлистов «1/N» считаются по всем трекам с совпадением — не съезжают между
+  пачками; для медиатеки «новое сверху» порядок пачек тот же обратный); `job_timeout` воркера
+  расширения — 600 с. `DELETE /extension/me` — отвязка самим расширением. **Fail-fast:** при
+  `ENV=prod` `Settings` не создаётся, если `EXTENSION__ALLOWED_EXTENSION_IDS` пуст или включены
+  dev-страница/диагностика. compose: сервис `worker-extension`, общий env — якорь `x-backend-env`
+  (в нём и `ENV`).
+- **Документы:** `docs/EXTENSION_STORE.md` (single purpose, обоснование разрешений, remote code,
+  раскрытие данных CWS/AMO), `docs/EXTENSION_PRIVACY.md` (черновик политики).
+
+**Долги 4c-2**
+- Firefox MV3 background — event page: держит ли его открытый WebSocket живым, проверить вручную;
+  если нет — связь поднимает alarm (до 30 с простоя), presence сервера (60 с) это переживает.
+- Иконок нет; прод-сборка (https API, `WXT_DIAGNOSTICS=false`) и публикация — после 4c-3.
+- Операций площадок нет: `platform_state ok` и `connect_platform` (нужен `whoami` в странице) —
+  4c-3 (SoundCloud), 4c-4 (Яндекс). Сейчас расширение сообщает только `no_permission`.
+- Нет сквозного автотеста настоящего расширения в браузере (Playwright + распакованная сборка);
+  путь проверяется вручную пробой `diagnostics.echo`, протокол — vitest и `make e2e-extension`.
+- `Transfer.via_client` решается на старте: если пользователь переподключит площадку на другой
+  транспорт посреди переноса, задачи останутся в прежней очереди (работать будут — та же логика,
+  другой воркер).
 
 ---
 
@@ -1494,6 +1572,7 @@ dev, e2e и небольших переносов.
 | `s3` | `chrislusf/seaweedfs` (`server -s3`, S3-совместимое хранилище) | default |
 | `api` | `backend/Dockerfile` → uvicorn | `app` |
 | `worker` | тот же образ → `arq ...WorkerSettings` (очереди transfer/match/write) | `app` |
+| `worker-extension` | тот же образ → `arq ...ExtensionWorkerSettings` (очередь `client`: переносы через расширение) | `app` |
 | `worker-recognize` | тот же образ, очередь `recognize`; ffmpeg + chromaprint внутри | `app` |
 | `frontend` | `frontend/Dockerfile` → nginx | `app` |
 | `caddy` | `caddy:2` (только прод) | `prod` |
@@ -1547,7 +1626,8 @@ dev, e2e и небольших переносов.
      Подэтапы: **4c-0 (сделано)** — спайк: запись SoundCloud и поиск/запись Яндекса из контекста
      страницы проходят (11h); 4c-1 — бэкенд (привязка, канал, `PAUSED_CLIENT`, транспорт EXTENSION);
      **4c-1 (сделано)** — детали и долги в 11h.
-     4c-2 — каркас расширения (WXT, Chrome/Яндекс Браузер/Firefox); 4c-3 — SoundCloud;
+     **4c-2 (сделано)** — каркас расширения (WXT, Chrome/Яндекс Браузер/Firefox), очередь
+     `client`, запись пачками, dev-страница привязки, `diagnostics.echo` (11h); 4c-3 — SoundCloud;
      4c-4 — Яндекс; дальше Spotify → VK.
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.

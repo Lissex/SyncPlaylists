@@ -39,6 +39,7 @@ class DeviceSession:
 
     async def start(self) -> None:
         await self._hub.requeue_inflight(self.device_id)
+        await self._hub.mark_online(self.user_id, self.device_id, self._presence_ttl)
 
     async def report(self, presence: PlatformPresence) -> None:
         previous = self._states.get(presence.platform)
@@ -57,6 +58,7 @@ class DeviceSession:
             )
 
     async def heartbeat(self) -> None:
+        await self._hub.mark_online(self.user_id, self.device_id, self._presence_ttl)
         if self._states:
             await self._hub.publish_presence(
                 self.user_id, self.device_id, list(self._states.values()), self._presence_ttl
@@ -72,5 +74,6 @@ class DeviceSession:
         await self._hub.extend(self.device_id, task_id)
 
     async def close(self) -> None:
+        await self._hub.drop_online(self.device_id)
         if self._states:
             await self._hub.drop_presence(self.user_id, self.device_id, list(self._states))

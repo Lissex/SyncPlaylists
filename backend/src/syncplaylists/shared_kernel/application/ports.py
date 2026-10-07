@@ -1,6 +1,7 @@
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from types import TracebackType
 from typing import Any, Protocol
 from uuid import UUID
@@ -36,13 +37,29 @@ class EventPublisher(Protocol):
     async def publish(self, topic: str, payload: Mapping[str, Any]) -> None: ...
 
 
+class TaskLane(StrEnum):
+    """Физическая очередь задачи. CLIENT — задачи, которые ждут браузерное расширение
+    (воркер держит слот, пока расширение выполняет операцию): у них свой воркер со своим
+    max_jobs, чтобы они не занимали слоты переносов, которые идут с сервера."""
+
+    DEFAULT = "default"
+    CLIENT = "client"
+
+
 class TaskQueue(Protocol):
-    async def enqueue(self, task_name: str, *args: Any, **kwargs: Any) -> None: ...
+    async def enqueue(
+        self, task_name: str, *args: Any, lane: TaskLane = TaskLane.DEFAULT
+    ) -> None: ...
 
     # Отложенная задача: выполнится не раньше `when`. `dedupe_key` — одна задача на ключ
     # (повторная постановка с тем же ключом ничего не добавляет).
     async def enqueue_at(
-        self, task_name: str, when: datetime, *args: Any, dedupe_key: str | None = None
+        self,
+        task_name: str,
+        when: datetime,
+        *args: Any,
+        dedupe_key: str | None = None,
+        lane: TaskLane = TaskLane.DEFAULT,
     ) -> None: ...
 
 

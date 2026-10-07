@@ -99,6 +99,9 @@ class Transfer(AggregateRoot):
     paused_from: TransferStatus | None = None
     # PAUSED_CLIENT: почему ждём расширение (ExtensionUnavailableReason).
     pause_reason: str | None = None
+    # Источник или назначение подключены через браузерное расширение: задачи переноса
+    # идут в отдельную очередь, запись — пачками. Решается один раз при старте.
+    via_client: bool = False
     items: list[TransferItem] = field(default_factory=list)
 
     def _ensure_status(self, *allowed: TransferStatus) -> None:

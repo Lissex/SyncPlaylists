@@ -92,14 +92,21 @@ from syncplaylists.modules.catalog.infrastructure.repository import (
     SqlCanonicalTrackRepository,
     SqlPlatformTrackRepository,
 )
+from syncplaylists.modules.extension.application.diagnostics import (
+    GetProbeUseCase,
+    RunProbeUseCase,
+    StartProbeUseCase,
+)
 from syncplaylists.modules.extension.application.ports import (
     AttemptLimiter as ExtensionAttemptLimiter,
 )
 from syncplaylists.modules.extension.application.ports import (
+    DeviceCaller,
     ExtensionChannel,
     ExtensionDeviceRepository,
     ExtensionHub,
     PairingStore,
+    ProbeStore,
 )
 from syncplaylists.modules.extension.application.use_cases import (
     AuthenticateDeviceUseCase,
@@ -112,6 +119,7 @@ from syncplaylists.modules.extension.application.use_cases import (
     StartPairingUseCase,
 )
 from syncplaylists.modules.extension.infrastructure.pairing_store import RedisPairingStore
+from syncplaylists.modules.extension.infrastructure.probe_store import RedisProbeStore
 from syncplaylists.modules.extension.infrastructure.redis_channel import RedisExtensionChannel
 from syncplaylists.modules.extension.infrastructure.repository import (
     SqlExtensionDeviceRepository,
@@ -168,6 +176,7 @@ from syncplaylists.shared_kernel.application.ports import (
     EventPublisher,
     GatewayFactory,
     PlatformRateLimiter,
+    TaskLane,
     TaskQueue,
     UnitOfWork,
 )
@@ -243,8 +252,14 @@ class RedisProvider(Provider):
         return arq_redis  # ArqRedis — подкласс redis.asyncio.Redis, один пул на всё.
 
     @provide
-    def get_task_queue(self, arq_redis: ArqRedis) -> TaskQueue:
-        return ArqTaskQueue(arq_redis)
+    def get_task_queue(self, arq_redis: ArqRedis, settings: Settings) -> TaskQueue:
+        return ArqTaskQueue(
+            arq_redis,
+            {
+                TaskLane.DEFAULT: settings.queue.default_queue_name,
+                TaskLane.CLIENT: settings.queue.client_queue_name,
+            },
+        )
 
     @provide
     def get_event_publisher(self, redis: Redis) -> EventPublisher:
@@ -263,6 +278,14 @@ class RedisProvider(Provider):
     @provide
     def get_extension_hub(self, channel: RedisExtensionChannel) -> ExtensionHub:
         return channel
+
+    @provide
+    def get_device_caller(self, channel: RedisExtensionChannel) -> DeviceCaller:
+        return channel
+
+    @provide
+    def get_probe_store(self, redis: Redis) -> ProbeStore:
+        return RedisProbeStore(redis)
 
 
 class GatewayProvider(Provider):
@@ -722,6 +745,20 @@ class ExtensionProvider(Provider):
         return ListDevicesUseCase(devices)
 
     @provide(scope=Scope.REQUEST)
+    def get_start_probe(
+        self, devices: ExtensionDeviceRepository, store: ProbeStore, task_queue: TaskQueue
+    ) -> StartProbeUseCase:
+        return StartProbeUseCase(devices, store, task_queue)
+
+    @provide(scope=Scope.REQUEST)
+    def get_run_probe(self, caller: DeviceCaller, store: ProbeStore) -> RunProbeUseCase:
+        return RunProbeUseCase(caller, store)
+
+    @provide(scope=Scope.REQUEST)
+    def get_get_probe(self, store: ProbeStore) -> GetProbeUseCase:
+        return GetProbeUseCase(store)
+
+    @provide(scope=Scope.REQUEST)
     def get_revoke_device(
         self, uow: UnitOfWork, devices: ExtensionDeviceRepository, hub: ExtensionHub
     ) -> RevokeDeviceUseCase:
@@ -832,8 +869,17 @@ class TransfersProvider(Provider):
         transfers: TransferRepository,
         gateway_factory: GatewayFactory,
         accounts: AccountAccessProvider,
+        task_queue: TaskQueue,
+        settings: Settings,
     ) -> WriteTransferUseCase:
-        return WriteTransferUseCase(uow, transfers, gateway_factory, accounts)
+        return WriteTransferUseCase(
+            uow,
+            transfers,
+            gateway_factory,
+            accounts,
+            task_queue,
+            client_batch_size=settings.queue.client_write_batch,
+        )
 
     @provide
     def get_pause_for_quota(

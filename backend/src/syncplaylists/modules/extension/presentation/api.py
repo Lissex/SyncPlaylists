@@ -4,6 +4,7 @@ from uuid import UUID
 from dishka.integrations.fastapi import FromDishka, inject
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 
+from syncplaylists.modules.extension.application.dto import DeviceDto
 from syncplaylists.modules.extension.application.ports import AttemptLimiter
 from syncplaylists.modules.extension.application.use_cases import (
     AuthenticateDeviceUseCase,
@@ -110,15 +111,10 @@ async def claim_pairing(
     )
 
 
-@router.get("/me")
-@inject
-async def device_me(
-    authenticate: FromDishka[AuthenticateDeviceUseCase],
-    current_user: FromDishka[GetCurrentUserUseCase],
-    authorization: Annotated[str | None, Header()] = None,
-) -> DeviceMeResponse:
-    """Для расширения: к какому аккаунту SyncPlaylists оно привязано.
-    Authorization: Device <токен устройства>."""
+async def _authenticated_device(
+    authenticate: AuthenticateDeviceUseCase, authorization: str | None
+) -> DeviceDto:
+    """Authorization: Device <токен устройства> → устройство, иначе 401."""
     token = (
         authorization.removeprefix(_DEVICE_SCHEME)
         if authorization and authorization.startswith(_DEVICE_SCHEME)
@@ -127,10 +123,38 @@ async def device_me(
     device = await authenticate.execute(token)
     if device is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Устройство не привязано или отозвано")
+    return device
+
+
+@router.get("/me")
+@inject
+async def device_me(
+    authenticate: FromDishka[AuthenticateDeviceUseCase],
+    current_user: FromDishka[GetCurrentUserUseCase],
+    authorization: Annotated[str | None, Header()] = None,
+) -> DeviceMeResponse:
+    """Для расширения: к какому аккаунту SyncPlaylists оно привязано."""
+    device = await _authenticated_device(authenticate, authorization)
     user = await current_user.execute(device.user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Устройство не привязано или отозвано")
     return DeviceMeResponse(device_id=device.id, user_email=user.email)
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+@inject
+async def unpair_self(
+    authenticate: FromDishka[AuthenticateDeviceUseCase],
+    revoke: FromDishka[RevokeDeviceUseCase],
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Расширение отвязывает себя само (кнопка «Отвязать» в popup) — то же, что отзыв с
+    сайта: токен устройства больше не принимается, WebSocket закроется на следующем ping."""
+    device = await _authenticated_device(authenticate, authorization)
+    try:
+        await revoke.execute(device.user_id, device.id)
+    except DeviceNotFoundError as exc:  # отозвали параллельно — цель достигнута
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Устройство уже отвязано") from exc
 
 
 @router.get("/devices")

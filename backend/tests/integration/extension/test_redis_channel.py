@@ -19,6 +19,7 @@ from syncplaylists.modules.extension.application.ports import (
     PendingPairing,
     PlatformPresence,
 )
+from syncplaylists.modules.extension.domain.errors import DeviceUnavailableError
 from syncplaylists.modules.extension.domain.value_objects import SessionState
 from syncplaylists.modules.extension.infrastructure.pairing_store import RedisPairingStore
 from syncplaylists.modules.extension.infrastructure.redis_channel import RedisExtensionChannel
@@ -316,3 +317,40 @@ async def test_pairing_code_confirms_once(redis: Redis) -> None:
     assert confirmed.user_id == user_id
     assert await store.take("pid-hash") is not None
     assert await store.take("pid-hash") is None
+
+
+async def test_call_device_reaches_online_device(channel: RedisExtensionChannel) -> None:
+    user_id, device_id = uuid4(), uuid4()
+    await channel.mark_online(user_id, device_id, ttl_seconds=60)
+
+    async def browser() -> None:
+        task = await channel.next_task(device_id, wait_seconds=5)
+        assert task is not None
+        assert (task.op, dict(task.args), task.idempotency_key) == (
+            "diagnostics.echo",
+            {"nonce": "n1"},
+            None,
+        )
+        await channel.complete(device_id, task.task_id, {"ok": True, "data": {"nonce": "n1"}})
+
+    served = asyncio.create_task(browser())
+    outcome = await channel.call_device(
+        user_id, device_id, "diagnostics.echo", {"nonce": "n1"}, timeout_seconds=5
+    )
+    await served
+
+    assert outcome == {"ok": True, "data": {"nonce": "n1"}}
+
+
+async def test_call_device_offline_and_timeout(channel: RedisExtensionChannel) -> None:
+    user_id, device_id = uuid4(), uuid4()
+    with pytest.raises(DeviceUnavailableError, match="offline"):
+        await channel.call_device(user_id, device_id, "diagnostics.echo", {}, timeout_seconds=1)
+
+    await channel.mark_online(user_id, device_id, ttl_seconds=60)
+    with pytest.raises(DeviceUnavailableError, match="timeout"):
+        await channel.call_device(user_id, device_id, "diagnostics.echo", {}, timeout_seconds=1)
+
+    await channel.drop_online(device_id)
+    with pytest.raises(DeviceUnavailableError, match="offline"):
+        await channel.call_device(user_id, device_id, "diagnostics.echo", {}, timeout_seconds=1)

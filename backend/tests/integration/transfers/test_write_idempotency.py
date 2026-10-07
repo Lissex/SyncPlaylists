@@ -35,7 +35,12 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     Platform,
     PlaylistRef,
 )
-from tests.fakes import FakeEventPublisher, FakeGatewayFactory, FakeMusicPlatformGateway
+from tests.fakes import (
+    FakeEventPublisher,
+    FakeGatewayFactory,
+    FakeMusicPlatformGateway,
+    FakeTaskQueue,
+)
 from tests.fakes.accounts import FakeAccountAccessProvider
 
 
@@ -85,7 +90,7 @@ async def test_retry_after_failure_reuses_created_playlist(
         async with factory() as db:
             repo = SqlTransferRepository(db, SqlPlatformTrackRepository(db))
             use_case = WriteTransferUseCase(
-                SqlUnitOfWork(db, FakeEventPublisher()), repo, gateways, accounts
+                SqlUnitOfWork(db, FakeEventPublisher()), repo, gateways, accounts, FakeTaskQueue()
             )
             await use_case.execute(transfer.id)
 
@@ -161,7 +166,7 @@ async def test_retry_between_parts_creates_each_part_once(
         async with factory() as db:
             repo = SqlTransferRepository(db, SqlPlatformTrackRepository(db))
             use_case = WriteTransferUseCase(
-                SqlUnitOfWork(db, FakeEventPublisher()), repo, gateways, accounts
+                SqlUnitOfWork(db, FakeEventPublisher()), repo, gateways, accounts, FakeTaskQueue()
             )
             await use_case.execute(transfer.id)
 

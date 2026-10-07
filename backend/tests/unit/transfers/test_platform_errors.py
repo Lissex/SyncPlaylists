@@ -93,7 +93,9 @@ async def _writing_transfer(env: Env, destination: ExistingPlaylist | NewPlaylis
 
 
 def _write_use_case(env: Env) -> WriteTransferUseCase:
-    return WriteTransferUseCase(env.uow, env.transfers, env.gateway_factory, env.accounts)
+    return WriteTransferUseCase(
+        env.uow, env.transfers, env.gateway_factory, env.accounts, env.task_queue
+    )
 
 
 async def _status(env: Env, transfer_id: UUID) -> TransferStatus:

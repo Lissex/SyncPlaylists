@@ -7,6 +7,7 @@ from dishka.integrations.arq import setup_dishka
 
 from syncplaylists.bootstrap.container import make_container
 from syncplaylists.infrastructure.config.settings import Settings
+from syncplaylists.modules.extension.presentation.tasks import probe_extension
 from syncplaylists.modules.transfers.presentation.tasks import (
     RATE_LIMITED_MAX_TRIES,
     resume_client_transfers,
@@ -35,7 +36,10 @@ class WorkerSettings:
         run_write,
         resume_transfer,
         resume_client_transfers,
+        probe_extension,
     )
+    queue_name = settings.queue.default_queue_name
+    max_jobs = settings.queue.max_jobs
     # Каждые 5 минут — порог "застывания" в SweepStaleTransfersUseCase — 10 минут,
     # так что застывший перенос подхватится максимум через ~15 минут после сбоя.
     cron_jobs: ClassVar[list[CronJob]] = [cron(sweep_stale_transfers, minute=set(range(0, 60, 5)))]
@@ -45,4 +49,21 @@ class WorkerSettings:
     redis_settings = ArqRedisSettings.from_dsn(str(settings.redis.dsn))
 
 
-setup_dishka(make_container(settings), WorkerSettings)
+class ExtensionWorkerSettings:
+    """Воркер задач переносов через браузерное расширение (TaskLane.CLIENT, сервис
+    `worker-extension`). Те же функции, своя очередь: задача держит слот, пока расширение
+    выполняет операцию, поэтому слотов больше, а переносы с сервера их не ждут. Запись —
+    пачками (QueueSettings.client_write_batch), job_timeout рассчитан на одну пачку.
+    Sweeper — только в основном воркере (он ставит задачи в нужную очередь сам)."""
+
+    functions = WorkerSettings.functions
+    queue_name = settings.queue.client_queue_name
+    max_jobs = settings.queue.client_max_jobs
+    job_timeout = settings.queue.client_job_timeout_seconds
+    max_tries = RATE_LIMITED_MAX_TRIES
+    redis_settings = ArqRedisSettings.from_dsn(str(settings.redis.dsn))
+
+
+container = make_container(settings)
+setup_dishka(container, WorkerSettings)
+setup_dishka(container, ExtensionWorkerSettings)

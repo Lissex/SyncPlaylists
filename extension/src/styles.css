@@ -1,0 +1,141 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1b1b1f;
+  --muted: #6b6b75;
+  --line: #e4e4ea;
+  --accent: #3b5bdb;
+  --ok: #1a7f37;
+  --warn: #8a4b00;
+  --warn-bg: #fff4e0;
+  --err: #c62828;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c21;
+    --fg: #ececf1;
+    --muted: #a0a0ab;
+    --line: #34343c;
+    --accent: #8ea2ff;
+    --ok: #5bd17a;
+    --warn: #ffcc80;
+    --warn-bg: #3a2c16;
+    --err: #ff8a80;
+  }
+}
+
+body {
+  margin: 0;
+  font:
+    14px/1.45 system-ui,
+    sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+body.popup {
+  width: 340px;
+}
+
+body.page {
+  max-width: 560px;
+  margin: 32px auto;
+  padding: 0 16px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+main {
+  padding: 12px 14px;
+}
+
+.badge {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.badge.online {
+  color: var(--ok);
+}
+
+.badge.offline,
+.badge.rejected {
+  color: var(--err);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.note {
+  color: var(--warn);
+  background: var(--warn-bg);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.error {
+  color: var(--err);
+  font-size: 13px;
+}
+
+.code {
+  font:
+    600 26px/1.2 ui-monospace,
+    monospace;
+  letter-spacing: 2px;
+  text-align: center;
+  margin: 10px 0;
+  user-select: all;
+}
+
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+ul.platforms {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+ul.platforms li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}

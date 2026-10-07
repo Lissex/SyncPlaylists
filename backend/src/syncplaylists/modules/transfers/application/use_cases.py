@@ -35,6 +35,7 @@ from syncplaylists.shared_kernel.application.ports import (
     AccountAccessProvider,
     AccountNotAvailableError,
     GatewayFactory,
+    TaskLane,
     TaskQueue,
     UnitOfWork,
 )
@@ -48,7 +49,12 @@ from syncplaylists.shared_kernel.domain.errors import (
 )
 from syncplaylists.shared_kernel.domain.ports import MusicPlatformGateway
 from syncplaylists.shared_kernel.domain.search import InsertOrder, TrackCandidate
-from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, Platform, PlaylistRef
+from syncplaylists.shared_kernel.domain.value_objects import (
+    ExternalTrackRef,
+    Platform,
+    PlaylistRef,
+    Transport,
+)
 
 _RUN_TRANSFER = "run_transfer"
 _RUN_MATCH = "run_match"
@@ -173,14 +179,19 @@ class StartTransferUseCase:
         # Ранняя проверка: аккаунты источника и назначения есть, свои и активны — иначе
         # AccountNotAvailableError до постановки в очередь, а не FAILED уже в воркере.
         # Сами токены дальше не передаются: воркер резолвит доступ заново по account_id.
-        await _source_access(self._accounts, transfer)
+        source_access = await _source_access(self._accounts, transfer)
         target_access = await _destination_access(self._accounts, transfer)
+        # Через расширение идёт источник или назначение — у переноса своя очередь задач.
+        transfer.via_client = Transport.EXTENSION in (
+            source_access.transport,
+            target_access.transport,
+        )
         if isinstance(destination, ExistingPlaylist):
             await self._ensure_writable(target_access, destination.ref)
         async with self._uow as uow:
             await self._transfers.save(transfer)
             await uow.commit()
-        await self._task_queue.enqueue(_RUN_TRANSFER, transfer.id)
+        await self._task_queue.enqueue(_RUN_TRANSFER, transfer.id, lane=_lane(transfer))
         return TransferDto.from_domain(transfer)
 
     async def _ensure_writable(self, access: AccountAccess, ref: PlaylistRef) -> None:
@@ -261,7 +272,7 @@ class ProcessTransferUseCase:
             await uow.commit()
 
         for position in positions:
-            await self._task_queue.enqueue(_RUN_MATCH, transfer_id, position)
+            await self._task_queue.enqueue(_RUN_MATCH, transfer_id, position, lane=_lane(transfer))
 
     @staticmethod
     async def _read_source(
@@ -373,7 +384,7 @@ class MatchTransferItemUseCase:
             next_step = await _commit_item_outcome(uow, self._transfers, transfer, item)
 
         if next_step is not None:
-            await self._task_queue.enqueue(next_step, transfer_id)
+            await self._task_queue.enqueue(next_step, transfer_id, lane=_lane(transfer))
 
 
 class FailTransferItemUseCase:
@@ -401,7 +412,7 @@ class FailTransferItemUseCase:
             )
 
         if next_step is not None:
-            await self._task_queue.enqueue(next_step, transfer_id)
+            await self._task_queue.enqueue(next_step, transfer_id, lane=_lane(transfer))
 
 
 class FailTransferUseCase:
@@ -530,7 +541,7 @@ class ResumeClientPausedTransfersUseCase:
             uow.track(header)
             await uow.commit()
         for task, args in tasks:
-            await self._task_queue.enqueue(task, *args)
+            await self._task_queue.enqueue(task, *args, lane=_lane(header))
 
 
 class ResumeTransferUseCase:
@@ -558,10 +569,15 @@ class ResumeTransferUseCase:
             uow.track(header)
             await uow.commit()
         for task, args in tasks:
-            await self._task_queue.enqueue(task, *args)
+            await self._task_queue.enqueue(task, *args, lane=_lane(header))
 
 
 _Tasks = list[tuple[str, tuple[object, ...]]]
+
+
+def _lane(transfer: Transfer) -> TaskLane:
+    """Задачи переноса через браузерное расширение — в свою очередь (TaskLane)."""
+    return TaskLane.CLIENT if transfer.via_client else TaskLane.DEFAULT
 
 
 async def _phase_tasks(
@@ -668,7 +684,7 @@ class ResolveUncertainItemUseCase:
             await uow.commit()
 
         if next_step is not None:
-            await self._task_queue.enqueue(next_step, transfer_id)
+            await self._task_queue.enqueue(next_step, transfer_id, lane=_lane(transfer))
 
 
 class WriteTransferUseCase:
@@ -690,13 +706,21 @@ class WriteTransferUseCase:
         transfers: TransferRepository,
         gateway_factory: GatewayFactory,
         accounts: AccountAccessProvider,
+        task_queue: TaskQueue,
+        client_batch_size: int = 100,
     ) -> None:
         self._uow = uow
         self._transfers = transfers
         self._gateway_factory = gateway_factory
         self._accounts = accounts
+        self._task_queue = task_queue
+        # Перенос через расширение пишет пачками: одна задача — не больше стольких треков,
+        # дальше следующая run_write. Задача не держит слот воркера часами, а прогресс
+        # записи сохраняется после каждой пачки.
+        self._client_batch_size = client_batch_size
 
     async def execute(self, transfer_id: UUID) -> None:
+        more = False
         async with self._uow as uow:
             transfer = await self._transfers.get_for_update(transfer_id)
             assert transfer is not None, f"Transfer {transfer_id} не найден"
@@ -722,7 +746,8 @@ class WriteTransferUseCase:
                     if reloaded.status is not TransferStatus.WRITING:
                         return
                     transfer = reloaded
-                await self._write(transfer, gateway, parts)
+                limit = self._client_batch_size if transfer.via_client else None
+                more = await self._write(transfer, gateway, parts, limit)
             except PlatformNotSupportedError:
                 await _fail_transfer(uow, self._transfers, transfer, _PLATFORM_NOT_SUPPORTED)
                 return
@@ -735,39 +760,57 @@ class WriteTransferUseCase:
                 await _fail_transfer(uow, self._transfers, transfer, reason)
                 return
 
-            transfer.complete(datetime.now(UTC))
-            uow.track(transfer)
+            if not more:
+                transfer.complete(datetime.now(UTC))
+                uow.track(transfer)
             await self._transfers.save(transfer)
             await uow.commit()
+        if more:
+            await self._task_queue.enqueue(_RUN_WRITE, transfer_id, lane=_lane(transfer))
 
     async def _write(
         self,
         transfer: Transfer,
         gateway: MusicPlatformGateway,
         parts: list[list[ExternalTrackRef]],
-    ) -> None:
+        limit: int | None,
+    ) -> bool:
+        """Пишет ещё не записанные треки (не больше `limit`, None — все) и отмечает их.
+        True — остались незаписанные (нужна следующая run_write)."""
         destination = transfer.destination
         matched_items = _matched_items(transfer)
+        if (
+            isinstance(destination, LibraryDestination)
+            and gateway.library_insert_order() is InsertOrder.TOP
+        ):
+            # Самый свежий лайк источника должен оказаться сверху и в назначении. Пачки
+            # идут в том же обратном порядке: каждая следующая ложится выше предыдущей.
+            matched_items = list(reversed(matched_items))
+        pending = list(
+            dict.fromkeys(item.match.target_ref for item in matched_items if item.match is not None)
+        )
+        batch = pending if limit is None else pending[:limit]
+        in_batch = set(batch)
         if isinstance(destination, LibraryDestination):
-            if gateway.library_insert_order() is InsertOrder.TOP:
-                # Самый свежий лайк источника должен оказаться сверху и в назначении.
-                matched_items = list(reversed(matched_items))
-            refs = [item.match.target_ref for item in matched_items if item.match is not None]
-            failed_refs = set((await gateway.add_to_library(refs)).failed)
+            failed_refs = set((await gateway.add_to_library(batch)).failed)
         elif isinstance(destination, ExistingPlaylist):
-            refs = [item.match.target_ref for item in matched_items if item.match is not None]
-            failed_refs = set((await gateway.add_tracks(destination.ref, refs)).failed)
+            failed_refs = set((await gateway.add_tracks(destination.ref, batch)).failed)
         else:
             # NewPlaylist: плейлисты созданы и закоммичены отдельным шагом в execute().
             failed_refs = set()
             for playlist_ref, part in zip(transfer.resolved_targets, parts, strict=False):
-                failed_refs.update((await gateway.add_tracks(playlist_ref, part)).failed)
+                chunk = [ref for ref in part if ref in in_batch]
+                if chunk or limit is None:
+                    failed_refs.update((await gateway.add_tracks(playlist_ref, chunk)).failed)
 
         for item in matched_items:
-            if item.match is not None and item.match.target_ref in failed_refs:
+            if item.match is None or item.match.target_ref not in in_batch:
+                continue
+            if item.match.target_ref in failed_refs:
                 transfer.mark_write_failed(item.position)
             else:
                 transfer.mark_added(item.position)
+        return len(batch) < len(pending)
 
     @staticmethod
     def _needs_new_playlist(transfer: Transfer, part_count: int) -> bool:
@@ -795,6 +838,13 @@ class WriteTransferUseCase:
         transfer.add_resolved_target(ref)
 
 
+_WRITABLE_STATUSES = (
+    TransferItemStatus.MATCHED,
+    TransferItemStatus.ADDED,
+    TransferItemStatus.FAILED,
+)
+
+
 def _matched_items(transfer: Transfer) -> list[TransferItem]:
     return [i for i in transfer.items if i.status is TransferItemStatus.MATCHED]
 
@@ -810,7 +860,11 @@ def _playlist_parts(
         return []
     unique: list[ExternalTrackRef] = []
     seen: set[ExternalTrackRef] = set()
-    for item in _matched_items(transfer):
+    # Раскладка по частям — по всем трекам с совпадением, включая уже записанные
+    # прошлыми пачками: иначе части съезжали бы между пачками.
+    for item in transfer.items:
+        if item.status not in _WRITABLE_STATUSES:
+            continue
         if item.match is not None and item.match.target_ref not in seen:
             seen.add(item.match.target_ref)
             unique.append(item.match.target_ref)
@@ -884,8 +938,10 @@ class SweepStaleTransfersUseCase:
             if transfer is None:
                 continue
             if transfer.status is TransferStatus.QUEUED:
-                await self._task_queue.enqueue(_RUN_TRANSFER, transfer_id)
+                await self._task_queue.enqueue(_RUN_TRANSFER, transfer_id, lane=_lane(transfer))
             elif transfer.status is TransferStatus.RUNNING:
                 for item in transfer.items:
                     if item.status is TransferItemStatus.PENDING:
-                        await self._task_queue.enqueue(_RUN_MATCH, transfer_id, item.position)
+                        await self._task_queue.enqueue(
+                            _RUN_MATCH, transfer_id, item.position, lane=_lane(transfer)
+                        )

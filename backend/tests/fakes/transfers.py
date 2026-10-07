@@ -14,6 +14,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     destination_platform,
     source_platform,
 )
+from syncplaylists.shared_kernel.application.ports import TaskLane
 from syncplaylists.shared_kernel.domain.base import AggregateRoot
 from syncplaylists.shared_kernel.domain.value_objects import Platform
 
@@ -29,16 +30,25 @@ class FakeEventPublisher:
 class FakeTaskQueue:
     def __init__(self) -> None:
         self.enqueued: list[tuple[str, tuple[Any, ...]]] = []
+        # Полоса каждой постановки (enqueue и enqueue_at) — по порядку.
+        self.lanes: list[tuple[str, TaskLane]] = []
         # Отложенные: (задача, когда, аргументы); один ключ dedupe — одна задача.
         self.scheduled: list[tuple[str, datetime, tuple[Any, ...]]] = []
         self._dedupe_keys: set[str] = set()
 
-    async def enqueue(self, task_name: str, *args: Any, **kwargs: Any) -> None:
+    async def enqueue(self, task_name: str, *args: Any, lane: TaskLane = TaskLane.DEFAULT) -> None:
         self.enqueued.append((task_name, args))
+        self.lanes.append((task_name, lane))
 
     async def enqueue_at(
-        self, task_name: str, when: datetime, *args: Any, dedupe_key: str | None = None
+        self,
+        task_name: str,
+        when: datetime,
+        *args: Any,
+        dedupe_key: str | None = None,
+        lane: TaskLane = TaskLane.DEFAULT,
     ) -> None:
+        self.lanes.append((task_name, lane))
         if dedupe_key is not None:
             if dedupe_key in self._dedupe_keys:
                 return

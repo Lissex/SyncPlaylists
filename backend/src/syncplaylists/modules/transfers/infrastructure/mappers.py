@@ -254,6 +254,7 @@ async def transfer_to_orm(
         resume_at=transfer.resume_at,
         paused_from=transfer.paused_from.value if transfer.paused_from else None,
         pause_reason=transfer.pause_reason,
+        via_client=transfer.via_client,
         items=items,
         **progress_columns(TransferProgress.from_statuses(i.status for i in transfer.items)),
         **_source_to_columns(transfer.source),
@@ -276,6 +277,7 @@ async def transfer_to_domain(
         resume_at=orm.resume_at,
         paused_from=TransferStatus(orm.paused_from) if orm.paused_from else None,
         pause_reason=orm.pause_reason,
+        via_client=orm.via_client,
         items=items,
     )
 
@@ -292,5 +294,6 @@ def transfer_header_to_domain(orm: TransferOrm) -> Transfer:
         resume_at=orm.resume_at,
         paused_from=TransferStatus(orm.paused_from) if orm.paused_from else None,
         pause_reason=orm.pause_reason,
+        via_client=orm.via_client,
         items=[],
     )
