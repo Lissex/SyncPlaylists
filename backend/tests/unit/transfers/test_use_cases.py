@@ -277,7 +277,9 @@ async def test_write_transfer_adds_matched_items_and_completes() -> None:
     target_gateway = FakeMusicPlatformGateway(platform=Platform.SPOTIFY)
     env.register_gateway(target_gateway)
 
-    use_case = WriteTransferUseCase(env.uow, env.transfers, env.gateway_factory, env.accounts)
+    use_case = WriteTransferUseCase(
+        env.uow, env.transfers, env.gateway_factory, env.accounts, env.task_queue
+    )
     await use_case.execute(transfer.id)
 
     stored = await env.transfers.get(transfer.id)
@@ -311,7 +313,9 @@ async def test_write_transfer_to_library_reverses_order_for_top_insert() -> None
     )
     env.register_gateway(target_gateway)
 
-    use_case = WriteTransferUseCase(env.uow, env.transfers, env.gateway_factory, env.accounts)
+    use_case = WriteTransferUseCase(
+        env.uow, env.transfers, env.gateway_factory, env.accounts, env.task_queue
+    )
     await use_case.execute(transfer.id)
 
     assert target_gateway.added_to_library == [ref_b, ref_a]
@@ -444,9 +448,9 @@ async def test_write_transfer_fails_when_destination_account_disconnected() -> N
     env.register_gateway(target_gateway)
     env.accounts.disconnect(env.spotify.account_id)
 
-    await WriteTransferUseCase(env.uow, env.transfers, env.gateway_factory, env.accounts).execute(
-        transfer.id
-    )
+    await WriteTransferUseCase(
+        env.uow, env.transfers, env.gateway_factory, env.accounts, env.task_queue
+    ).execute(transfer.id)
 
     stored = await env.transfers.get(transfer.id)
     assert stored is not None

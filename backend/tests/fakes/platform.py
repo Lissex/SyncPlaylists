@@ -51,6 +51,7 @@ class FakeMusicPlatformGateway:
         self.playlist_info_calls = 0
         self.is_own_library_calls = 0
         self.created_playlists: list[tuple[str, str | None]] = []
+        self.create_request_ids: list[str | None] = []
         self.added_to_playlist: list[ExternalTrackRef] = []
         self.playlist_contents: dict[PlaylistRef, list[ExternalTrackRef]] = {}
         self.added_to_library: list[ExternalTrackRef] = []
@@ -91,9 +92,12 @@ class FakeMusicPlatformGateway:
         self.is_own_library_calls += 1
         return ref in self._own_library_refs
 
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> PlaylistRef:
         self._maybe_fail("create_playlist")
         self.created_playlists.append((title, description))
+        self.create_request_ids.append(request_id)
         return PlaylistRef(self.platform, f"created-{len(self.created_playlists)}")
 
     async def add_tracks(

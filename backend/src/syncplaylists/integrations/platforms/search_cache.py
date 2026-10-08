@@ -122,8 +122,10 @@ class CachedSearchGateway:
     async def is_own_library(self, ref: PlaylistRef) -> bool:
         return await self._inner.is_own_library(ref)
 
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:
-        return await self._inner.create_playlist(title, description)
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> PlaylistRef:
+        return await self._inner.create_playlist(title, description, request_id=request_id)
 
     async def add_tracks(
         self, playlist: PlaylistRef, tracks: Sequence[ExternalTrackRef]

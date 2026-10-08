@@ -168,7 +168,8 @@ SyncPlaylists/
 │  │  │  ├─ catalog/
 │  │  │  ├─ recognition/
 │  │  │  ├─ accounts/
-│  │  │  └─ identity/
+│  │  │  ├─ identity/
+│  │  │  └─ extension/              # 4c: привязка расширений, канал задач, WebSocket
 │  │  ├─ integrations/              # адаптеры внешних систем (реализуют порты модулей)
 │  │  │  ├─ platforms/
 │  │  │  │  ├─ base.py              # общие хелперы, rate limiter
@@ -192,8 +193,11 @@ SyncPlaylists/
 │     └─ fixtures/dirty_titles.json # реальные «грязные» названия VK/SoundCloud
 ├─ frontend/                        # React + Vite, Feature-Sliced Design
 │  └─ src/{app,pages,widgets,features,entities,shared}/
-└─ extension/                       # WXT
-   └─ entrypoints/{background.ts,content/}  +  platforms/{spotify,vk,yandex}.ts
+└─ extension/                       # WXT + TS, MV3 (Chrome = Яндекс Браузер, Firefox); 4c-2
+   ├─ src/entrypoints/{background.ts,popup/,consent/}   # без content scripts
+   ├─ src/background/                # ws-client, router, registry, journal, outbox, tabs, api
+   ├─ src/{protocol,manifest,platforms}.ts
+   └─ tests/                         # vitest (no-secrets, router, ws-client, tabs, ...)
 ```
 
 ---
@@ -372,7 +376,8 @@ Transfer (root)
  ├─ id, user_id, source: TrackSource, destination: TrackDestination, resolved_targets: tuple[PlaylistRef]
  ├─ status: QUEUED → RUNNING → (PAUSED_CAPTCHA ↔ RUNNING) → REVIEW → WRITING → DONE | FAILED
  │          QUEUED | RUNNING | WRITING ↔ PAUSED_QUOTA (квота площадки, до resume_at; 4b-3)
- ├─ resume_at, paused_from (только в PAUSED_QUOTA)
+ │          QUEUED | RUNNING | WRITING ↔ PAUSED_CLIENT (ждём браузерное расширение, без срока; 4c)
+ ├─ resume_at (PAUSED_QUOTA), paused_from (обе паузы), pause_reason (PAUSED_CLIENT)
  └─ items: list[TransferItem]
        └─ position, source_track: ExternalTrackRef, match: MatchResult | None,
           status: PENDING | MATCHED | UNCERTAIN | NOT_FOUND | ADDED | FAILED, candidates
@@ -472,7 +477,9 @@ class MusicPlatformGateway(Protocol):
     async def search(self, query: TrackQuery, limit: int = 10) -> list[TrackCandidate]: ...
     async def search_by_isrc(self, isrc: ISRC) -> list[TrackCandidate]: ...
     async def get_playlist(self, ref: PlaylistRef) -> PlaylistSnapshot: ...
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef: ...
+    async def create_playlist(self, title: str, description: str | None,
+                              *, request_id: str | None = None) -> PlaylistRef: ...
+    # 4c: request_id — ключ идемпотентности (WriteTransfer: "<transfer_id>:<часть>").
     async def add_tracks(self, playlist: PlaylistRef, tracks: Sequence[ExternalTrackRef]) -> AddResult: ...
     # Не async def: это asynchronous generator, а не корутина, возвращающая итератор —
     # вызывающий код сразу делает `async for ... in gateway.get_library()`, без await
@@ -531,7 +538,8 @@ class PlatformCredentials:           # расшифрованные токены
 class AccountAccess:
     account_id: UUID; user_id: UUID; platform: Platform; transport: Transport
     external_user_id: str                # 4b: проверен через профиль площадки
-    credentials: PlatformCredentials
+    credentials: PlatformCredentials | None   # 4c: None у транспорта EXTENSION
+    def require_credentials(self) -> PlatformCredentials: ...  # серверным адаптерам
 
 class GatewayFactory(Protocol):
     def for_account(self, access: AccountAccess) -> MusicPlatformGateway: ...
@@ -617,7 +625,7 @@ class UnitOfWork(Protocol):
 | Spotify | Client Credentials (официально) | расширение / «свой Client ID» / OAuth dev-mode (≤5 польз.) | нет (DRM) — не нужно, есть ISRC |
 | Яндекс | `yandex-music` | `yandex-music` → расширение | да |
 | VK | токен (`vkpymusic`), пароли не храним | токен → расширение | да |
-| SoundCloud | api-v2 по токену из cookie сайта (UNOFFICIAL, по умолчанию); официальный API — если в Settings есть приложение (Artist Pro) | то же | да |
+| SoundCloud | api-v2 по токену из cookie сайта (UNOFFICIAL, по умолчанию); официальный API — если в Settings есть приложение (Artist Pro) | расширение (4c; v2 с сервера закрыт DataDome) или официальный API | да |
 | YouTube Music | `ytmusicapi` | `ytmusicapi` | да (`yt-dlp`) |
 
 **Браузерное расширение** — отдельный транспорт: бэкенд кладёт задачу
@@ -650,11 +658,15 @@ transfers           id, user_id,
                     new_playlist_title, resolved_target_platform,
                     resolved_target_ids jsonb (4b-2: созданные плейлисты «(1/N)…»),
                     cursor jsonb (для возобновления),
-                    status, total, pending, matched, uncertain, not_found, added, failed
+                    status, resume_at, paused_from, pause_reason (4c),
+                    total, pending, matched, uncertain, not_found, added, failed
                     (счётчики — 11c; recognized — этап 6), created_at, updated_at (NOT NULL)
 transfer_items      id, transfer_id, position, source_pt_id, match_id, status, candidates jsonb,
                     match_restriction (4b-2), processed_at
 artworks            canonical_id, provider, url, width, height, dominant_color, fetched_at
+extension_devices   id, user_id → users ON DELETE CASCADE, name, browser, version,
+                    token_hash UNIQUE (sha256 токена устройства), created_at,
+                    last_seen_at, revoked_at                                   -- 4c
 lyrics_refs         canonical_id, provider, page_url, has_synced, cached_until
                     -- сам текст: только кэш в Redis с TTL, не в Postgres
 cleanup_reports     id, user_id, kind (duplicates|diff|unavailable), payload jsonb, status, created_at
@@ -689,6 +701,14 @@ concurrency/rate-limit по площадкам, описанные в табли
 единственный реальный ограничитель сейчас отсутствует (token bucket появится вместе с реальными
 адаптерами, этап 4). Разнесение по отдельным процессам/`queue_name` — вопрос конфигурации
 (`TaskQueue`-порт это абстрагирует), не переписывания кода, когда дойдёт очередь.
+
+**С 4c-2 — две физические очереди (`TaskLane`).** `TaskQueue.enqueue(..., lane=)`: `default`
+(`arq:queue`, сервис `worker`) и `client` (`arq:extension`, сервис `worker-extension`,
+`ExtensionWorkerSettings`) — задачи переносов через браузерное расширение, которые держат
+слот, пока расширение выполняет операцию. Полоса решается один раз при старте переноса
+(`Transfer.via_client`: транспорт источника или назначения — EXTENSION) и действует для всех
+его задач, включая возобновления и sweeper. `QUEUE__MAX_JOBS`/`QUEUE__CLIENT_MAX_JOBS` —
+слоты воркеров.
 
 Плюс cron-таск `sweep_stale_transfers` (каждые 5 минут, `WorkerSettings.cron_jobs`) —
 `SweepStaleTransfersUseCase` подбирает переносы в `QUEUED`/`RUNNING`, которые не обновлялись
@@ -1217,6 +1237,8 @@ e2e, live-тесты, `/tracks`, лайки, плейлисты. Выводы:
   одного на трек: единственный путь к ускорению в разы. Результат Яндекса прогоняем через
   наш скорер, сомнительное — на ручное подтверждение.
 - Порядок: импорт (если эндпоинт найдётся) → группировка опцией.
+- **Итог (спайк 4c-0, 11h): импорта списком у Яндекса нет** — `music.yandex.ru/import` переносит
+  только из Apple Music и Spotify. Поиск остаётся по одному треку, но из браузера пользователя (4c).
 
 **Долги**
 - Порог 60 с — эвристика: короткие 429 по-прежнему повторяются задачей.
@@ -1285,6 +1307,196 @@ dev, e2e и небольших переносов.
 - *Мусор:* «(полная версия)», хвост `prod. A x B`.
 - На сохранённых кандидатах: uncertain 7 → 5, оставшиеся — та же песня с другой
   длительностью.
+
+### 11h. Этап 4c — расширение: спайк 4c-0 и решения (2026-10-05)
+
+**Спайк: запросы из контекста страницы площадки (DevTools → Console, аккаунт владельца, домашний IP).**
+Это ровно то, что расширение будет делать через `scripting.executeScript({world: "MAIN"})`.
+
+*SoundCloud* (`fetch` к `api-v2.soundcloud.com`, `Authorization: OAuth <cookie oauth_token>` —
+токен читается внутри страницы и её не покидает):
+
+| Операция | Ответ |
+|---|---|
+| `GET me`, `GET search/tracks` | 200 |
+| `PUT` / `DELETE users/:me/track_likes/:id` — 5 + 5 запросов, 1/с | все 200, без капчи |
+| `POST playlists` `{playlist:{title, sharing:"private", tracks:[]}}` (и с треками) | 201 |
+| `PUT playlists/:id` `{playlist:{tracks:[…]}}` | 200, порядок как в запросе |
+| `DELETE playlists/:id` | 204 |
+
+- `fetch` и `XMLHttpRequest` на soundcloud.com **подменены** скриптами сайта (DataDome): запрос из
+  MAIN world идёт через их обёртку и проходит антибот, который с сервера отвечал 403 (11e).
+- Пути и тела совпали с `V2Api` (`integrations/platforms/soundcloud/api.py`) — долг 11e
+  «метод и тело записи live не подтверждены» закрыт.
+- Повторный `POST playlists` создаёт **второй** сет (`sp-spike-1`): создание не идемпотентно →
+  `request_id` + журнал write-операций в расширении (ниже).
+
+*Яндекс* (веб-клиент `music.yandex.ru` — Next.js):
+- Веб ходит в **`api.music.yandex.ru`** — тот же API, что `api.music.yandex.net` у `yandex-music`
+  (ответы с `invocationInfo`/`result`, те же пути: `search?type=track`, `users/{uid}/likes/tracks`,
+  `…/likes/tracks/add-multiple|remove`, `…/playlists/create`, `…/playlists/{kind}/change-relative`
+  с `diff` + `revision`, `…/playlists/{kind}/delete`, `POST tracks`). Маппинг `integrations/platforms/yandex/`
+  переиспользуется.
+- **Авторизация — cookie сессии** (`credentials: "include"`), без `Authorization`. Расширению не нужен
+  ни токен, ни служебные заголовки сайта `x-yandex-music-*`: проверено, что `fetch` только с cookie
+  проходит и чтение, и запись.
+- `fetch` на сайте нативный: антибот Яндекса — на сервере (капча по cookie), не в странице.
+- 10 поисков 1/с + лайк/снятие пачкой + создание приватного плейлиста + `change-relative` (порядок
+  сохранён) + удаление — все 200, без капчи.
+- Импорта списком нет (11f).
+
+**Решения этапа 4c** (детали — в плане этапа; фиксируются здесь по мере реализации):
+- Привязка расширения — как device flow: код показывает расширение, подтверждает залогиненный
+  пользователь на сайте. Токен устройства — sha256 в БД, отзыв с сайта.
+- Канал: WS `/extension/ws` в `api` ↔ Redis Streams ↔ `ExtensionChannel` в воркерах. Таймауты по
+  операциям, `progress` продлевает дедлайн; длинные чтения — постранично (одна задача = одна страница).
+- Браузер закрыт/нет разрешения/вышел из площадки/капча → перенос в **`PAUSED_CLIENT`** (не FAILED),
+  возобновление по событию «расширение снова готово». Повторы без дублей: замена сета целиком,
+  отсев уже лайкнутого, `request_id` у `create_playlist` + журнал write-результатов в `storage.local`.
+- SoundCloud через расширение — **гибрид без токена**: публичные данные сервер читает анонимно (v2,
+  client_id), личное и запись — расширение. Яндекс через расширение — поиск и запись из браузера,
+  общий серверный bucket (4b-5) к транспорту EXTENSION не применяется.
+- Безопасность: обязательный host — только наш API; площадки — `optional_host_permissions` по
+  явному согласию; без `cookies`/`tabs`/`webRequest`; фиксированный реестр операций; в MAIN world —
+  только аргументы операции, результат валидируется схемой в background до отправки; протокол на
+  сервере `extra="forbid"`. Одна фоновая вкладка на площадку, закрывается после задач. Темп записи
+  ≤ 1/с, автоматизацию не скрываем, капчу решает человек.
+- Магазины: single purpose, обоснование каждого разрешения, privacy policy (`docs/EXTENSION_PRIVACY.md`, 4c-2).
+- **Правило: Яндекс через расширение — только `fetch` с cookie сессии вкладки
+  (`credentials: "include"`). Токен Яндекса расширение не читает вообще** (ни из cookie, ни из
+  localStorage, ни из ответов), служебные заголовки сайта `x-yandex-music-*` не подставляет.
+  Спайк показал, что этого достаточно для чтения и записи.
+- **Обязательный тест идемпотентности создания плейлиста**: «задача выполнена в браузере, результат
+  потерян, повтор с тем же `request_id`» → на площадке один плейлист (4c-1 — на фейковом расширении).
+
+**4c-1 (бэкенд) — что сделано**
+- **Контекст `modules/extension`.** `ExtensionDevice` (агрегат; в БД `extension_devices`, только
+  sha256 токена). Привязка — device flow: `POST /extension/pairings` (расширение, без входа; код
+  `XXXX-XXXX` без похожих символов, TTL 5 мин, rate limit на IP) → `POST /extension/pairings/confirm`
+  (сайт, пользователь вошёл; код одноразовый — Lua в Redis, rate limit на пользователя) →
+  `POST /extension/pairings/token` (расширение опрашивает; `pairing_id` — в теле, не в URL; токен
+  отдаётся один раз). `GET /extension/me` (`Authorization: Device <токен>`) — к какому аккаунту
+  привязано; `GET/DELETE /extension/devices` — список и отзыв с сайта. В Redis — только хэши кода
+  и `pairing_id`.
+- **WebSocket `/extension/ws`** (процесс `api`). Origin: `chrome-extension://<id>` из
+  `EXTENSION__ALLOWED_EXTENSION_IDS` (пусто в dev — любой), `moz-extension://*` по схеме, веб-страницы
+  — 4403. Токен — первым сообщением `hello`, не в URL. Сообщения — pydantic `extra="forbid"`:
+  `ping` (перепроверка токена — отзыв действует не позже следующего ping), `platform_state`,
+  `connect_platform` (явное действие пользователя → аккаунт `transport=EXTENSION` без токенов через
+  `ConnectAccountUseCase.connect_via_extension`), `result`, `progress`. Тишина > 3 heartbeat —
+  соединение закрывается.
+- **Канал задач — Redis** (`RedisExtensionChannel`: и `ExtensionChannel` воркера, и `ExtensionHub`
+  WebSocket-а; схема ключей — в модуле). Воркер выбирает устройство по присутствию
+  `ext:presence:<user>:<platform>` (сессия `ok` и тот же `external_user_id`), кладёт задачу в
+  очередь устройства и ждёт `BLPOP`. **Таймауты — по операциям** (`application/operations.py`:
+  чтения 30–60 с, запись + 1,5 с на трек), `progress` отодвигает дедлайн на базовый таймаут
+  операции. Длинные чтения — постранично (`playlist_page`/`library_page`, задача = страница).
+  Причина недоступности по присутствию: нет устройства → `offline`, другой аккаунт площадки →
+  `session_mismatch`, иначе `captcha` / `logged_out` / `no_permission`. Устройство пропало во время
+  задачи → `offline` сразу, не дожидаясь таймаута. Выданные и не завершённые задачи при
+  переподключении возвращаются в очередь; результат принимается только от устройства, которому
+  задача выдана.
+- **Идемпотентность записи.** `create_playlist(request_id=…)` → ключ `create_playlist:<request_id>`.
+  Результат write-операции с ключом сервер хранит сутки (`ext:done:<user>:<key>`) — в том числе
+  досланный расширением после переподключения; повтор с тем же ключом в браузер не уходит. Второй
+  рубеж — журнал write-результатов в `storage.local` расширения. Тест — «результат потерян, повтор
+  с тем же ключом → один плейлист» (`tests/integration/extension/test_redis_channel.py`), оба пути.
+- **`PAUSED_CLIENT`** (миграция `a5c7e2f9b134`: статус и `transfers.pause_reason`).
+  `ExtensionUnavailableError` (shared_kernel, причина `ExtensionUnavailableReason`) в
+  `run_transfer`/`run_match`/`run_write` → `PauseTransferForClientUseCase` (условный UPDATE, как пауза
+  по квоте; фаза в `paused_from`), без повторов и без FAILED. Сигнал «готово»: расширение сообщило
+  `platform_state ok` (новое подключение, вход, капча пройдена, разрешение выдано) → задача
+  `resume_client_transfers(user_id, platform)` (имя — в `shared_kernel/application/tasks.py`) →
+  `ResumeClientPausedTransfersUseCase` возвращает фазу и ставит задачи (общий `_phase_tasks` с
+  возобновлением после квоты). Sweeper `PAUSED_CLIENT` не трогает. API/SSE: `status: "paused_client"`,
+  `pause_reason`. Старт переноса, если проверку делает недоступное расширение, — 409
+  `extension_unavailable`.
+- **Транспорт EXTENSION в `GatewayFactory`**: `PlatformGatewayFactory(builders, extension_builders)` —
+  по транспорту аккаунта. Общий шлюз `integrations/platforms/extension` (`ExtensionGateway`): все
+  операции в браузере, ответы — схемы `extra="forbid"` (`wire.py`), id из ответа принимаются только
+  из запроса. Площадки — `EXTENSION__GENERIC_PLATFORMS` (dev: `["vk"]` для сквозного теста);
+  SoundCloud (4c-3) получит гибридный шлюз. Общий серверный bucket (4b-5) к EXTENSION не применяется.
+- **Тесты.** unit: домен паузы, use cases, задачи, привязка, сессия, шлюз, Origin; integration
+  (testcontainers): канал на Redis (выдача, присутствие, таймаут, progress, повторная выдача, чужой
+  результат, идемпотентность), репозиторий паузы на Postgres, HTTP привязки. Сквозной —
+  `make e2e-extension`: фейковое расширение (`tests/tools/fake_extension.py`) по WebSocket против
+  запущенного приложения, «браузер закрывают» сразу после создания плейлиста → `paused_client` →
+  переподключение → `done`, на площадке один плейлист.
+
+**Долги 4c-1**
+- `external_user_id` аккаунта через расширение сервер проверить не может (токена нет) — подделать
+  его может только сам пользователь.
+- Выбор устройства — первое подходящее; балансировки между двумя браузерами одного пользователя нет.
+- ~~Блокирующее ожидание результата занимает слот воркера на время операции (до таймаута); при
+  сотнях одновременных переносов через расширение понадобится отдельная очередь/воркер.~~
+  Закрыт в 4c-2: своя очередь `client` и воркер `worker-extension`, запись пачками.
+- Нет in-process теста WebSocket (покрыт сквозным `make e2e-extension`).
+
+**4c-2 (каркас расширения) — что сделано (2026-10-07)**
+- **Расширение `extension/`** — WXT 0.21 + TS strict, zod, MV3 в обеих сборках (`chrome-mv3` —
+  Chrome и Яндекс Браузер; `firefox-mv3` — Firefox ≥ 128, `world: "MAIN"`). Разрешения:
+  `storage`, `alarms`, `scripting`; host — только API (`WXT_API_BASE`); сайты площадок —
+  `optional_host_permissions` (SoundCloud, Яндекс), выдаются на экране согласия. Без
+  `cookies`/`tabs`/`webRequest`/content scripts (тест `manifest.test.ts`). Без React: popup из
+  трёх экранов на DOM-хелпере (`ui.ts`, только `textContent`).
+- **Popup:** привязка (код + ссылка на страницу подтверждения, опрос токена с интервалом сервера;
+  alarm — если popup закрыли), статус соединения, площадки с переключателями (включение — вкладка
+  `consent.html`: в Firefox popup закрывается на диалоге разрешения), «Отвязать»
+  (`DELETE /extension/me`). Firefox: если host permission к API отозван — кнопка «Разрешить».
+- **Background:** `WsClient` — `hello` с токеном первым сообщением, ping по `heartbeat_seconds`
+  (трафик держит service worker живым, Chrome ≥ 116), backoff 1→60 с ±20 %, 4401 → привязка
+  стирается, 4403 → «сервер не принимает расширение», alarm `ws-keepalive` (30 с) поднимает
+  связь после остановки SW. `TaskRouter` — фиксированный реестр (`registry.ts`): неизвестная
+  операция → `unsupported_op`, аргументы по строгой схеме → `bad_args`, нет разрешения →
+  `no_permission`, журнал write-операций (`storage.local`, сутки) до отправки результата, задачи
+  одной площадки по очереди, `progress` каждые 10 с, обрыв → outbox, досылается после `welcome`.
+  `TabPool` — одна неактивная (без звука) вкладка на площадку, id в `storage.session`,
+  возврат на сайт, если вкладку увели, закрытие через 60 с простоя (alarm).
+- **MAIN world:** `executeScript({world: "MAIN", func, args: [args]})` — статическая функция
+  из бандла и только аргументы операции. Ответ страницы — `{ok, data}` / `{ok: false, code}` с
+  кодом из закрытого списка; `data` проходит `.strict()`-схему операции в background, лишнее
+  поле → `bad_result`, ничего не уходит. Исходящие сообщения — только через строгие схемы
+  (`protocol.ts`). Тест `no-secrets.test.ts`: глубокий обход ключей всех исходящих сообщений
+  (запрещено `/cookie|authorization|token|oauth|password|session/i` вне точного allowlist
+  путей `hello.token`, `platform_state.session`) + «канарейка» (страница отдаёт cookie/токен/
+  заголовки — после прогона WS → роутер ни ключей, ни значения в кадрах нет; проверено
+  мутацией: без проверки схемой тест падает).
+- **Тестовая операция `diagnostics.echo`** (сборка с `WXT_DIAGNOSTICS=true`, сервер с
+  `EXTENSION__DIAGNOSTICS_ENABLED`): `POST /extension/devices/{id}/probe` → задача
+  `probe_extension` в очереди `client` → `RedisExtensionChannel.call_device` (без площадки;
+  онлайн-метка `ext:online:<device>` от `DeviceSession`) → WS → вкладка
+  `GET /extension/diagnostics/page` (origin API — под обязательным host permission) → MAIN world
+  → схема → сервер сверяет `{nonce, page_title, path}` строго → `GET /extension/probes/{id}`.
+- **Подтверждение кода — dev-страница бэкенда** `GET /extension/pair` (+ `pair.js`, CSP
+  `script-src 'self'`), флаг `EXTENSION__DEV_PAGE_ENABLED`: вход/регистрация, ввод кода (не
+  подставляется из URL — защита от фишинга device flow), список устройств, «Отозвать»,
+  «Проверить связь». Почему не PowerShell: device flow по смыслу — подтверждение в браузере, где
+  пользователь вошёл; cookie сессии `HttpOnly; Secure; SameSite=Lax` браузер на `localhost`
+  принимает, а .NET-клиент Secure-cookie по http не шлёт; та же страница даёт отзыв с сайта и
+  пробу. На этапе 5 её заменит фронт (меняется только `WXT_PAIR_URL`).
+- **Бэкенд:** очереди `TaskLane` (раздел 11), `Transfer.via_client` (миграция `c9e4b2a7d815`),
+  **запись через расширение пачками** — `run_write` переноса `via_client` пишет не больше
+  `QUEUE__CLIENT_WRITE_BATCH` (100) треков, отмечает их, коммитит и ставит следующий `run_write`
+  (части плейлистов «1/N» считаются по всем трекам с совпадением — не съезжают между
+  пачками; для медиатеки «новое сверху» порядок пачек тот же обратный); `job_timeout` воркера
+  расширения — 600 с. `DELETE /extension/me` — отвязка самим расширением. **Fail-fast:** при
+  `ENV=prod` `Settings` не создаётся, если `EXTENSION__ALLOWED_EXTENSION_IDS` пуст или включены
+  dev-страница/диагностика. compose: сервис `worker-extension`, общий env — якорь `x-backend-env`
+  (в нём и `ENV`).
+- **Документы:** `docs/EXTENSION_STORE.md` (single purpose, обоснование разрешений, remote code,
+  раскрытие данных CWS/AMO), `docs/EXTENSION_PRIVACY.md` (черновик политики).
+
+**Долги 4c-2**
+- Firefox MV3 background — event page: держит ли его открытый WebSocket живым, проверить вручную;
+  если нет — связь поднимает alarm (до 30 с простоя), presence сервера (60 с) это переживает.
+- Иконок нет; прод-сборка (https API, `WXT_DIAGNOSTICS=false`) и публикация — после 4c-3.
+- Операций площадок нет: `platform_state ok` и `connect_platform` (нужен `whoami` в странице) —
+  4c-3 (SoundCloud), 4c-4 (Яндекс). Сейчас расширение сообщает только `no_permission`.
+- Нет сквозного автотеста настоящего расширения в браузере (Playwright + распакованная сборка);
+  путь проверяется вручную пробой `diagnostics.echo`, протокол — vitest и `make e2e-extension`.
+- `Transfer.via_client` решается на старте: если пользователь переподключит площадку на другой
+  транспорт посреди переноса, задачи останутся в прежней очереди (работать будут — та же логика,
+  другой воркер).
 
 ---
 
@@ -1360,6 +1572,7 @@ dev, e2e и небольших переносов.
 | `s3` | `chrislusf/seaweedfs` (`server -s3`, S3-совместимое хранилище) | default |
 | `api` | `backend/Dockerfile` → uvicorn | `app` |
 | `worker` | тот же образ → `arq ...WorkerSettings` (очереди transfer/match/write) | `app` |
+| `worker-extension` | тот же образ → `arq ...ExtensionWorkerSettings` (очередь `client`: переносы через расширение) | `app` |
 | `worker-recognize` | тот же образ, очередь `recognize`; ffmpeg + chromaprint внутри | `app` |
 | `frontend` | `frontend/Dockerfile` → nginx | `app` |
 | `caddy` | `caddy:2` (только прод) | `prod` |
@@ -1410,6 +1623,12 @@ dev, e2e и небольших переносов.
      сессии пользователя, где антибот проходит сам браузер. Дальше этим же каналом —
      Spotify и fallback VK/Яндекса (бывший этап 10). Чтение SoundCloud остаётся на v2.
      После 4c — оставшиеся адаптеры 4b (YT Music → VK → Spotify).
+     Подэтапы: **4c-0 (сделано)** — спайк: запись SoundCloud и поиск/запись Яндекса из контекста
+     страницы проходят (11h); 4c-1 — бэкенд (привязка, канал, `PAUSED_CLIENT`, транспорт EXTENSION);
+     **4c-1 (сделано)** — детали и долги в 11h.
+     **4c-2 (сделано)** — каркас расширения (WXT, Chrome/Яндекс Браузер/Firefox), очередь
+     `client`, запись пачками, dev-страница привязки, `diagnostics.echo` (11h); 4c-3 — SoundCloud;
+     4c-4 — Яндекс; дальше Spotify → VK.
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).

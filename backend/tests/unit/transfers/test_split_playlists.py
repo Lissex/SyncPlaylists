@@ -51,7 +51,9 @@ async def _writing_transfer(
 
 
 def _use_case(env: Env) -> WriteTransferUseCase:
-    return WriteTransferUseCase(env.uow, env.transfers, env.gateway_factory, env.accounts)
+    return WriteTransferUseCase(
+        env.uow, env.transfers, env.gateway_factory, env.accounts, env.task_queue
+    )
 
 
 _NEW = NewPlaylist(platform=Platform.SPOTIFY, title="Лайки", description="из VK")

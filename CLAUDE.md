@@ -31,10 +31,11 @@
 - **Docker запускает пользователь вручную.** Claude НЕ выполняет `docker`/`docker compose` (up, down, build, run, prune и т.п.). Вместо этого: пишет готовые команды для PowerShell, просит пользователя запустить их и прислать вывод, затем продолжает по результату. Проверки без Docker (ruff, mypy, unit-тесты, lint-imports) Claude запускает сам.
 - **Инфраструктура только в Docker**: PostgreSQL 17, Redis 7, SeaweedFS (S3). Ничего из этого не ставим на хост.
 - **У каждого приложения свой Dockerfile**: `backend/Dockerfile` (multi-stage на uv; в образе есть
-  ffmpeg и chromaprint (`libchromaprint-tools`)) — один образ для `api`, `worker` и `worker-recognize`;
+  ffmpeg и chromaprint (`libchromaprint-tools`)) — один образ для `api`, `worker`, `worker-extension`
+  и `worker-recognize`;
   `frontend/Dockerfile` (сборка Vite → nginx).
 - **`docker-compose.yml` в корне** описывает сервисы `postgres`, `redis`, `s3`, `api`, `worker`,
-  `worker-recognize`, `frontend`. У каждого есть healthcheck, данные лежат в именованных volumes.
+  `worker-extension`, `worker-recognize`, `frontend`. У каждого есть healthcheck, данные лежат в именованных volumes.
 - **Профили compose**: по умолчанию поднимается только инфраструктура; `--profile app` поднимает всё приложение.
 - **Аудио-инструменты** (ffmpeg, chromaprint, shazamio) запускаем и тестируем **только в контейнере**,
   а не на Windows-хосте.
@@ -53,6 +54,9 @@
 - Логи: `docker compose logs -f api worker`
 - Миграции в контейнере: `docker compose run --rm api alembic upgrade head`
 - Тесты в контейнере (нужно для аудио): `docker compose run --rm api pytest`
+- Сквозной тест расширения (фейковое расширение по WebSocket): `make e2e-extension`
+- Расширение (`extension/`, Node 24 + pnpm, на хосте): `make ext-install`, `make ext-test`
+  (типы + формат + vitest), `make ext-build` / `make ext-build-firefox` → `extension/.output/`
 
 ## Как работаем
 - Работаем по этапам из раздела 14 `docs/ARCHITECTURE.md`, один этап — одна ветка/PR.

@@ -35,7 +35,12 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     Platform,
     PlaylistRef,
 )
-from tests.fakes import FakeEventPublisher, FakeGatewayFactory, FakeMusicPlatformGateway
+from tests.fakes import (
+    FakeEventPublisher,
+    FakeGatewayFactory,
+    FakeMusicPlatformGateway,
+    FakeTaskQueue,
+)
 from tests.fakes.accounts import FakeAccountAccessProvider
 
 
@@ -85,7 +90,7 @@ async def test_retry_after_failure_reuses_created_playlist(
         async with factory() as db:
             repo = SqlTransferRepository(db, SqlPlatformTrackRepository(db))
             use_case = WriteTransferUseCase(
-                SqlUnitOfWork(db, FakeEventPublisher()), repo, gateways, accounts
+                SqlUnitOfWork(db, FakeEventPublisher()), repo, gateways, accounts, FakeTaskQueue()
             )
             await use_case.execute(transfer.id)
 
@@ -114,7 +119,9 @@ class _FlakyCreateGateway(FakeMusicPlatformGateway):
         super().__init__(platform=Platform.SOUNDCLOUD, playlist_capacity=1)
         self.create_attempts = 0
 
-    async def create_playlist(self, title: str, description: str | None) -> PlaylistRef:
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> PlaylistRef:
         self.create_attempts += 1
         if self.create_attempts == 2:
             raise PlatformUnavailableError(Platform.SOUNDCLOUD, "сбой между частями")
@@ -159,7 +166,7 @@ async def test_retry_between_parts_creates_each_part_once(
         async with factory() as db:
             repo = SqlTransferRepository(db, SqlPlatformTrackRepository(db))
             use_case = WriteTransferUseCase(
-                SqlUnitOfWork(db, FakeEventPublisher()), repo, gateways, accounts
+                SqlUnitOfWork(db, FakeEventPublisher()), repo, gateways, accounts, FakeTaskQueue()
             )
             await use_case.execute(transfer.id)
 

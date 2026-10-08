@@ -10,20 +10,28 @@ GatewayBuilder = Callable[[AccountAccess], MusicPlatformGateway]
 
 
 class PlatformGatewayFactory:
-    """shared_kernel.GatewayFactory: площадка → сборщик шлюза. Какие площадки чем
-    обслуживаются (настоящий адаптер или фейк) решает bootstrap/container.py."""
+    """shared_kernel.GatewayFactory: (площадка, транспорт) → сборщик шлюза. Аккаунты с
+    транспортом EXTENSION (запросы из браузера пользователя) обслуживают свои сборщики,
+    остальные — серверные адаптеры. Что чем обслуживается (настоящий адаптер или фейк)
+    решает bootstrap/container.py."""
 
-    def __init__(self, builders: Mapping[Platform, GatewayBuilder]) -> None:
+    def __init__(
+        self,
+        builders: Mapping[Platform, GatewayBuilder],
+        extension_builders: Mapping[Platform, GatewayBuilder] | None = None,
+    ) -> None:
         self._builders = dict(builders)
+        self._extension_builders = dict(extension_builders or {})
 
     def supports(self, platform: Platform) -> bool:
-        return platform in self._builders
+        return platform in self._builders or platform in self._extension_builders
 
     def for_account(self, access: AccountAccess) -> MusicPlatformGateway:
-        builder = self._builders.get(access.platform)
-        # Транспорт «через расширение» появится на этапе 10 — пока его не обслуживает
-        # ни один адаптер.
-        if builder is None or access.transport is Transport.EXTENSION:
+        builders = (
+            self._extension_builders if access.transport is Transport.EXTENSION else self._builders
+        )
+        builder = builders.get(access.platform)
+        if builder is None:
             raise PlatformNotSupportedError(access.platform)
         return builder(access)
 

@@ -91,6 +91,22 @@ class ConnectAccountUseCase:
             credentials=credentials,
         )
 
+    async def connect_via_extension(
+        self, *, user_id: UUID, platform: Platform, external_user_id: str, display_name: str | None
+    ) -> AccountDto:
+        """Подключение аккаунта площадки через браузерное расширение: id и имя аккаунта
+        расширение берёт из сессии площадки в браузере пользователя. Проверить их без
+        токена сервер не может — подделать их может только сам пользователь, и вредит
+        это только ему (ARCHITECTURE.md, 11h). Токенов площадки у нас нет."""
+        return await self.connect_verified(
+            user_id=user_id,
+            platform=platform,
+            transport=Transport.EXTENSION,
+            external_user_id=external_user_id,
+            display_name=display_name,
+            credentials=None,
+        )
+
     async def connect_verified(
         self,
         *,
@@ -99,8 +115,9 @@ class ConnectAccountUseCase:
         transport: Transport,
         external_user_id: str,
         display_name: str | None,
-        credentials: PlatformCredentials,
+        credentials: PlatformCredentials | None,
     ) -> AccountDto:
+        """credentials=None — только для транспорта EXTENSION."""
         now = datetime.now(UTC)
         async with self._uow as uow:
             account = await self._accounts.find_by_external(user_id, platform, external_user_id)
@@ -111,19 +128,19 @@ class ConnectAccountUseCase:
                 raise AccountAlreadyConnectedError(f"На {platform} уже подключён другой аккаунт")
 
             if account is not None:
-                access, refresh = encrypt_credentials(self._cipher, account.id, credentials)
+                access, refresh = self._encrypt(account.id, credentials)
                 account.reconnect(
                     transport=transport,
                     display_name=display_name,
                     access_token=access,
                     refresh_token=refresh,
-                    expires_at=credentials.expires_at,
+                    expires_at=credentials.expires_at if credentials else None,
                     now=now,
                 )
                 await self._accounts.save(account)
             else:
                 account_id = uuid4()
-                access, refresh = encrypt_credentials(self._cipher, account_id, credentials)
+                access, refresh = self._encrypt(account_id, credentials)
                 account = ConnectedAccount.connect(
                     account_id=account_id,
                     user_id=user_id,
@@ -133,13 +150,20 @@ class ConnectAccountUseCase:
                     display_name=display_name,
                     access_token=access,
                     refresh_token=refresh,
-                    expires_at=credentials.expires_at,
+                    expires_at=credentials.expires_at if credentials else None,
                     now=now,
                 )
                 await self._accounts.add(account)
             uow.track(account)
             await uow.commit()
         return AccountDto.from_domain(account)
+
+    def _encrypt(
+        self, account_id: UUID, credentials: PlatformCredentials | None
+    ) -> tuple[EncryptedToken | None, EncryptedToken | None]:
+        if credentials is None:
+            return None, None
+        return encrypt_credentials(self._cipher, account_id, credentials)
 
 
 class DisconnectAccountUseCase:

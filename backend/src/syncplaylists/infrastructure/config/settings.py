@@ -1,7 +1,8 @@
 import base64
 import binascii
+from typing import Self
 
-from pydantic import BaseModel, PostgresDsn, RedisDsn, SecretStr, field_validator
+from pydantic import BaseModel, PostgresDsn, RedisDsn, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from syncplaylists.shared_kernel.domain.value_objects import Platform
@@ -146,6 +147,53 @@ class PlatformsSettings(BaseModel):
     search_cache_ttl_seconds: int = 86400
 
 
+class ExtensionSettings(BaseModel):
+    """Браузерное расширение (этап 4c)."""
+
+    # chrome-extension://<id> опубликованных сборок (Chrome Web Store, Яндекс Браузер).
+    # Пусто — в dev принимается любая распакованная сборка; в проде задать обязательно.
+    allowed_extension_ids: list[str] = []
+    pairing_code_ttl_seconds: int = 300
+    pairing_poll_interval_seconds: int = 3
+    # Привязка: попыток на IP (выдача кода) и на пользователя (ввод кода) в окне.
+    pairing_rate_limit_attempts: int = 10
+    pairing_rate_limit_window_seconds: int = 60
+    device_token_ttl_days: int = 180
+    heartbeat_seconds: int = 20
+    # Расширение без heartbeat дольше этого считается отключённым (браузер закрыт).
+    presence_ttl_seconds: int = 60
+    # Площадки, которые через расширение обслуживает общий шлюз (все операции — в
+    # браузере). dev/тесты: сквозной тест с фейковым расширением.
+    generic_platforms: list[Platform] = []
+    # Временная страница подтверждения кода привязки на бэкенде (/extension/pair) — пока
+    # нет фронта (этап 5). Только dev.
+    dev_page_enabled: bool = False
+    # Тестовая операция diagnostics.echo (проверка пути сервер → расширение → вкладка →
+    # сервер). Только dev.
+    diagnostics_enabled: bool = False
+
+    @field_validator("allowed_extension_ids", mode="before")
+    @classmethod
+    def _blank_is_empty(cls, value: object) -> object:
+        return value or []
+
+
+class QueueSettings(BaseModel):
+    """Очереди ARQ. Задачи переносов через браузерное расширение (TaskLane.CLIENT) —
+    в своей очереди со своим воркером: они держат слот, пока расширение выполняет
+    операцию, и не должны занимать слоты переносов, которые идут с сервера."""
+
+    default_queue_name: str = "arq:queue"  # имя очереди ARQ по умолчанию
+    client_queue_name: str = "arq:extension"
+    max_jobs: int = 10
+    client_max_jobs: int = 50
+    # Самая долгая задача — пачка записи (client_write_batch × 1,5 с + 30 с); с запасом.
+    client_job_timeout_seconds: int = 600
+    # Запись через расширение — пачками: одна задача run_write пишет не больше стольких
+    # треков, отмечает их и ставит следующую.
+    client_write_batch: int = 100
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # ".env" — если команды запускаются из backend/ с собственным .env;
@@ -162,3 +210,22 @@ class Settings(BaseSettings):
     cors: CorsSettings = CorsSettings()
     oauth: OAuthSettings = OAuthSettings()
     platforms: PlatformsSettings = PlatformsSettings()
+    extension: ExtensionSettings = ExtensionSettings()
+    queue: QueueSettings = QueueSettings()
+
+    @model_validator(mode="after")
+    def _prod_safety(self) -> Self:
+        """В проде не запускаемся с dev-настройками расширения: пустой allowlist пустил
+        бы любое chrome-расширение, а dev-страница и диагностика не для публичного сервиса."""
+        if self.env != "prod":
+            return self
+        problems: list[str] = []
+        if not self.extension.allowed_extension_ids:
+            problems.append("EXTENSION__ALLOWED_EXTENSION_IDS пуст")
+        if self.extension.dev_page_enabled:
+            problems.append("EXTENSION__DEV_PAGE_ENABLED=true")
+        if self.extension.diagnostics_enabled:
+            problems.append("EXTENSION__DIAGNOSTICS_ENABLED=true")
+        if problems:
+            raise ValueError("Небезопасные настройки для env=prod: " + "; ".join(problems))
+        return self

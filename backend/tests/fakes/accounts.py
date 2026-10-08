@@ -18,14 +18,24 @@ from syncplaylists.shared_kernel.domain.errors import PlatformAuthError
 from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
 
 
-def make_access(user_id: UUID, platform: Platform, account_id: UUID | None = None) -> AccountAccess:
+def make_access(
+    user_id: UUID,
+    platform: Platform,
+    account_id: UUID | None = None,
+    transport: Transport = Transport.UNOFFICIAL,
+) -> AccountAccess:
     return AccountAccess(
         account_id=account_id or uuid4(),
         user_id=user_id,
         platform=platform,
-        transport=Transport.UNOFFICIAL,
+        transport=transport,
         external_user_id=f"{platform.value}-owner",
-        credentials=PlatformCredentials(access_token=f"token-{platform.value}"),
+        # У транспорта EXTENSION токенов на сервере нет.
+        credentials=(
+            None
+            if transport is Transport.EXTENSION
+            else PlatformCredentials(access_token=f"token-{platform.value}")
+        ),
     )
 
 
@@ -38,8 +48,10 @@ class FakeAccountAccessProvider:
         self.auth_failure_confirms = True
         self.auth_failures: list[UUID] = []
 
-    def connect(self, user_id: UUID, platform: Platform) -> AccountAccess:
-        access = make_access(user_id, platform)
+    def connect(
+        self, user_id: UUID, platform: Platform, transport: Transport = Transport.UNOFFICIAL
+    ) -> AccountAccess:
+        access = make_access(user_id, platform, transport=transport)
         self._accesses[access.account_id] = access
         return access
 
