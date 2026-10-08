@@ -12,8 +12,9 @@ SHELL := powershell.exe
 LINK ?=
 TITLE ?=
 ACCEPT ?= 0
+EMAIL ?=
 
-.PHONY: help up down migrate logs ps e2e e2e-extension test test-integration test-live lint check ext-install ext-build ext-build-firefox ext-test
+.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud test test-integration test-live lint check ext-install ext-build ext-build-firefox ext-test
 
 help: ## Список команд
 	@[Console]::OutputEncoding = [Text.Encoding]::UTF8; Select-String -Path Makefile -Pattern '^([a-z0-9-]+):.*## (.*)$$' | ForEach-Object { '  make {0,-18} {1}' -f $$_.Matches[0].Groups[1].Value, $$_.Matches[0].Groups[2].Value }
@@ -38,6 +39,9 @@ e2e: up migrate ## Ручной e2e Яндекс/SoundCloud → новый пл�
 
 e2e-extension: up migrate ## Сквозной тест расширения: фейковое расширение по WebSocket, браузер «закрывают» посреди записи
 	Set-Location backend; uv run python -m tests.tools.fake_extension e2e --api http://localhost:8000
+
+e2e-soundcloud: ## Ручной e2e 4c-3 (расширение привязано): make e2e-soundcloud EMAIL=... LINK="..." [ACCEPT=1] [TITLE="..."]
+	./scripts/e2e-soundcloud-extension.ps1 -Email '$(EMAIL)' -Link '$(LINK)' -Title '$(TITLE)' $(if $(filter 1,$(ACCEPT)),-AcceptUncertain,)
 
 test: ## Unit-тесты и тесты адаптеров без Docker
 	Set-Location backend; uv run pytest tests/unit tests/integration/platforms

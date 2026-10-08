@@ -93,6 +93,9 @@ class TransferRepository(Protocol):
     # эта площадка.
     async def find_client_paused(self, user_id: UUID, platform: Platform) -> list[UUID]: ...
 
+    # Площадки (источник и назначение) переносов пользователя, ждущих расширение.
+    async def client_paused_platforms(self, user_id: UUID) -> set[Platform]: ...
+
     async def pending_positions(self, transfer_id: UUID) -> list[int]: ...
 
     # Для sweeper-а: переносы на паузе по квоте, срок которых прошёл до `due_before`

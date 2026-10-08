@@ -115,6 +115,7 @@ class RedisExtensionChannel:
             timeout=spec.timeout_for(call.items),
             extend=spec.timeout_seconds,
             idempotency_key=call.idempotency_key,
+            account=call.external_user_id,
         )
 
         async def still_there() -> bool:
@@ -201,6 +202,7 @@ class RedisExtensionChannel:
         timeout: float,
         extend: float,
         idempotency_key: str | None,
+        account: str | None = None,
     ) -> str:
         task_id = uuid4().hex
         task = {
@@ -211,6 +213,7 @@ class RedisExtensionChannel:
             "deadline": str(time.time() + timeout),
             "extend": str(extend),
             "key": idempotency_key or "",
+            "account": account or "",
         }
         async with self._redis.pipeline(transaction=True) as pipe:
             pipe.hset(f"ext:task:{task_id}", mapping=task)
@@ -317,6 +320,7 @@ class RedisExtensionChannel:
                 args=json.loads(task["args"]),
                 deadline=float(task["deadline"]),
                 idempotency_key=task.get("key") or None,
+                account=task.get("account") or None,
             )
         return None
 

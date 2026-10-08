@@ -46,6 +46,7 @@ from syncplaylists.shared_kernel.domain.errors import (
     PlatformRegionError,
     PlaylistNotFoundError,
     PlaylistNotWritableError,
+    WriteRequiresExtensionError,
 )
 from syncplaylists.shared_kernel.domain.ports import MusicPlatformGateway
 from syncplaylists.shared_kernel.domain.search import InsertOrder, TrackCandidate
@@ -148,6 +149,8 @@ async def _terminal_failure_reason(
         return "playlist_not_writable"
     if isinstance(exc, PlatformRegionError):
         return "region_blocked"
+    if isinstance(exc, WriteRequiresExtensionError):
+        return "write_requires_extension"
     return None
 
 
@@ -170,6 +173,7 @@ class StartTransferUseCase:
         self, user_id: UUID, source: TrackSource, destination: TrackDestination
     ) -> TransferDto:
         """Бросает AccountNotAvailableError, PlatformNotSupportedError,
+        WriteRequiresExtensionError (назначение подключено транспортом только для чтения),
         PlaylistNotWritableError/PlaylistNotFoundError (назначение — чужой или
         несуществующий плейлист) и прочие PlatformError."""
         transfer = Transfer(id=uuid4(), user_id=user_id, source=source, destination=destination)
@@ -186,6 +190,9 @@ class StartTransferUseCase:
             source_access.transport,
             target_access.transport,
         )
+        if not self._gateway_factory.can_write(target_access):
+            # SoundCloud по токену: запись закрыта антиботом — только через расширение.
+            raise WriteRequiresExtensionError(target_access.platform)
         if isinstance(destination, ExistingPlaylist):
             await self._ensure_writable(target_access, destination.ref)
         async with self._uow as uow:
@@ -733,6 +740,10 @@ class WriteTransferUseCase:
                 await _fail_transfer(uow, self._transfers, transfer)
                 return
             try:
+                if not self._gateway_factory.can_write(access):
+                    # Аккаунт переподключили на транспорт только для чтения посреди
+                    # переноса — повторы ничего не дадут (антибот), сразу явный отказ.
+                    raise WriteRequiresExtensionError(access.platform)
                 gateway = self._gateway_factory.for_account(access)
                 parts = _playlist_parts(transfer, gateway)
                 while self._needs_new_playlist(transfer, len(parts)):
@@ -872,6 +883,18 @@ def _playlist_parts(
     if capacity is None or len(unique) <= capacity:
         return [unique]
     return [unique[start : start + capacity] for start in range(0, len(unique), capacity)]
+
+
+class ClientPausedPlatformsUseCase:
+    """На каких площадках у пользователя есть переносы, ждущие браузерное расширение.
+    Расширение перепроверяет такие площадки само (вход, капча) — только их и только
+    через уже открытую вкладку (extension.ClientPausedPlatforms)."""
+
+    def __init__(self, transfers: TransferRepository) -> None:
+        self._transfers = transfers
+
+    async def for_user(self, user_id: UUID) -> set[Platform]:
+        return await self._transfers.client_paused_platforms(user_id)
 
 
 class GetTransferUseCase:

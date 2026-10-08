@@ -33,7 +33,12 @@ const welcome = z.strictObject({
   heartbeat_seconds: z.number().int().min(5).max(300),
 });
 
-const pong = z.strictObject({ type: z.literal("pong") });
+// paused_platforms — площадки, на которых у пользователя есть переносы, ждущие
+// расширение: только их расширение перепроверяет само (и только в уже открытой вкладке).
+const pong = z.strictObject({
+  type: z.literal("pong"),
+  paused_platforms: z.array(z.enum(PLATFORM_IDS)).max(10).optional(),
+});
 
 const task = z.strictObject({
   type: z.literal("task"),
@@ -42,6 +47,8 @@ const task = z.strictObject({
   args: z.record(z.string(), z.unknown()),
   deadline: z.number(),
   idempotency_key: z.string().max(200).nullable(),
+  // Аккаунт площадки, для которого задача: расширение сверяет его с сессией сайта.
+  account: z.string().min(1).max(200).nullable().optional(),
 });
 
 const platformConnected = z.strictObject({
@@ -67,6 +74,8 @@ export const incoming = z.discriminatedUnion("type", [
 ]);
 export type IncomingMessage = z.infer<typeof incoming>;
 export type TaskMessage = z.infer<typeof task>;
+export type SessionState = (typeof SESSION_STATES)[number];
+export type PlatformIdWire = (typeof PLATFORM_IDS)[number];
 
 // ------------------------------------------------------------------ расширение → сервер
 

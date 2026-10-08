@@ -62,6 +62,14 @@ class ExtensionUnavailableError(PlatformError):
         self.reason = reason
 
 
+class WriteRequiresExtensionError(PlatformError):
+    """Писать на площадку этим транспортом нельзя (SoundCloud по токену: запись закрыта
+    антиботом, ARCHITECTURE.md 11e) — нужно подключить площадку через расширение."""
+
+    def __init__(self, platform: Platform) -> None:
+        super().__init__(platform, "запись возможна только через расширение")
+
+
 class PlatformNotSupportedError(Exception):
     """Для площадки (или транспорта) ещё нет адаптера."""
 

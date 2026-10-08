@@ -33,8 +33,10 @@ class OperationSpec:
         return self.timeout_seconds + self.per_item_seconds * max(items, 0)
 
 
-# Длинные чтения — постранично: одна задача = одна страница (playlist_page, library_page),
-# чтобы таймаут не рос с размером медиатеки.
+# Длинные чтения — постранично: одна задача = одна страница (playlist_page, library_page,
+# liked_tracks_page, liked_track_ids_page), чтобы таймаут не рос с размером медиатеки.
+# Операции ниже общих — гибридного шлюза SoundCloud (4c-3): личное и запись, публичное
+# сервер читает сам.
 OPERATIONS: Final[Mapping[str, OperationSpec]] = {
     "search": OperationSpec(timeout_seconds=30),
     "search_by_isrc": OperationSpec(timeout_seconds=30),
@@ -45,6 +47,13 @@ OPERATIONS: Final[Mapping[str, OperationSpec]] = {
     "create_playlist": OperationSpec(timeout_seconds=30, write=True),
     "add_tracks": OperationSpec(timeout_seconds=30, per_item_seconds=1.5, write=True),
     "add_to_library": OperationSpec(timeout_seconds=30, per_item_seconds=1.5, write=True),
+    "whoami": OperationSpec(timeout_seconds=30),
+    "liked_tracks_page": OperationSpec(timeout_seconds=60),
+    "liked_track_ids_page": OperationSpec(timeout_seconds=60),
+    "playlist": OperationSpec(timeout_seconds=30),
+    "tracks": OperationSpec(timeout_seconds=30),
+    "like": OperationSpec(timeout_seconds=30, write=True),
+    "set_playlist_tracks": OperationSpec(timeout_seconds=60, write=True),
 }
 
 

@@ -29,7 +29,8 @@ export const PLATFORMS: readonly PlatformInfo[] = [
     title: "Яндекс Музыка",
     origins: ["https://music.yandex.ru/*"],
     tabUrl: "https://music.yandex.ru/",
-    available: true,
+    // Операции Яндекса — этап 4c-4; до них разрешение на сайт не просим.
+    available: false,
   },
   {
     id: "spotify",

@@ -287,6 +287,17 @@ class SqlTransferRepository:
         )
         return list(rows)
 
+    async def client_paused_platforms(self, user_id: UUID) -> set[Platform]:
+        rows = await self._session.execute(
+            select(TransferOrm.source_platform, TransferOrm.target_platform)
+            .where(
+                TransferOrm.user_id == user_id,
+                TransferOrm.status == TransferStatus.PAUSED_CLIENT.value,
+            )
+            .distinct()
+        )
+        return {Platform(value) for row in rows for value in row if value is not None}
+
     async def pending_positions(self, transfer_id: UUID) -> list[int]:
         rows = await self._session.scalars(
             select(TransferItemOrm.position)

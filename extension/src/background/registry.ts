@@ -10,16 +10,20 @@
 // - result — строгая схема ответа: проверяется в background до отправки на сервер,
 //   лишнее поле (cookie, токен из страницы) — ошибка bad_result, ничего не уходит;
 // - write — меняет данные на площадке: результат пишется в журнал по ключу
-//   идемпотентности, повтор задачи с тем же ключом в страницу не уходит.
+//   идемпотентности, повтор задачи с тем же ключом в страницу не уходит;
+// - session — операция площадки со сверкой аккаунта: main получает конверт PageCall
+//   (имя операции, аргументы, ожидаемый аккаунт и способ сверки), а не голые аргументы.
 
 import { z } from "zod";
 
 import { diagnosticsTarget, type TargetInfo } from "../platforms";
+import { soundcloudOperations } from "./soundcloud";
 
 // Что возвращает функция из страницы. Код ошибки — из закрытого списка: текст ошибки
 // страницы (там могут быть персональные данные) не передаётся.
 export const PAGE_ERROR_CODES = [
   "logged_out",
+  "session_mismatch",
   "captcha",
   "not_found",
   "not_writable",
@@ -27,17 +31,42 @@ export const PAGE_ERROR_CODES = [
   "unavailable",
 ] as const;
 export type PageErrorCode = (typeof PAGE_ERROR_CODES)[number];
-export type PageOutcome = { ok: true; data: unknown } | { ok: false; code: PageErrorCode };
+// account — id аккаунта площадки, который страница проверила полным запросом профиля
+// (или нашла вместо ожидаемого при session_mismatch); retry_after — для rate_limited.
+export type PageOutcome =
+  | { ok: true; data: unknown; account?: string }
+  | { ok: false; code: PageErrorCode; account?: string; retry_after?: number; detail?: string };
 
+const accountId = z.string().min(1).max(200);
 export const pageOutcome = z.union([
-  z.strictObject({ ok: z.literal(true), data: z.unknown() }),
-  z.strictObject({ ok: z.literal(false), code: z.enum(PAGE_ERROR_CODES) }),
+  z.strictObject({ ok: z.literal(true), data: z.unknown(), account: accountId.optional() }),
+  z.strictObject({
+    ok: z.literal(false),
+    code: z.enum(PAGE_ERROR_CODES),
+    account: accountId.optional(),
+    retry_after: z.number().positive().max(86400).optional(),
+    // Техническая причина для окна расширения (на сервер не отправляется).
+    detail: z.string().max(200).optional(),
+  }),
 ]);
+
+// Как сверять аккаунт в странице перед операцией: "whoami" — запросом профиля,
+// "cookie" — по id из cookie сессии (без запроса), "none" — не сверять.
+export type AccountCheck = "whoami" | "cookie" | "none";
+
+// Конверт вызова операции площадки в странице (OperationDef.session).
+export interface PageCall {
+  op: string; // имя операции без площадки ("like")
+  args: Record<string, unknown>;
+  account: string | null; // аккаунт площадки задачи; null — не сверять
+  verify: AccountCheck;
+}
 
 export interface OperationDef {
   op: string; // "<площадка>.<операция>", как wire_op на сервере
   target: TargetInfo;
   write: boolean;
+  session?: boolean;
   args: z.ZodType<Record<string, unknown>>;
   result: z.ZodType<Record<string, unknown>>;
   main: (args: never) => PageOutcome | Promise<PageOutcome>;
@@ -81,6 +110,7 @@ export function buildRegistry(options: RegistryOptions): ReadonlyMap<string, Ope
       main: echoInPage,
     });
   }
-  // Операции площадок — этапы 4c-3 (SoundCloud) и 4c-4 (Яндекс).
+  defs.push(...soundcloudOperations());
+  // Яндекс — этап 4c-4.
   return new Map(defs.map((def) => [def.op, def]));
 }

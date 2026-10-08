@@ -7,6 +7,7 @@ import httpx
 
 from syncplaylists.integrations.platforms.soundcloud.api import OfficialApi, SoundCloudApi, V2Api
 from syncplaylists.integrations.platforms.soundcloud.client_id import ClientIdProvider
+from syncplaylists.integrations.platforms.soundcloud.extension_api import ExtensionSoundCloudApi
 from syncplaylists.integrations.platforms.soundcloud.gateway import SoundCloudGateway
 from syncplaylists.integrations.platforms.soundcloud.tokens import (
     AccountTokens,
@@ -20,6 +21,7 @@ from syncplaylists.integrations.platforms.soundcloud.transport import (
     SoundCloudTransport,
 )
 from syncplaylists.modules.accounts.application.ports import OAuthGrant, PlatformProfile
+from syncplaylists.modules.extension.application.ports import ExtensionChannel
 from syncplaylists.shared_kernel.application.ports import (
     AccountAccess,
     CredentialsRefresher,
@@ -83,6 +85,11 @@ class SoundCloudApiFactory:
         tokens = self._tokens(access, None, self._web_client_id)
         return V2Api(self._transport(V2_BASE_URL, self._client_ids, tokens, access.account_id))
 
+    def anonymous(self, account_id: UUID | None = None) -> SoundCloudApi:
+        """api-v2 без токена (client_id веб-клиента) — публичные данные. account_id —
+        только для token bucket: запросы идут от имени переноса этого аккаунта."""
+        return V2Api(self._transport(V2_BASE_URL, self._client_ids, None, account_id))
+
     def for_token(self, token: str, transport: Transport = Transport.UNOFFICIAL) -> SoundCloudApi:
         """Без аккаунта и продления — проверка профиля при подключении."""
         if transport is Transport.OFFICIAL:
@@ -139,6 +146,28 @@ class SoundCloudGatewayBuilder:
     def __call__(self, access: AccountAccess) -> SoundCloudGateway:
         return SoundCloudGateway(
             self._apis.for_account(access),
+            access.external_user_id,
+            tracks_batch_size=self._limits.tracks_batch_size,
+            likes_page_size=self._limits.likes_page_size,
+            playlist_max_tracks=self._limits.playlist_max_tracks,
+        )
+
+
+class SoundCloudExtensionGatewayBuilder:
+    """GatewayBuilder транспорта EXTENSION: тот же SoundCloudGateway, но личное и запись
+    выполняет браузер пользователя, публичное сервер читает анонимно (гибрид, 11h)."""
+
+    def __init__(
+        self, apis: SoundCloudApiFactory, channel: ExtensionChannel, limits: SoundCloudLimits
+    ) -> None:
+        self._apis = apis
+        self._channel = channel
+        self._limits = limits
+
+    def __call__(self, access: AccountAccess) -> SoundCloudGateway:
+        api = ExtensionSoundCloudApi(self._channel, access, self._apis.anonymous(access.account_id))
+        return SoundCloudGateway(
+            api,
             access.external_user_id,
             tracks_batch_size=self._limits.tracks_batch_size,
             likes_page_size=self._limits.likes_page_size,

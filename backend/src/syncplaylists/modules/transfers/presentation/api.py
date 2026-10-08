@@ -37,6 +37,7 @@ from syncplaylists.shared_kernel.domain.errors import (
     PlaylistNotFoundError,
     PlaylistNotWritableError,
     UnsupportedLinkError,
+    WriteRequiresExtensionError,
 )
 
 router = APIRouter(prefix="/transfers", tags=["transfers"])
@@ -63,6 +64,12 @@ def _link_or_platform_error(exc: Exception) -> HTTPException:
     if isinstance(exc, PlaylistNotWritableError):
         return _unprocessable(
             "playlist_not_writable", "Добавлять треки можно только в свой плейлист"
+        )
+    if isinstance(exc, WriteRequiresExtensionError):
+        return _unprocessable(
+            "write_requires_extension",
+            "Писать на эту площадку можно только через браузерное расширение — "
+            "подключите её в расширении",
         )
     if isinstance(exc, PlatformRegionError):
         return HTTPException(

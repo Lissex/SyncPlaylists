@@ -153,7 +153,7 @@ class SoundCloudGateway:
     async def create_playlist(
         self, title: str, description: str | None, *, request_id: str | None = None
     ) -> PlaylistRef:
-        data = await self._api.create_playlist(title, description)
+        data = await self._api.create_playlist(title, description, request_id=request_id)
         secret = data.get("secret_token") or None
         return PlaylistRef(_PLATFORM, SoundCloudPlaylistId.for_created(int(data["id"]), secret))
 

@@ -41,6 +41,7 @@ from syncplaylists.integrations.platforms.soundcloud.client_id import ClientIdPr
 from syncplaylists.integrations.platforms.soundcloud.factory import (
     OfficialApp,
     SoundCloudApiFactory,
+    SoundCloudExtensionGatewayBuilder,
     SoundCloudGatewayBuilder,
     SoundCloudLimits,
     SoundCloudOAuthProvider,
@@ -101,6 +102,7 @@ from syncplaylists.modules.extension.application.ports import (
     AttemptLimiter as ExtensionAttemptLimiter,
 )
 from syncplaylists.modules.extension.application.ports import (
+    ClientPausedPlatforms,
     DeviceCaller,
     ExtensionChannel,
     ExtensionDeviceRepository,
@@ -154,6 +156,7 @@ from syncplaylists.modules.matching.infrastructure.repository import SqlTrackMat
 from syncplaylists.modules.transfers.application.links import ResolvePlaylistLinkUseCase
 from syncplaylists.modules.transfers.application.ports import TransferRepository
 from syncplaylists.modules.transfers.application.use_cases import (
+    ClientPausedPlatformsUseCase,
     FailTransferItemUseCase,
     FailTransferUseCase,
     GetTransferProgressUseCase,
@@ -182,7 +185,7 @@ from syncplaylists.shared_kernel.application.ports import (
 )
 from syncplaylists.shared_kernel.domain.links import LinkResolver
 from syncplaylists.shared_kernel.domain.ports import UrlExpander
-from syncplaylists.shared_kernel.domain.value_objects import Platform
+from syncplaylists.shared_kernel.domain.value_objects import Platform, Transport
 
 
 def _soundcloud_official_app(settings: Settings) -> OfficialApp | None:
@@ -407,14 +410,12 @@ class GatewayProvider(Provider):
             yandex_clients, batch_size=settings.platforms.yandex.batch_size
         )
         soundcloud_settings = settings.platforms.soundcloud
-        soundcloud = SoundCloudGatewayBuilder(
-            soundcloud_apis,
-            SoundCloudLimits(
-                tracks_batch_size=soundcloud_settings.tracks_batch_size,
-                likes_page_size=soundcloud_settings.likes_page_size,
-                playlist_max_tracks=soundcloud_settings.playlist_max_tracks,
-            ),
+        soundcloud_limits = SoundCloudLimits(
+            tracks_batch_size=soundcloud_settings.tracks_batch_size,
+            likes_page_size=soundcloud_settings.likes_page_size,
+            playlist_max_tracks=soundcloud_settings.playlist_max_tracks,
         )
+        soundcloud = SoundCloudGatewayBuilder(soundcloud_apis, soundcloud_limits)
         ttl = settings.platforms.search_cache_ttl_seconds
 
         def cached(builder: GatewayBuilder) -> GatewayBuilder:
@@ -441,7 +442,21 @@ class GatewayProvider(Provider):
         extension_builders: dict[Platform, GatewayBuilder] = {
             platform: cached(generic) for platform in settings.extension.generic_platforms
         }
-        return PlatformGatewayFactory(builders, extension_builders)
+        # SoundCloud через расширение — гибрид: публичное читает сервер, личное и запись —
+        # браузер (4c-3).
+        extension_builders.setdefault(
+            Platform.SOUNDCLOUD,
+            cached(
+                SoundCloudExtensionGatewayBuilder(
+                    soundcloud_apis, extension_channel, soundcloud_limits
+                )
+            ),
+        )
+        # SoundCloud по токену — только чтение: запись закрыта антиботом DataDome (11e).
+        read_only: dict[Platform, frozenset[Transport]] = {}
+        if Platform.SOUNDCLOUD not in settings.platforms.fake:
+            read_only[Platform.SOUNDCLOUD] = frozenset({Transport.UNOFFICIAL})
+        return PlatformGatewayFactory(builders, extension_builders, read_only)
 
     @provide
     def get_profile_registry(
@@ -904,6 +919,11 @@ class TransfersProvider(Provider):
         self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
     ) -> ResumeTransferUseCase:
         return ResumeTransferUseCase(uow, transfers, task_queue)
+
+    @provide
+    def get_client_paused_platforms(self, transfers: TransferRepository) -> ClientPausedPlatforms:
+        # extension (WebSocket) спрашивает transfers через свой порт.
+        return ClientPausedPlatformsUseCase(transfers)
 
     @provide
     def get_get_transfer(self, transfers: TransferRepository) -> GetTransferUseCase:
