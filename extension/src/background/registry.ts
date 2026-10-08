@@ -18,6 +18,7 @@ import { z } from "zod";
 
 import { diagnosticsTarget, type TargetInfo } from "../platforms";
 import { soundcloudOperations } from "./soundcloud";
+import { yandexOperations } from "./yandex";
 
 // Что возвращает функция из страницы. Код ошибки — из закрытого списка: текст ошибки
 // страницы (там могут быть персональные данные) не передаётся.
@@ -29,17 +30,27 @@ export const PAGE_ERROR_CODES = [
   "not_writable",
   "rate_limited",
   "unavailable",
+  // Изменилось с момента чтения (ревизия плейлиста или медиатеки Яндекса) — перечитать.
+  "conflict",
+  // Площадка не приняла запрос (400) — повтор не поможет.
+  "bad_request",
 ] as const;
 export type PageErrorCode = (typeof PAGE_ERROR_CODES)[number];
 // account — id аккаунта площадки, который страница проверила полным запросом профиля
-// (или нашла вместо ожидаемого при session_mismatch); retry_after — для rate_limited.
+// (или нашла вместо ожидаемого при session_mismatch); hint — что сверять в следующий раз
+// без запроса (логин Яндекса из cookie yandex_login); retry_after — для rate_limited.
 export type PageOutcome =
-  | { ok: true; data: unknown; account?: string }
+  | { ok: true; data: unknown; account?: string; hint?: string }
   | { ok: false; code: PageErrorCode; account?: string; retry_after?: number; detail?: string };
 
 const accountId = z.string().min(1).max(200);
 export const pageOutcome = z.union([
-  z.strictObject({ ok: z.literal(true), data: z.unknown(), account: accountId.optional() }),
+  z.strictObject({
+    ok: z.literal(true),
+    data: z.unknown(),
+    account: accountId.optional(),
+    hint: accountId.optional(),
+  }),
   z.strictObject({
     ok: z.literal(false),
     code: z.enum(PAGE_ERROR_CODES),
@@ -60,6 +71,9 @@ export interface PageCall {
   args: Record<string, unknown>;
   account: string | null; // аккаунт площадки задачи; null — не сверять
   verify: AccountCheck;
+  // Подсказка для сверки без запроса: что страница вернула в hint при последней полной
+  // проверке этого аккаунта (Яндекс — логин). Нет — сверка полным запросом.
+  account_hint?: string | null;
 }
 
 export interface OperationDef {
@@ -111,6 +125,6 @@ export function buildRegistry(options: RegistryOptions): ReadonlyMap<string, Ope
     });
   }
   defs.push(...soundcloudOperations());
-  // Яндекс — этап 4c-4.
+  defs.push(...yandexOperations());
   return new Map(defs.map((def) => [def.op, def]));
 }

@@ -5,6 +5,7 @@ from typing import Any, Final
 
 from yandex_music.utils.difference import Difference
 
+from syncplaylists.integrations.platforms.yandex.client import YandexMusicClient
 from syncplaylists.integrations.platforms.yandex.ids import (
     LIKES_PLAYLIST_KIND,
     YandexPlaylistId,
@@ -57,9 +58,9 @@ class _WritablePlaylist:
 
 
 class YandexGateway:
-    """MusicPlatformGateway для Яндекс Музыки поверх yandex-music (ClientAsync) с
-    httpx-транспортом (transport.py). Один инстанс — один аккаунт (uid проверен через
-    профиль при подключении).
+    """MusicPlatformGateway для Яндекс Музыки поверх YandexMusicClient (client.py): по
+    токену — ClientAsync yandex-music с httpx-транспортом (transport.py), через расширение —
+    ExtensionYandexClient. Один инстанс — один аккаунт (uid проверен при подключении).
 
     Особенности Яндекса:
     - ISRC в API нет — search_by_isrc всегда пуст, матчинг идёт по тексту;
@@ -72,7 +73,7 @@ class YandexGateway:
 
     def __init__(
         self,
-        client: Any,
+        client: YandexMusicClient,
         uid: str,
         *,
         batch_size: int = 100,
@@ -149,8 +150,10 @@ class YandexGateway:
     async def create_playlist(
         self, title: str, description: str | None, *, request_id: str | None = None
     ) -> PlaylistRef:
+        # request_id делает создание идемпотентным там, где транспорт это умеет
+        # (расширение: повтор с тем же ключом не создаст второй плейлист).
         playlist = await self._client.users_playlists_create(
-            title, visibility="private", user_id=self._uid
+            title, visibility="private", user_id=self._uid, request_id=request_id
         )
         if description:
             await self._client.users_playlists_description(
@@ -241,10 +244,12 @@ class YandexGateway:
         try:
             if playlist_id.uuid is not None:
                 playlist = await self._client.playlist(playlist_id.uuid)
-            else:
+            elif playlist_id.kind is not None:
                 playlist = await self._client.users_playlists(
                     playlist_id.kind, user_id=playlist_id.owner
                 )
+            else:
+                raise PlaylistNotFoundError(Platform.YANDEX, ref.external_id)
         except YandexForbiddenError as exc:
             # Закрытый чужой плейлист — для читающего его всё равно что нет.
             raise PlaylistNotFoundError(Platform.YANDEX, str(exc)) from exc

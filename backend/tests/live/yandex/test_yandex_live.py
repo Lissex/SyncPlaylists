@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import pytest
 
+from syncplaylists.integrations.platforms.yandex.client import LibraryYandexClient
 from syncplaylists.integrations.platforms.yandex.factory import (
     YandexClientFactory,
     YandexProfileFetcher,
@@ -57,7 +58,11 @@ async def live(token: str, live_http: httpx.AsyncClient) -> _Live:
     clients = YandexClientFactory(live_http, timeout_seconds=20)
     profile = await YandexProfileFetcher(clients).fetch(PlatformCredentials(access_token=token))
     client = clients.client(token)
-    return _Live(YandexGateway(client, profile.external_user_id), client, profile.external_user_id)
+    return _Live(
+        YandexGateway(LibraryYandexClient(client), profile.external_user_id),
+        client,
+        profile.external_user_id,
+    )
 
 
 async def _first_hit(gateway: YandexGateway, query: TrackQuery) -> TrackCandidate:

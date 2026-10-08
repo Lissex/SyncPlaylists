@@ -88,8 +88,10 @@ export class TaskRouter {
   // Задачи одной цели (площадки) — по очереди: одна вкладка, темп записи; разные — параллельно.
   private readonly chains = new Map<string, Promise<void>>();
   private readonly lastWrite = new Map<string, number>();
-  // Аккаунт площадки, проверенный запросом профиля: цель → {id, когда}.
-  private readonly verified = new Map<string, { id: string; at: number }>();
+  // Когда закончилась последняя операция цели (для темпа minIntervalMs).
+  private readonly lastOp = new Map<string, number>();
+  // Аккаунт площадки, проверенный запросом профиля: цель → {id, подсказка, когда}.
+  private readonly verified = new Map<string, { id: string; hint?: string; at: number }>();
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly progressIntervalMs: number;
@@ -111,8 +113,17 @@ export class TaskRouter {
     if (!def) return this.fail(task, new TaskFailure("unsupported_op"));
     const key = def.target.key;
     const previous = this.chains.get(key) ?? Promise.resolve();
+    const received = this.now();
+    // progress — с момента, как задача принята, а не только пока она выполняется: задачи
+    // одной цели идут по очереди (темп площадки), и без этого хвост очереди — например,
+    // поиски матчинга, которых воркер ставит десятки сразу, — сервер счёл бы
+    // зависшими. Каждый progress отодвигает дедлайн задачи на сервере.
+    const timer = setInterval(() => this.deps.sendProgress(task.task_id), this.progressIntervalMs);
     // Сбой одной задачи не должен останавливать очередь цели.
-    const next = previous.catch(() => undefined).then(() => this.run(def, task));
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.run(def, task, received))
+      .finally(() => clearInterval(timer));
     this.chains.set(key, next);
     return next;
   }
@@ -171,14 +182,14 @@ export class TaskRouter {
       console.warn(`probe ${def.op}: данные не по схеме`, data.error.issues);
       return { ok: false, code: "bad_result", detail: "данные профиля не по схеме" };
     }
-    if (outcome.data.account) {
-      this.verified.set(def.target.key, { id: outcome.data.account, at: this.now() });
-    }
+    if (outcome.data.account) this.remember(def.target.key, outcome.data);
     return { ok: true, data: data.data };
   }
 
-  private async run(def: OperationDef, task: TaskMessage): Promise<void> {
-    if (task.deadline * 1000 < this.now()) return; // ответ уже никто не ждёт
+  private async run(def: OperationDef, task: TaskMessage, received: number): Promise<void> {
+    // Пришла уже просроченной — ответ никто не ждёт. Дальше срок задачи считается с начала
+    // выполнения: пока она ждала в очереди цели (и темпа), сервер продлевал его по progress.
+    if (task.deadline * 1000 < received) return;
     const args = def.args.safeParse(task.args);
     if (!args.success) return this.fail(task, new TaskFailure("bad_args"));
 
@@ -191,25 +202,45 @@ export class TaskRouter {
       return this.fail(task, new TaskFailure("no_permission"));
     }
 
-    const timer = setInterval(() => this.deps.sendProgress(task.task_id), this.progressIntervalMs);
     try {
-      if (def.write) await this.pace(def.target.key);
-      const data = await this.execute(def, args.data, task);
+      await this.pace(def);
+      const deadline = task.deadline * 1000 + (this.now() - received);
+      const data = await this.execute(def, args.data, task, deadline);
       if (key) await this.deps.journal.put(key, def.op, data); // до отправки результата
       await this.succeed(task, data);
     } catch (error) {
       await this.fail(task, error instanceof TaskFailure ? error : new TaskFailure("unavailable"));
     } finally {
-      clearInterval(timer);
       if (def.write) this.lastWrite.set(def.target.key, this.now());
+      this.lastOp.set(def.target.key, this.now());
     }
   }
 
-  private async pace(target: string): Promise<void> {
-    const last = this.lastWrite.get(target);
-    if (last === undefined) return;
-    const wait = last + this.minWriteIntervalMs - this.now();
+  // Запись — не чаще minWriteIntervalMs; у цели с minIntervalMs (Яндекс) — и любая
+  // операция не чаще него.
+  private async pace(def: OperationDef): Promise<void> {
+    const target = def.target.key;
+    const lastWrite = this.lastWrite.get(target);
+    const lastOp = this.lastOp.get(target);
+    const until = Math.max(
+      def.write && lastWrite !== undefined ? lastWrite + this.minWriteIntervalMs : 0,
+      def.target.minIntervalMs && lastOp !== undefined ? lastOp + def.target.minIntervalMs : 0,
+    );
+    const wait = until - this.now();
     if (wait > 0) await this.sleep(wait);
+  }
+
+  private remember(target: string, page: { account?: string; hint?: string }): void {
+    if (!page.account) return;
+    const entry: { id: string; hint?: string; at: number } = { id: page.account, at: this.now() };
+    if (page.hint) entry.hint = page.hint;
+    this.verified.set(target, entry);
+  }
+
+  // Подсказка для сверки без запроса — только если она про тот же аккаунт.
+  private hintFor(target: string, account: string | undefined | null): string | null {
+    const known = this.verified.get(target);
+    return known && account && known.id === account ? (known.hint ?? null) : null;
   }
 
   // Запись — по cookie (без запроса); чтение — полным профилем, если он не проверялся
@@ -226,6 +257,7 @@ export class TaskRouter {
     def: OperationDef,
     args: Record<string, unknown>,
     task: TaskMessage,
+    deadline: number,
   ): Promise<Record<string, unknown>> {
     const input: unknown = def.session
       ? ({
@@ -233,6 +265,7 @@ export class TaskRouter {
           args,
           account: task.account ?? null,
           verify: this.accountCheck(def, task),
+          account_hint: this.hintFor(def.target.key, task.account),
         } satisfies PageCall)
       : args;
     let raw: unknown;
@@ -240,7 +273,7 @@ export class TaskRouter {
       // Дольше дедлайна задачи ждать незачем: ответ сервер уже не примет.
       raw = await withTimeout(
         this.deps.runInTarget(def.target, def.main, input),
-        Math.min(Math.max(task.deadline * 1000 - this.now(), 1_000), 600_000),
+        Math.min(Math.max(deadline - this.now(), 1_000), 600_000),
       );
     } catch {
       // Текст исключения (вкладку закрыли, страница не загрузилась) наружу не отдаём.
@@ -254,8 +287,7 @@ export class TaskRouter {
       if (def.session) this.onSessionProblem(target, page.code, page.account ?? null);
       throw new TaskFailure(page.code, page.retry_after);
     }
-    if (def.session && page.account)
-      this.verified.set(target, { id: page.account, at: this.now() });
+    if (def.session && page.account) this.remember(target, page);
     const data = def.result.safeParse(page.data);
     if (!data.success) throw new TaskFailure("bad_result");
     if (JSON.stringify(data.data).length > MAX_MESSAGE_CHARS) throw new TaskFailure("bad_result");

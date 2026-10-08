@@ -30,7 +30,15 @@ from syncplaylists.modules.extension.application.ports import (
 from syncplaylists.modules.extension.domain.value_objects import SessionState
 from syncplaylists.shared_kernel.domain.value_objects import Platform
 
-_WRITE_OPS = {"create_playlist", "add_tracks", "add_to_library", "like", "set_playlist_tracks"}
+_WRITE_OPS = {
+    "create_playlist",
+    "add_tracks",
+    "add_to_library",
+    "like",
+    "set_playlist_tracks",
+    "set_description",
+    "like_many",
+}
 
 
 class OpError(Exception):
@@ -211,6 +219,128 @@ class FakeSoundCloudBrowser(FakeBrowserPlatform):
                 self.likes.insert(0, track_id)
             return {}
         raise OpError("unsupported_op", op)
+
+
+@dataclass
+class FakeYandexBrowser(FakeBrowserPlatform):
+    """Яндекс Музыка «в браузере» (4c-4): операции отвечают проекциями формы
+    api.music.yandex.ru (integrations/platforms/yandex/extension_wire.py). Плейлисты —
+    kind → id треков "<id>:<album>" (дубли Яндекс принимает — отсев делает шлюз), у каждого
+    своя ревизия; лайки — свежие сверху. `captcha` — антибот: любой запрос → captcha."""
+
+    platform: Platform = Platform.YANDEX
+    external_user_id: str = "123456789"
+    login: str = "test.user"
+    page_size: int = 2
+    lists: dict[int, list[str]] = field(default_factory=dict)
+    list_titles: dict[int, str] = field(default_factory=dict)
+    descriptions: dict[int, str] = field(default_factory=dict)
+    revisions: dict[int, int] = field(default_factory=dict)
+    likes: list[str] = field(default_factory=list)
+    likes_revision: int = 1
+    captcha: bool = False
+
+    @staticmethod
+    def _short(ref: str) -> dict[str, Any]:
+        track_id, _, album_id = ref.partition(":")
+        short: dict[str, Any] = {"id": track_id, "timestamp": "2026-10-08T00:00:00+00:00"}
+        if album_id:
+            short["albumId"] = album_id
+        return short
+
+    @staticmethod
+    def _ym_track(ref: str) -> dict[str, Any]:
+        track_id, _, album_id = ref.partition(":")
+        return {
+            "id": track_id,
+            "title": f"Track {track_id}",
+            "available": True,
+            "durationMs": 200_000,
+            "artists": [{"id": "1", "name": "Artist"}],
+            "albums": [{"id": album_id}] if album_id else [],
+        }
+
+    def _slice(
+        self, items: list[str], args: Mapping[str, Any], revision: int
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        expected = args.get("revision")
+        if expected is not None and expected != revision:
+            raise OpError("conflict")  # список поменялся между страницами
+        start = int(args.get("offset") or 0)
+        end = start + min(int(args.get("limit") or self.page_size), self.page_size)
+        return [self._short(i) for i in items[start:end]], (end if end < len(items) else None)
+
+    def _list(self, kind: int) -> list[str]:
+        if kind not in self.lists:
+            raise OpError("not_found")
+        return self.lists[kind]
+
+    def _run(self, op: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        if self.captcha:
+            raise OpError("captcha")
+        if op == "whoami":
+            return {"id": self.external_user_id, "username": "Fake", "login": self.login}
+        if op == "search":
+            return {"tracks": [self._ym_track("424242:4242")]}
+        if op == "tracks":
+            by_id = {ref.partition(":")[0]: ref for ref in [*self.likes, *self._all()]}
+            return {"tracks": [self._ym_track(by_id.get(str(i), str(i))) for i in args["ids"]]}
+        if op == "library_ids_page":
+            page, following = self._slice(self.likes, args, self.likes_revision)
+            out: dict[str, Any] = {"revision": self.likes_revision, "tracks": page}
+            if following is not None:
+                out["nextOffset"] = following
+            return out
+        if op == "playlist_page":
+            kind = int(args["kind"])
+            tracks = self._list(kind)
+            page, following = self._slice(tracks, args, self.revisions[kind])
+            out = {
+                "kind": kind,
+                "uid": self.external_user_id,
+                "owner": {"uid": self.external_user_id, "login": self.login},
+                "title": self.list_titles[kind],
+                "revision": self.revisions[kind],
+                "trackCount": len(tracks),
+                "tracks": page,
+            }
+            if following is not None:
+                out["nextOffset"] = following
+            return out
+        if op == "create_playlist":
+            kind = 1000 + len(self.lists) + 1
+            self.lists[kind] = []
+            self.list_titles[kind] = str(args["title"])
+            self.revisions[kind] = 1
+            return {"kind": kind, "revision": 1}
+        if op == "set_description":
+            self._list(int(args["kind"]))
+            self.descriptions[int(args["kind"])] = str(args["description"])
+            return {}
+        if op == "add_tracks":
+            kind = int(args["kind"])
+            tracks = self._list(kind)
+            if int(args["revision"]) != self.revisions[kind]:
+                raise OpError("conflict")
+            at = int(args["at"])
+            new = [
+                f"{t['id']}:{t['album_id']}" if t.get("album_id") else str(t["id"])
+                for t in args["tracks"]
+            ]
+            tracks[at:at] = new
+            self.revisions[kind] += 1
+            return {"revision": self.revisions[kind], "trackCount": len(tracks)}
+        if op == "like_many":
+            # Как у Яндекса: пачка ложится наверх, ПЕРВЫЙ трек пачки — самый верхний.
+            liked = {i.partition(":")[0] for i in self.likes}
+            new = [ref for ref in args["ids"] if ref.partition(":")[0] not in liked]
+            self.likes[0:0] = new
+            self.likes_revision += 1 if new else 0
+            return {}
+        raise OpError("unsupported_op", op)
+
+    def _all(self) -> list[str]:
+        return [ref for tracks in self.lists.values() for ref in tracks]
 
 
 async def run_task(

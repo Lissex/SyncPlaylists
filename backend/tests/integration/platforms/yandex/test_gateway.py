@@ -12,6 +12,7 @@ import httpx
 import pytest
 import respx
 
+from syncplaylists.integrations.platforms.yandex.client import LibraryYandexClient
 from syncplaylists.integrations.platforms.yandex.factory import (
     YandexClientFactory,
     YandexGatewayBuilder,
@@ -419,7 +420,7 @@ async def test_add_to_library_one_by_one_mode_in_given_order_and_skips_liked(
     api: respx.MockRouter, http: httpx.AsyncClient
 ) -> None:
     gateway = YandexGateway(
-        YandexClientFactory(http, timeout_seconds=5).client("t"),
+        LibraryYandexClient(YandexClientFactory(http, timeout_seconds=5).client("t")),
         UID,
         library_batch_preserves_order=False,
     )
@@ -442,7 +443,9 @@ async def test_add_to_library_batches_are_sent_reversed_so_last_ends_on_top(
     # предыдущей. Чтобы последний трек списка оказался на самом верху, каждая пачка
     # отправляется развёрнутой.
     gateway = YandexGateway(
-        YandexClientFactory(http, timeout_seconds=5).client("t"), UID, batch_size=2
+        LibraryYandexClient(YandexClientFactory(http, timeout_seconds=5).client("t")),
+        UID,
+        batch_size=2,
     )
     api.get(f"/users/{UID}/likes/tracks").respond(json=fixture("likes_tracks"))
     like = api.post(f"/users/{UID}/likes/tracks/add-multiple").respond(

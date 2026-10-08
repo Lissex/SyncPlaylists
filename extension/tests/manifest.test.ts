@@ -46,23 +46,36 @@ describe("манифест", () => {
 
   it("реестр — только операции включаемых площадок, на их сайтах", () => {
     const registry = buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: false });
+    const soundcloud = [
+      "whoami",
+      "liked_tracks_page",
+      "liked_track_ids_page",
+      "playlist",
+      "tracks",
+      "like",
+      "create_playlist",
+      "set_playlist_tracks",
+    ];
+    const yandex = [
+      "whoami",
+      "search",
+      "tracks",
+      "playlist_page",
+      "library_ids_page",
+      "create_playlist",
+      "set_description",
+      "add_tracks",
+      "like_many",
+    ];
 
     expect([...registry.keys()].sort()).toEqual(
-      [
-        "whoami",
-        "liked_tracks_page",
-        "liked_track_ids_page",
-        "playlist",
-        "tracks",
-        "like",
-        "create_playlist",
-        "set_playlist_tracks",
-      ]
-        .map((name) => `soundcloud.${name}`)
-        .sort(),
+      [...soundcloud.map((n) => `soundcloud.${n}`), ...yandex.map((n) => `yandex.${n}`)].sort(),
     );
     for (const def of registry.values()) {
-      expect(def.target.origins).toEqual(["https://soundcloud.com/*"]);
+      const site = def.op.startsWith("yandex.")
+        ? "https://music.yandex.ru/*"
+        : "https://soundcloud.com/*";
+      expect(def.target.origins).toEqual([site]);
       expect(optionalOrigins()).toEqual(expect.arrayContaining(def.target.origins));
     }
   });
