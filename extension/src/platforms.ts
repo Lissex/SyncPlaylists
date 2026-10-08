@@ -14,6 +14,9 @@ export interface PlatformInfo {
   tabUrl: string;
   // false — площадка в списке, но включить её пока нельзя (операций ещё нет).
   available: boolean;
+  // Не чаще одной операции любого вида за столько мс (поиск и чтение тоже): антибот
+  // площадки оценивает темп запросов, а не только записи (Яндекс, ARCHITECTURE.md 11g).
+  minIntervalMs?: number;
 }
 
 export const PLATFORMS: readonly PlatformInfo[] = [
@@ -29,8 +32,9 @@ export const PLATFORMS: readonly PlatformInfo[] = [
     title: "Яндекс Музыка",
     origins: ["https://music.yandex.ru/*"],
     tabUrl: "https://music.yandex.ru/",
-    // Операции Яндекса — этап 4c-4; до них разрешение на сайт не просим.
-    available: false,
+    available: true,
+    // На 1 запросе в секунду спайк 4c-0 и e2e 4b-5 проходили без капчи.
+    minIntervalMs: 1_000,
   },
   {
     id: "spotify",
@@ -63,6 +67,7 @@ export interface TargetInfo {
   key: string;
   origins: string[];
   tabUrl: string;
+  minIntervalMs?: number;
 }
 
 export function diagnosticsTarget(apiBase: string): TargetInfo {
@@ -74,5 +79,11 @@ export function diagnosticsTarget(apiBase: string): TargetInfo {
 }
 
 export function platformTarget(platform: PlatformInfo): TargetInfo {
-  return { key: platform.id, origins: platform.origins, tabUrl: platform.tabUrl };
+  const target: TargetInfo = {
+    key: platform.id,
+    origins: platform.origins,
+    tabUrl: platform.tabUrl,
+  };
+  if (platform.minIntervalMs !== undefined) target.minIntervalMs = platform.minIntervalMs;
+  return target;
 }

@@ -50,6 +50,7 @@ from syncplaylists.integrations.platforms.soundcloud.factory import (
 from syncplaylists.integrations.platforms.soundcloud.tokens import TokenEndpoint
 from syncplaylists.integrations.platforms.yandex.factory import (
     YandexClientFactory,
+    YandexExtensionGatewayBuilder,
     YandexGatewayBuilder,
     YandexProfileFetcher,
 )
@@ -449,6 +450,16 @@ class GatewayProvider(Provider):
             cached(
                 SoundCloudExtensionGatewayBuilder(
                     soundcloud_apis, extension_channel, soundcloud_limits
+                )
+            ),
+        )
+        # Яндекс через расширение — всё из браузера пользователя (4c-4): поиск идёт с его IP
+        # и не расходует общий серверный bucket Яндекса (11g).
+        extension_builders.setdefault(
+            Platform.YANDEX,
+            cached(
+                YandexExtensionGatewayBuilder(
+                    extension_channel, batch_size=settings.platforms.yandex.batch_size
                 )
             ),
         )

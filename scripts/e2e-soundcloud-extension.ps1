@@ -157,8 +157,10 @@ $transfer = Wait-Transfer $transferId @("queued", "running", "writing", "paused_
 
 if ($transfer.status -eq "review") {
   $uncertain = @($transfer.items | Where-Object status -eq "uncertain")
+  # Ненайденные тоже ждут решения (пропустить или выбрать вручную) — без этого запись не начнётся.
+  $notFound = @($transfer.items | Where-Object status -eq "not_found")
   if (-not $AcceptUncertain) {
-    Write-Host "Ждёт ревью ($($uncertain.Count) uncertain). Перезапустите с -AcceptUncertain или решите вручную:" -ForegroundColor Yellow
+    Write-Host "Ждёт ревью ($($uncertain.Count) uncertain, $($notFound.Count) not_found). Перезапустите с -AcceptUncertain или решите вручную:" -ForegroundColor Yellow
     Write-Host "  POST $Api/transfers/$transferId/items/<#>/resolve  {chosen_platform, chosen_external_id} или {}"
     exit 0
   }
@@ -169,6 +171,12 @@ if ($transfer.status -eq "review") {
       $body = @{ chosen_platform = $item.candidates[0].platform; chosen_external_id = $item.candidates[0].external_id }
     }
     Api POST "/transfers/$transferId/items/$($item.position)/resolve" $body | Out-Null
+  }
+  if ($notFound.Count -gt 0) {
+    Step "Пропускаю $($notFound.Count) ненайденных"
+    foreach ($item in $notFound) {
+      Api POST "/transfers/$transferId/items/$($item.position)/resolve" @{} | Out-Null
+    }
   }
   $transfer = Wait-Transfer $transferId @("review", "writing", "paused_quota", "paused_client")
 }

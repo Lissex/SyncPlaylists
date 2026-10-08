@@ -3,9 +3,13 @@ from uuid import UUID
 import httpx
 from yandex_music import ClientAsync
 
+from syncplaylists.integrations.platforms.yandex.client import LibraryYandexClient
+from syncplaylists.integrations.platforms.yandex.extension_client import ExtensionYandexClient
+from syncplaylists.integrations.platforms.yandex.extension_wire import MAX_TRACKS
 from syncplaylists.integrations.platforms.yandex.gateway import YandexGateway
 from syncplaylists.integrations.platforms.yandex.transport import HttpxYandexRequest
 from syncplaylists.modules.accounts.application.ports import PlatformProfile
+from syncplaylists.modules.extension.application.ports import ExtensionChannel
 from syncplaylists.shared_kernel.application.ports import (
     AccountAccess,
     PlatformCredentials,
@@ -55,7 +59,33 @@ class YandexGatewayBuilder:
     def __call__(self, access: AccountAccess) -> YandexGateway:
         client = self._clients.client(access.require_credentials().access_token, access.account_id)
         return YandexGateway(
-            client,
+            LibraryYandexClient(client),
+            access.external_user_id,
+            batch_size=self._batch_size,
+            library_batch_preserves_order=self._library_batch_preserves_order,
+        )
+
+
+class YandexExtensionGatewayBuilder:
+    """GatewayBuilder транспорта EXTENSION: тот же YandexGateway, но все запросы к Яндексу
+    делает браузер пользователя (4c-4). Лимитера нет: общий серверный bucket (11g) к
+    запросам из браузера не относится — темп держит расширение."""
+
+    def __init__(
+        self,
+        channel: ExtensionChannel,
+        *,
+        batch_size: int,
+        library_batch_preserves_order: bool = True,
+    ) -> None:
+        self._channel = channel
+        # Пачка шлюза — один запрос в браузере: /tracks и add-multiple берут ≤ 100 id.
+        self._batch_size = min(batch_size, MAX_TRACKS)
+        self._library_batch_preserves_order = library_batch_preserves_order
+
+    def __call__(self, access: AccountAccess) -> YandexGateway:
+        return YandexGateway(
+            ExtensionYandexClient(self._channel, access),
             access.external_user_id,
             batch_size=self._batch_size,
             library_batch_preserves_order=self._library_batch_preserves_order,

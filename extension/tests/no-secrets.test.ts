@@ -252,3 +252,102 @@ describe("канарейка SoundCloud: настоящая функция ст�
     ws.stop();
   });
 });
+
+describe("канарейка Яндекса: настоящая функция страницы, токен в странице и секреты в ответах", () => {
+  beforeEach(() => fakeBrowser.reset());
+
+  // Сайт держит токен в localStorage и cookie, а API отдаёт лишние поля с секретами.
+  // Страница не должна ни читать токен, ни пропускать лишнее — проекция и схемы.
+  const status = {
+    account: { uid: 123456789, login: "test.user", displayName: "Me", email: CANARY },
+    plus: { token: CANARY },
+    oauth: CANARY,
+  };
+  const rawTrack = {
+    id: "1",
+    title: "Starboy",
+    available: true,
+    downloadInfo: { token: CANARY },
+    artists: [{ id: 1, name: "Artist", session: CANARY }],
+    albums: [{ id: 2, secret: CANARY }],
+  };
+  const playlist = {
+    kind: 1001,
+    uid: 123456789,
+    owner: { uid: 123456789, login: "test.user", email: CANARY },
+    title: "P",
+    revision: 1,
+    trackCount: 1,
+    collectiveToken: CANARY,
+    tracks: [{ id: 1, albumId: 2, timestamp: "t", track: rawTrack, cookie: CANARY }],
+  };
+
+  it.each([
+    ["whoami", {}],
+    ["search", { text: "starboy" }],
+    [
+      "playlist_page",
+      { owner: "test.user", kind: 1001, uuid: null, offset: 0, limit: 10, revision: null },
+    ],
+    ["tracks", { ids: ["1:2"] }],
+  ])("%s", async (op, args) => {
+    vi.stubGlobal("document", { cookie: `Session_id=${CANARY}; yandex_login=test.user` });
+    vi.stubGlobal("localStorage", { getItem: () => CANARY, token: CANARY });
+    const fetchMock = vi.fn(async (input: string, init: RequestInit = {}) => {
+      const path = new URL(input).pathname;
+      const result =
+        path === "/account/status"
+          ? status
+          : path === "/search"
+            ? { tracks: { results: [rawTrack] } }
+            : path === "/tracks"
+              ? [rawTrack]
+              : playlist;
+      expect(JSON.stringify(init.headers)).not.toContain(CANARY);
+      return Response.json({ invocationInfo: { "req-id": CANARY }, result });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const socket = new FakeSocket("ws://test");
+    const ws: WsClient = new WsClient({
+      url: "ws://test",
+      version: "0.1.0",
+      makeSocket: () => socket,
+      getToken: async () => DEVICE_TOKEN,
+      onRevoked: async () => undefined,
+      onState: () => undefined,
+      onWelcome: () => undefined,
+      onTask: (task) => void router.handle(task),
+    });
+    const router = new TaskRouter({
+      registry: buildRegistry({ apiBase: "http://localhost:8000", diagnostics: false }),
+      journal: new Journal(),
+      outbox: new Outbox(),
+      hasPermission: async () => true,
+      runInTarget: async (_target, main, input) => (main as (a: unknown) => unknown)(input),
+      sendResult: (message) => ws.send(message),
+      sendProgress: (taskId) => void ws.send({ type: "progress", task_id: taskId }),
+    });
+
+    await ws.ensure();
+    socket.open();
+    socket.receive({ type: "welcome", device_id: "d1", heartbeat_seconds: 20 });
+    socket.receive({
+      type: "task",
+      task_id: "t1",
+      op: `yandex.${op}`,
+      args,
+      deadline: Date.now() / 1000 + 60,
+      idempotency_key: null,
+      account: "123456789",
+    });
+    for (let i = 0; i < 5; i++) await flush();
+
+    const frames = socket.messages();
+    expect(frames.map((f) => f.type)).toEqual(["hello", "result"]);
+    expect(frames[1]).toMatchObject({ ok: true });
+    for (const frame of frames) expect(forbiddenPaths(frame)).toEqual([]);
+    expect(socket.sent.join("\n")).not.toContain(CANARY);
+    expect(fetchMock).toHaveBeenCalled();
+    ws.stop();
+  });
+});

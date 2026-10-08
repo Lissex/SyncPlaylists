@@ -22,6 +22,8 @@ export const TASK_ERROR_CODES = [
   "unsupported_op",
   "bad_args",
   "bad_result",
+  "conflict",
+  "bad_request",
 ] as const;
 export type TaskErrorCode = (typeof TASK_ERROR_CODES)[number];
 

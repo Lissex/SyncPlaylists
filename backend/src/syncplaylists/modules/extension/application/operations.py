@@ -54,6 +54,12 @@ OPERATIONS: Final[Mapping[str, OperationSpec]] = {
     "tracks": OperationSpec(timeout_seconds=30),
     "like": OperationSpec(timeout_seconds=30, write=True),
     "set_playlist_tracks": OperationSpec(timeout_seconds=60, write=True),
+    # Яндекс через расширение (4c-4): плейлист (playlist_page выше) и id лайков —
+    # постранично (Яндекс отдаёт список целиком, страница режет его на части), запись —
+    # одной операцией на пачку.
+    "library_ids_page": OperationSpec(timeout_seconds=60),
+    "set_description": OperationSpec(timeout_seconds=30, write=True),
+    "like_many": OperationSpec(timeout_seconds=30, write=True),
 }
 
 
@@ -66,6 +72,17 @@ def operation_spec(operation: str) -> OperationSpec:
 
 def wire_op(platform: Platform, operation: str) -> str:
     return f"{platform.value}.{operation}"
+
+
+class ExtensionOperationError(PlatformUnavailableError):
+    """Площадка отклонила операцию в браузере с кодом, который понимает только адаптер
+    площадки: `conflict` (изменилось с момента чтения — ревизия плейлиста Яндекса),
+    `bad_request` (запрос не принят, повтор не поможет) и прочие. Без адаптера, который
+    его разберёт, — временная ошибка площадки (повтор), как раньше."""
+
+    def __init__(self, platform: Platform, code: str, message: str = "") -> None:
+        super().__init__(platform, f"расширение: {code or 'error'} {message}".strip())
+        self.code = code
 
 
 _UNAVAILABLE_CODES: Final = {
@@ -92,4 +109,4 @@ def error_from_wire(platform: Platform, error: Mapping[str, Any]) -> PlatformErr
         retry_after = error.get("retry_after")
         seconds = float(retry_after) if isinstance(retry_after, int | float) else 60.0
         return PlatformRateLimitedError(platform, max(seconds, 1.0), message)
-    return PlatformUnavailableError(platform, f"расширение: {code or 'error'} {message}".strip())
+    return ExtensionOperationError(platform, code, message)

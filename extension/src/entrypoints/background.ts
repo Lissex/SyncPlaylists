@@ -257,7 +257,7 @@ export default defineBackground(() => {
         if (withOperations(info)) await setStatus(info, "no_permission", null, null);
         else ws.send({ type: "platform_state", platform: info.id, session: "no_permission" });
       } else if (!withOperations(info)) {
-        continue; // Яндекс — операции на этапе 4c-4
+        continue; // площадка без операций в этой сборке
       } else if (known && known.session !== "no_permission") {
         sendStatus(info, known);
       } else {

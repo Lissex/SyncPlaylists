@@ -220,6 +220,46 @@ describe("роутер задач", () => {
     expect(progress.length).toBeGreaterThan(0);
     expect(new Set(progress)).toEqual(new Set(["t1"]));
   });
+
+  it("задача в очереди цели шлёт progress и выполняется, даже если ждала дольше срока", async () => {
+    // Поиски матчинга воркер ставит десятками, браузер делает их по одному в темпе
+    // площадки: задача в хвосте ждёт дольше исходного срока, но сервер продлевает его по
+    // progress — и выполнить её нужно, а не выбросить как просроченную.
+    let clock = 1_000_000;
+    const progress: string[] = [];
+    let release: () => void = () => undefined;
+    const first = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls: string[] = [];
+    const { router, sent } = setup({
+      now: () => clock,
+      progressIntervalMs: 5,
+      sendProgress: (taskId) => progress.push(taskId),
+      runInTarget: async (_target, _main, input) => {
+        calls.push(String((input as { title: string }).title));
+        if (calls.length === 1) await first;
+        return { ok: true, data: { playlist_id: "p1" } };
+      },
+    });
+    const at = clock / 1000;
+
+    const one = router.handle(task({ task_id: "t1", idempotency_key: null, deadline: at + 30 }));
+    const two = router.handle(
+      task({ task_id: "t2", idempotency_key: null, deadline: at + 30, args: { title: "второй" } }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(new Set(progress)).toEqual(new Set(["t1", "t2"])); // t2 ещё в очереди
+    clock += 60_000; // первая задача шла дольше срока второй
+    release();
+    await Promise.all([one, two]);
+
+    expect(calls).toEqual(["Мой", "второй"]);
+    expect(sent.map((m) => [m.task_id, m.ok])).toEqual([
+      ["t1", true],
+      ["t2", true],
+    ]);
+  });
 });
 
 describe("diagnostics.echo", () => {
