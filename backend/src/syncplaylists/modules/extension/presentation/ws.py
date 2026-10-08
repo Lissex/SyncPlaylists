@@ -20,7 +20,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import TypeAdapter, ValidationError
 
 from syncplaylists.modules.extension.application.dto import DeviceDto
-from syncplaylists.modules.extension.application.ports import ExtensionHub, PlatformPresence
+from syncplaylists.modules.extension.application.ports import (
+    ClientPausedPlatforms,
+    ExtensionHub,
+    PlatformPresence,
+)
 from syncplaylists.modules.extension.application.session import DeviceSession
 from syncplaylists.modules.extension.application.use_cases import (
     AuthenticateDeviceUseCase,
@@ -144,6 +148,7 @@ class _Connection:
                     "args": dict(task.args),
                     "deadline": task.deadline,
                     "idempotency_key": task.idempotency_key,
+                    "account": task.account,
                 }
             )
 
@@ -185,7 +190,7 @@ class _Connection:
             if await _authenticate(self._container, self._token) is None:
                 return False
             await self._session.heartbeat()
-            await self.send({"type": "pong"})
+            await self.send({"type": "pong", "paused_platforms": await self._paused_platforms()})
         elif isinstance(message, PlatformStateMessage):
             await self._session.report(
                 PlatformPresence(
@@ -207,6 +212,12 @@ class _Connection:
         elif isinstance(message, ProgressMessage):
             await self._session.progress(message.task_id)
         return True
+
+    async def _paused_platforms(self) -> list[str]:
+        async with self._container() as request_container:
+            paused = await request_container.get(ClientPausedPlatforms)
+            platforms = await paused.for_user(self._session.user_id)
+        return sorted(platform.value for platform in platforms)
 
     async def _connect_platform(self, message: ConnectPlatformMessage) -> None:
         try:

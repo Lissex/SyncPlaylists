@@ -15,6 +15,7 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     ExternalTrackRef,
     Platform,
     PlaylistRef,
+    Transport,
 )
 
 
@@ -136,6 +137,8 @@ class FakeGatewayFactory:
     ) -> None:
         self._gateways = gateways or {}
         self.unsupported = unsupported or set()
+        # (площадка, транспорт) только на чтение — как SoundCloud по токену.
+        self.read_only: set[tuple[Platform, Transport]] = set()
         self.accesses: list[AccountAccess] = []
 
     def register(self, gateway: FakeMusicPlatformGateway) -> None:
@@ -143,6 +146,9 @@ class FakeGatewayFactory:
 
     def supports(self, platform: Platform) -> bool:
         return platform not in self.unsupported
+
+    def can_write(self, access: AccountAccess) -> bool:
+        return (access.platform, access.transport) not in self.read_only
 
     def for_account(self, access: AccountAccess) -> FakeMusicPlatformGateway:
         if access.platform in self.unsupported:

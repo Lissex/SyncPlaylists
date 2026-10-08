@@ -5,11 +5,10 @@ services:
   api:
     build:
       target: dev
-    # Сокет — чтобы "docker compose run --rm api pytest tests/integration" мог поднимать
-    # свои Postgres/Redis через testcontainers (sibling-контейнеры). На хосте сокет
-    # обычно принадлежит root — для тестового прогона запускай с "--user root"
-    # (docker compose run --rm --user root api pytest ...), иначе testcontainers
-    # упадёт на permission denied.
+    # Сокет Docker. Интеграционные тесты (testcontainers) запускаются С ХОСТА:
+    # `make test-integration`. Изнутри api они не работают даже с "--user root":
+    # testcontainers ходит к соседним контейнерам (Ryuk, Redis, Postgres) через порты
+    # хоста, а из контейнера они недоступны — Connection refused (проверено 2026-10-07).
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 

@@ -505,6 +505,9 @@ class MusicPlatformGateway(Protocol):
 # | PlatformUnavailableError (сеть/5xx/таймаут — временная) | PlatformRegionError (гео)
 # | PlaylistNotFoundError | PlaylistNotWritableError (чужой плейлист, 403 на запись —
 # аккаунт НЕ протух); PlatformNotSupportedError, UnsupportedLinkError(reason).
+# 4c: ExtensionUnavailableError(reason) — расширение не может сейчас (PAUSED_CLIENT);
+# 4c-3: WriteRequiresExtensionError — запись этим транспортом невозможна (API 422
+# write_requires_extension, в run_write — FAILED с той же причиной).
 
 class UrlExpander(Protocol):                      # shared_kernel/domain/ports.py
     def is_short_link(self, host: str) -> bool: ...
@@ -545,6 +548,8 @@ class GatewayFactory(Protocol):
     def for_account(self, access: AccountAccess) -> MusicPlatformGateway: ...
     # выбирает транспорт по access.transport: official / unofficial / extension
     def supports(self, platform: Platform) -> bool: ...   # 4b; иначе PlatformNotSupportedError
+    def can_write(self, access: AccountAccess) -> bool: ...  # 4c-3; False — транспорт только на
+    # чтение (SoundCloud по токену: запись закрыта DataDome) → WriteRequiresExtensionError
     # Реализация — integrations/platforms/registry.py: PlatformGatewayFactory(площадка → сборщик);
     # что чем обслуживается (Яндекс — настоящий адаптер, platforms.fake — фейк), решает container.py.
 
@@ -1141,9 +1146,10 @@ concurrency/rate-limit по площадкам, описанные в табли
   не меняется.
 
 **Долги**
-- Запись в SoundCloud через UNOFFICIAL невозможна (DataDome, выше). Сейчас она
+- ~~Запись в SoundCloud через UNOFFICIAL невозможна (DataDome, выше). Сейчас она
   заканчивается `PlatformUnavailableError("антибот")` → повторы → `FAILED("platform_unavailable")`;
-  нужен явный отказ.
+  нужен явный отказ.~~ Закрыт в 4c-3: `GatewayFactory.can_write` → 422 `write_requires_extension`
+  на старте, FAILED `write_requires_extension` в `run_write`; запись — через расширение (11h).
 - Ревизий у сетов нет: если пользователь правит сет параллельно с переносом, одна из правок
   может потеряться (замена списка целиком).
 - Квота `by-client` считается на client_id сайта, то есть на весь сервер, а не на аккаунт.
@@ -1154,9 +1160,8 @@ concurrency/rate-limit по площадкам, описанные в табли
 - Хрупкость client_id: если сайт перестанет класть его в бандл, сработает
   `PlatformUnavailableError("client_id не найден")`, а запасной вариант —
   `client_id_override`.
-- Метод и тело `PUT playlists/:id`, `POST playlists` и порядок лайков live не подтверждены
-  (запись упирается в DataDome). Подтвердятся вместе с OFFICIAL-транспортом или
-  расширением.
+- ~~Метод и тело `PUT playlists/:id`, `POST playlists` и порядок лайков live не подтверждены
+  (запись упирается в DataDome).~~ Подтверждены спайком 4c-0 из страницы сайта (11h).
 - Срок жизни веб-JWT неизвестен (live-тест печатает `exp`). Если он короткий, без
   refresh_token долгий перенос упрётся в EXPIRED.
 - Продление refresh_token на сервере может разлогинить браузерный профиль, из которого
@@ -1498,6 +1503,105 @@ dev, e2e и небольших переносов.
   транспорт посреди переноса, задачи останутся в прежней очереди (работать будут — та же логика,
   другой воркер).
 
+**4c-3 (SoundCloud через расширение) — что сделано (2026-10-07)**
+- **Гибрид без токена на сервере.** `ExtensionSoundCloudApi`
+  (`integrations/platforms/soundcloud/extension_api.py`) реализует тот же `SoundCloudApi`, поэтому
+  `SoundCloudGateway` и маппинг не менялись. Единственная правка шлюза — проброс `request_id` в
+  `api.create_playlist`. Публичное (поиск, resolve, сеты без секрета, чужие лайки) сервер
+  читает анонимно (`SoundCloudApiFactory.anonymous`, v2 + client_id, token bucket аккаунта).
+  Личное (`/me`, свои лайки и id лайков, приватный сет и его треки) и вся запись идут через
+  расширение. Сборщик `SoundCloudExtensionGatewayBuilder` — в `extension_builders`, поиск
+  кэшируется как у серверных адаптеров.
+- **Операции** (сервер `operations.py`, расширение `background/soundcloud.ts`): `whoami`,
+  `liked_tracks_page`, `liked_track_ids_page` (постранично, курсор = query из `next_href` без
+  `client_id`, применяется только к тому же пути), `playlist`, `tracks` (с секретом),
+  `like` (одна задача на трек), `create_playlist` (ключ `create_playlist:<request_id>`),
+  `set_playlist_tracks` (замена списка целиком — идемпотентна сама).
+- **Проекция, а не сырой JSON.** Функция страницы вырезает из ответа api-v2 только поля, которые
+  читает `mapping.py`. Дальше их проверяют `.strictObject` в background и `extra="forbid"` на
+  сервере (`extension_wire.py`). Секрет сета на проводе — `secret`: ключи с «token» в протоколе
+  запрещены целиком (тест `no-secrets`), сервер переименовывает его через alias. «Канарейка»
+  прогоняет настоящую функцию страницы на сыром ответе с секретами.
+- **Одна самодостаточная функция страницы** `soundcloudPage(call)`. Сборка проверена: функция,
+  вынутая из `background.js` обеих сборок, выполняется в изолированном `vm` без внешних
+  хелперов. Токен сайта (cookie `oauth_token`) читается в странице и её не покидает.
+- **Сверка аккаунта перед задачей.** В задаче приходит поле `account` (= `external_user_id`
+  аккаунта переноса). Запись сверяется по id из cookie, без запроса: формат `2-<n>-<id>-…` или
+  JWT `sub`. Полный `/me` делается при старте чтения и не чаще раза в 60 с (кэш в роутере).
+  Расхождение → `session_mismatch`, и расширение сообщает `platform_state ok` с фактическим
+  аккаунтом. Тест: 10 лайков подряд → ни одного `/me`.
+- **Ошибки страницы:** 401/нет cookie → `logged_out`; 403 с `x-datadome`/`captcha-delivery.com` →
+  `captcha`; прочий 403 и 4xx записи → `not_writable` (шлюз решает по контексту, как с
+  `SoundCloudForbiddenError`); 404 → `not_found`; 429 → `rate_limited` + `retry_after`.
+  `logged_out`/`captcha` сразу уходят и в `platform_state`.
+- **Темп записи ≤ 1/с** — в роутере, отдельно для каждой цели (`minWriteIntervalMs`).
+- **Состояние площадки в расширении** (`platform-state.ts`, `storage.local`).
+  - После `welcome` известное состояние отправляется как есть: аккаунт всё равно сверяется
+    перед задачей. Вкладку открываем только если о площадке ничего не известно.
+  - Выдача разрешения на экране согласия (`permissions.onAdded`) → `whoami` → `connect_platform`.
+  - Alarm `platform-recheck` (2 мин) перепроверяет вход только у площадок, где есть перенос в
+    `PAUSED_CLIENT` (сервер шлёт их в `pong.paused_platforms` — `ClientPausedPlatformsUseCase`
+    через порт `extension.ClientPausedPlatforms`), и только в уже открытой вкладке пула.
+  - Капчу alarm не трогает: человек проходит её на сайте и жмёт «Продолжить» в popup.
+  - Значок `!` — площадке нужно действие человека.
+- **Запись с UNOFFICIAL** → 422 `write_requires_extension` (`GatewayFactory.can_write`,
+  read-only транспорты задаёт `container.py`; при `platforms.fake` с SoundCloud — пишется).
+- **Яндекс** в расширении — `available: false` до 4c-4: разрешение на сайт без операций не просим.
+- **Тесты.**
+  - vitest `soundcloud.test.ts`: запросы, проекция, ошибки, сверка, темп, число `/me`, `probe`.
+  - pytest `test_extension_api.py` (respx + `ScriptedChannel`): маршрутизация публичное/личное,
+    `request_id`, отсев лайкнутого.
+  - integration `test_soundcloud_via_extension.py` (Redis в testcontainers + `FakeSoundCloudBrowser`):
+    «браузер закрыли после создания сета» → повтор → один сет без дублей, `session_mismatch`.
+  - `test_write_requires_extension.py`.
+
+**Долги 4c-3**
+- Анонимные чтения сервера с IP датацентра могут упереться в DataDome (прод). Тогда поиск
+  SoundCloud тоже уходит в расширение.
+- Резолв секретной ссылки `…/sets/x/s-…` идёт анонимно. Если SoundCloud его не отдаёт —
+  нужна операция `resolve` в расширении. Созданные нами сеты читаются по `id:s-secret`
+  через расширение.
+- ~~Нужен ли `client_id` запросам из страницы с токеном.~~ Не нужен: ручной e2e прошёл без него.
+- Сразу после перезапуска Chrome фоновая вкладка площадки может не загрузиться за 30 с
+  (`TabPool.loadTimeoutMs`): Chrome откладывает фоновые вкладки при старте. Задача кончается
+  `unavailable` → повтор `run_write` (в e2e — одна лишняя попытка, без дублей). Если станет
+  частым — ждать дольше на первой задаче или делать вкладку активной на время загрузки.
+- `docker compose run … api pytest tests/integration` не работает: testcontainers изнутри
+  контейнера не достаёт соседние контейнеры по портам хоста. Интеграционные тесты — с хоста,
+  `make test-integration` (комментарий в override исправлен).
+- После перезапуска браузера сохранённое состояние «капча» остаётся до «Продолжить» в popup,
+  а «вышли» — до «Проверить»: вкладки сами по себе не открываются.
+- Лайк — одна задача на трек: сотня лайков ≈ 100–150 с (в пределах `job_timeout` 600 с пачки
+  на 100). Пакетная операция — если упрёмся.
+
+**Ручная проверка 4c-3 (2026-10-07…08, Chrome, аккаунт владельца, домашний IP)**
+- Подключение: экран согласия → «Проверить вход» → `whoami` в фоновой вкладке → `connect_platform`;
+  аккаунт SoundCloud (выполнен вход через Google, токен cookie старого формата `2-…-<id>-…`)
+  стал `transport=extension`. Запрос `/me` из MAIN world проходит без `client_id`.
+- Сценарий 1 «Яндекс → новый сет SoundCloud» — `done`.
+- Сценарии 2 и 3 одним переносом (100 треков; 98 найдено, 2 uncertain приняты): браузер
+  закрыт перед записью → `paused_client(offline)` → открыт → запись продолжилась сама; одна
+  попытка `unavailable` через 38 с (вкладка после старта браузера, долг выше) → повтор; затем
+  разрешение на soundcloud.com отозвано → `paused_client(no_permission)` → выдано снова →
+  `run_write` за 0,8 с → `done`. Итог на площадке («один сет, без дублей») проверяет владелец.
+- Найдено и исправлено по ходу проверки:
+  - `executeScript` передаёт `null` в аргументах как `undefined`: функция страницы считала
+    аккаунт заданным и отвечала `session_mismatch` на проверку входа. Аккаунт теперь
+    сверяется, только если он строка (регрессионный тест в `soundcloud.test.ts`).
+  - Проверка входа могла висеть без конца (нет таймаутов) и падала молча. Теперь: таймаут
+    запроса в странице 20 с, проверки — 45 с, задачи — по её дедлайну; причина сбоя (код и
+    техническое описание, `detail`) показывается в popup и пишется в консоль фона, на сервер
+    не уходит.
+  - Подключение запускалось только при выдаче разрешения — если вход на сайте был позже, оно
+    молча не проходило. Теперь успешная «Проверить вход» подключает площадку сама.
+  - Скрипт e2e: Windows PowerShell 5.1 отдаёт JSON-массив из `ConvertFrom-Json` одним
+    объектом — аккаунты «слипались»; ответ раскладывается в плоский список.
+  - `test_prod_settings` подхватывал локальный `.env` с dev-флагами — теперь `_env_file=None`.
+- Автоматические проверки: backend 600 unit + 264 integration (`make test-integration`,
+  в том числе 3 новых сквозных на Redis с `FakeSoundCloudBrowser`), extension 85 vitest, ruff,
+  mypy, lint-imports, сборки chrome-mv3/firefox-mv3; функция страницы из сборки проверена в
+  изолированном `vm` (без внешних хелперов бандлера).
+
 ---
 
 ## 12. Фронтенд и расширение
@@ -1627,8 +1731,9 @@ dev, e2e и небольших переносов.
      страницы проходят (11h); 4c-1 — бэкенд (привязка, канал, `PAUSED_CLIENT`, транспорт EXTENSION);
      **4c-1 (сделано)** — детали и долги в 11h.
      **4c-2 (сделано)** — каркас расширения (WXT, Chrome/Яндекс Браузер/Firefox), очередь
-     `client`, запись пачками, dev-страница привязки, `diagnostics.echo` (11h); 4c-3 — SoundCloud;
-     4c-4 — Яндекс; дальше Spotify → VK.
+     `client`, запись пачками, dev-страница привязки, `diagnostics.echo` (11h);
+     **4c-3 (сделано)** — SoundCloud через расширение: гибрид, сверка аккаунта, капча, 422
+     `write_requires_extension` (11h); 4c-4 — Яндекс; дальше Spotify → VK.
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).

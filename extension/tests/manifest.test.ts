@@ -37,9 +37,33 @@ describe("манифест", () => {
   });
 
   it("тестовая операция не попадает в сборку без WXT_DIAGNOSTICS", () => {
-    expect([...buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: false }).keys()]).toEqual([]);
-    expect([...buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: true }).keys()]).toEqual([
-      "diagnostics.echo",
-    ]);
+    const prod = [...buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: false }).keys()];
+    const dev = [...buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: true }).keys()];
+
+    expect(prod).not.toContain("diagnostics.echo");
+    expect(dev).toEqual(["diagnostics.echo", ...prod]);
+  });
+
+  it("реестр — только операции включаемых площадок, на их сайтах", () => {
+    const registry = buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: false });
+
+    expect([...registry.keys()].sort()).toEqual(
+      [
+        "whoami",
+        "liked_tracks_page",
+        "liked_track_ids_page",
+        "playlist",
+        "tracks",
+        "like",
+        "create_playlist",
+        "set_playlist_tracks",
+      ]
+        .map((name) => `soundcloud.${name}`)
+        .sort(),
+    );
+    for (const def of registry.values()) {
+      expect(def.target.origins).toEqual(["https://soundcloud.com/*"]);
+      expect(optionalOrigins()).toEqual(expect.arrayContaining(def.target.origins));
+    }
   });
 });

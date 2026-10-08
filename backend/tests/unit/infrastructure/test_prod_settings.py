@@ -16,7 +16,8 @@ _SAFE_EXTENSION: dict[str, Any] = {"allowed_extension_ids": ["abcdefghijklmnopab
 
 
 def _settings(env: str, extension: dict[str, Any]) -> Settings:
-    return Settings.model_validate({**_BASE, "env": env, "extension": extension})
+    # Без .env: локальный dev-.env (EXTENSION__DEV_PAGE_ENABLED=true) не должен подмешиваться.
+    return Settings(_env_file=None, **{**_BASE, "env": env, "extension": extension})
 
 
 def test_prod_with_safe_extension_settings_starts() -> None:

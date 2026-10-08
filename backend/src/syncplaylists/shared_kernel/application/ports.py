@@ -152,6 +152,10 @@ class GatewayFactory(Protocol):
 
     def supports(self, platform: Platform) -> bool: ...
 
+    # False — этим транспортом площадка доступна только на чтение (SoundCloud по токену:
+    # запись закрыта антиботом) — писать можно только через расширение.
+    def can_write(self, access: AccountAccess) -> bool: ...
+
 
 class PlatformRateLimiter(Protocol):
     """Token bucket на (площадка, аккаунт): адаптер зовёт acquire() перед каждым

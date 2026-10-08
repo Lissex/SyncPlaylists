@@ -13,18 +13,24 @@ class PlatformGatewayFactory:
     """shared_kernel.GatewayFactory: (площадка, транспорт) → сборщик шлюза. Аккаунты с
     транспортом EXTENSION (запросы из браузера пользователя) обслуживают свои сборщики,
     остальные — серверные адаптеры. Что чем обслуживается (настоящий адаптер или фейк)
-    решает bootstrap/container.py."""
+    решает bootstrap/container.py. `read_only` — транспорты, которыми площадка доступна
+    только на чтение."""
 
     def __init__(
         self,
         builders: Mapping[Platform, GatewayBuilder],
         extension_builders: Mapping[Platform, GatewayBuilder] | None = None,
+        read_only: Mapping[Platform, frozenset[Transport]] | None = None,
     ) -> None:
         self._builders = dict(builders)
         self._extension_builders = dict(extension_builders or {})
+        self._read_only = dict(read_only or {})
 
     def supports(self, platform: Platform) -> bool:
         return platform in self._builders or platform in self._extension_builders
+
+    def can_write(self, access: AccountAccess) -> bool:
+        return access.transport not in self._read_only.get(access.platform, frozenset())
 
     def for_account(self, access: AccountAccess) -> MusicPlatformGateway:
         builders = (

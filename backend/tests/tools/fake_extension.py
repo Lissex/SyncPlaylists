@@ -30,7 +30,7 @@ from syncplaylists.modules.extension.application.ports import (
 from syncplaylists.modules.extension.domain.value_objects import SessionState
 from syncplaylists.shared_kernel.domain.value_objects import Platform
 
-_WRITE_OPS = {"create_playlist", "add_tracks", "add_to_library"}
+_WRITE_OPS = {"create_playlist", "add_tracks", "add_to_library", "like", "set_playlist_tracks"}
 
 
 class OpError(Exception):
@@ -71,10 +71,18 @@ class FakeBrowserPlatform:
         return items[start:end], (str(end) if end < len(items) else None)
 
     async def execute(
-        self, op: str, args: Mapping[str, Any], idempotency_key: str | None
+        self,
+        op: str,
+        args: Mapping[str, Any],
+        idempotency_key: str | None,
+        account: str | None = None,
     ) -> dict[str, Any]:
         if idempotency_key is not None and idempotency_key in self.journal:
             return self.journal[idempotency_key]
+        # Как настоящее расширение: задача для другого аккаунта площадки, чем открыт в
+        # браузере, не выполняется.
+        if account is not None and account != self.external_user_id:
+            raise OpError("session_mismatch")
         result = self._run(op, args)
         self.executed.append(op)
         if op in _WRITE_OPS and idempotency_key is not None:
@@ -134,15 +142,90 @@ class FakeBrowserPlatform:
         raise OpError("unsupported_op", op)
 
 
+@dataclass
+class FakeSoundCloudBrowser(FakeBrowserPlatform):
+    """SoundCloud «в браузере» для гибридного шлюза (4c-3): операции отвечают проекциями
+    формы api-v2 (integrations/platforms/soundcloud/extension_wire.py). Сеты — id → список
+    id треков; лайки — свежие сверху."""
+
+    platform: Platform = Platform.SOUNDCLOUD
+    external_user_id: str = "900001"
+    sets: dict[int, list[int]] = field(default_factory=dict)
+    set_titles: dict[int, str] = field(default_factory=dict)
+    likes: list[int] = field(default_factory=list)
+
+    @staticmethod
+    def _sc_track(track_id: int) -> dict[str, Any]:
+        return {
+            "id": track_id,
+            "kind": "track",
+            "title": f"Track {track_id}",
+            "duration": 200_000,
+            "full_duration": 200_000,
+            "policy": "ALLOW",
+            "user": {"id": 1, "username": "Artist"},
+        }
+
+    def _set(self, args: Mapping[str, Any]) -> list[int]:
+        tracks = self.sets.get(int(args["playlist_id"]))
+        if tracks is None or args.get("secret") != f"s-{args['playlist_id']}":
+            raise OpError("not_found")
+        return tracks
+
+    def _run(self, op: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        own = int(self.external_user_id)
+        if op == "whoami":
+            return {"id": own, "username": "Fake Listener", "permalink": "fake-listener"}
+        if op == "liked_tracks_page":
+            page, next_cursor = self._page(
+                [self._sc_track(i) for i in self.likes], args.get("cursor")
+            )
+            return {"tracks": page, "next_cursor": next_cursor}
+        if op == "liked_track_ids_page":
+            return {"ids": list(self.likes), "next_cursor": None}
+        if op == "playlist":
+            tracks = self._set(args)
+            playlist_id = int(args["playlist_id"])
+            return {
+                "id": playlist_id,
+                "kind": "playlist",
+                "title": self.set_titles[playlist_id],
+                "user_id": own,
+                "secret": f"s-{playlist_id}",
+                "track_count": len(tracks),
+                "tracks": [{"id": i, "kind": "track", "policy": "ALLOW"} for i in tracks],
+            }
+        if op == "tracks":
+            return {"tracks": [self._sc_track(int(i)) for i in args["ids"]]}
+        if op == "create_playlist":
+            playlist_id = 5000 + len(self.sets) + 1
+            self.sets[playlist_id] = []
+            self.set_titles[playlist_id] = str(args["title"])
+            return {"id": playlist_id, "secret": f"s-{playlist_id}"}
+        if op == "set_playlist_tracks":
+            self._set(args)[:] = [int(i) for i in args["track_ids"]]
+            return {}
+        if op == "like":
+            track_id = int(args["track_id"])
+            if track_id not in self.likes:
+                self.likes.insert(0, track_id)
+            return {}
+        raise OpError("unsupported_op", op)
+
+
 async def run_task(
-    platform: FakeBrowserPlatform, op: str, args: Mapping[str, Any], key: str | None
+    platform: FakeBrowserPlatform,
+    op: str,
+    args: Mapping[str, Any],
+    key: str | None,
+    account: str | None = None,
 ) -> dict[str, Any]:
     """Задача → результат в форме протокола (ok/data или ok=false/error)."""
     prefix, _, short = op.partition(".")
     if prefix != platform.platform.value:
         return {"ok": False, "error": {"code": "unsupported_op", "message": op}}
     try:
-        return {"ok": True, "data": await platform.execute(short, args, key)}
+        return {"ok": True, "data": await platform.execute(short, args, key, account)}
     except OpError as exc:
         return {"ok": False, "error": {"code": exc.code, "message": exc.message}}
 
@@ -177,7 +260,9 @@ class HubDevice:
             task = await self.hub.next_task(self.device_id, wait_seconds=1)
             if task is None:
                 continue
-            outcome = await run_task(self.platform, task.op, task.args, task.idempotency_key)
+            outcome = await run_task(
+                self.platform, task.op, task.args, task.idempotency_key, task.account
+            )
             short = task.op.partition(".")[2]
             if short in self.lose_result_of:
                 self.lose_result_of.discard(short)
@@ -257,7 +342,11 @@ class WsFakeExtension:
                     print("сервер:", message, file=sys.stderr)
                 elif message["type"] == "task":
                     outcome = await run_task(
-                        self.platform, message["op"], message["args"], message["idempotency_key"]
+                        self.platform,
+                        message["op"],
+                        message["args"],
+                        message["idempotency_key"],
+                        message.get("account"),
                     )
                     short = message["op"].partition(".")[2]
                     reply = {"task_id": message["task_id"], **outcome}

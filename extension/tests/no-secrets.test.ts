@@ -8,12 +8,12 @@
 // 3) строгие схемы: лишнее поле в исходящем сообщении не отправляется вовсе.
 
 import { fakeBrowser } from "wxt/testing/fake-browser";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { Journal } from "../src/background/journal";
 import { Outbox } from "../src/background/outbox";
-import type { OperationDef, PageOutcome } from "../src/background/registry";
+import { buildRegistry, type OperationDef, type PageOutcome } from "../src/background/registry";
 import { TaskRouter } from "../src/background/router";
 import { WsClient } from "../src/background/ws-client";
 import { encodeOutgoing, type OutgoingMessage } from "../src/protocol";
@@ -169,6 +169,86 @@ describe("канарейка: страница отдаёт секреты, на
     expect(frames[1]).toMatchObject({ ok: false, error: { code: "bad_result" } });
     // И в журнал write-операций ничего не записано.
     expect(await new Journal().get("create_playlist:r1")).toBeNull();
+    ws.stop();
+  });
+});
+
+describe("канарейка SoundCloud: настоящая функция страницы, сырой ответ с секретами", () => {
+  beforeEach(() => fakeBrowser.reset());
+
+  // Ответ api-v2 с секретами внутри: проекция в странице оставляет только поля трека,
+  // токен сайта (cookie) в запросе не должен попасть ни в один кадр.
+  const rawLikes = {
+    collection: [
+      {
+        track: {
+          id: 11,
+          kind: "track",
+          title: "Starboy",
+          track_authorization: CANARY,
+          media: { transcodings: [{ url: `https://x/${CANARY}` }] },
+          user: { id: 77, username: "Artist", session_token: CANARY },
+          publisher_metadata: { artist: "Artist", isrc: "USUG11600976", oauth: CANARY },
+        },
+        oauth_token: CANARY,
+      },
+    ],
+    next_href: `https://api-v2.soundcloud.com/users/900001/track_likes?offset=1&client_id=${CANARY}`,
+  };
+
+  it.each([
+    ["liked_tracks_page", { cursor: null, limit: 2 }],
+    ["whoami", {}],
+  ])("%s", async (op, args) => {
+    vi.stubGlobal("document", { cookie: `oauth_token=2-1-900001-${CANARY}` });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) =>
+        new URL(input).pathname === "/me"
+          ? Response.json({ id: 900001, username: "Me", email: CANARY, oauth_token: CANARY })
+          : Response.json(rawLikes),
+      ),
+    );
+    const socket = new FakeSocket("ws://test");
+    const ws: WsClient = new WsClient({
+      url: "ws://test",
+      version: "0.1.0",
+      makeSocket: () => socket,
+      getToken: async () => DEVICE_TOKEN,
+      onRevoked: async () => undefined,
+      onState: () => undefined,
+      onWelcome: () => undefined,
+      onTask: (task) => void router.handle(task),
+    });
+    const router = new TaskRouter({
+      registry: buildRegistry({ apiBase: "http://localhost:8000", diagnostics: false }),
+      journal: new Journal(),
+      outbox: new Outbox(),
+      hasPermission: async () => true,
+      runInTarget: async (_target, main, input) => (main as (a: unknown) => unknown)(input),
+      sendResult: (message) => ws.send(message),
+      sendProgress: (taskId) => void ws.send({ type: "progress", task_id: taskId }),
+    });
+
+    await ws.ensure();
+    socket.open();
+    socket.receive({ type: "welcome", device_id: "d1", heartbeat_seconds: 20 });
+    socket.receive({
+      type: "task",
+      task_id: "t1",
+      op: `soundcloud.${op}`,
+      args,
+      deadline: Date.now() / 1000 + 60,
+      idempotency_key: null,
+      account: "900001",
+    });
+    for (let i = 0; i < 5; i++) await flush();
+
+    const frames = socket.messages();
+    expect(frames.map((f) => f.type)).toEqual(["hello", "result"]);
+    expect(frames[1]).toMatchObject({ ok: true });
+    for (const frame of frames) expect(forbiddenPaths(frame)).toEqual([]);
+    expect(socket.sent.join("\n")).not.toContain(CANARY);
     ws.stop();
   });
 });

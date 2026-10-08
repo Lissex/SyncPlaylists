@@ -125,8 +125,89 @@ function platformRow(platform: PlatformView): HTMLElement {
   return h(
     "li",
     {},
-    h("span", {}, platform.title, !platform.available && h("span", { class: "muted" }, " — скоро")),
-    toggle,
+    h(
+      "div",
+      { class: "row-between" },
+      h(
+        "span",
+        {},
+        platform.title,
+        !platform.available && h("span", { class: "muted" }, " — скоро"),
+      ),
+      toggle,
+    ),
+    platform.granted && platform.operations && platformState(platform),
+  );
+}
+
+// Что с площадкой в этом браузере и что можно сделать (действия — только по нажатию).
+function platformState(platform: PlatformView): HTMLElement {
+  const run = (type: "check-platform" | "connect-platform" | "open-platform") => () =>
+    void act({ type, platform: platform.id });
+  const button = (label: string, type: "check-platform" | "connect-platform" | "open-platform") =>
+    h("button", { onclick: run(type), disabled: busy }, label);
+  const status = platform.status;
+  const connect = platform.connect;
+
+  if (status === null || status.session === "no_permission") {
+    return h("div", { class: "platform-state" }, button("Проверить вход", "check-platform"));
+  }
+  if (status.session === "logged_out") {
+    return h(
+      "div",
+      { class: "platform-state" },
+      h("p", { class: "note" }, `Не выполнен вход на ${platform.title} в этом браузере.`),
+      h(
+        "div",
+        { class: "row" },
+        button("Открыть сайт", "open-platform"),
+        button("Я вошёл — проверить", "check-platform"),
+      ),
+    );
+  }
+  if (status.session === "captcha") {
+    return h(
+      "div",
+      { class: "platform-state" },
+      h(
+        "p",
+        { class: "note" },
+        `${platform.title} просит пройти проверку («я не робот»). Перенос на паузе: откройте ` +
+          "сайт, пройдите проверку и нажмите «Продолжить».",
+      ),
+      h(
+        "div",
+        { class: "row" },
+        button("Открыть сайт", "open-platform"),
+        button("Продолжить", "check-platform"),
+      ),
+    );
+  }
+  const name = status.username ?? status.account ?? "…";
+  const otherAccount = connect !== null && connect.account !== status.account;
+  return h(
+    "div",
+    { class: "platform-state" },
+    h("p", { class: "muted" }, "Вход: ", h("b", {}, name)),
+    connect?.status === "connected" &&
+      !otherAccount &&
+      h("p", { class: "muted" }, "Подключено к SyncPlaylists."),
+    connect?.status === "pending" && !otherAccount && h("p", { class: "muted" }, "Подключение…"),
+    connect?.status === "conflict" &&
+      !otherAccount &&
+      h(
+        "p",
+        { class: "note" },
+        `В SyncPlaylists уже подключён другой аккаунт ${platform.title} — сначала отключите его на сайте.`,
+      ),
+    otherAccount &&
+      h(
+        "p",
+        { class: "note" },
+        "В браузере другой аккаунт, чем подключён к SyncPlaylists: переносы ждут прежний.",
+      ),
+    (connect === null || otherAccount || connect.status === "conflict") &&
+      button("Подключить к SyncPlaylists", "connect-platform"),
   );
 }
 

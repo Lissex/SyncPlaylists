@@ -126,11 +126,22 @@ ul.platforms {
 }
 
 ul.platforms li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row-between {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--line);
+}
+
+.platform-state p {
+  margin: 6px 0 0;
+}
+
+.platform-state .row {
+  margin-top: 6px;
 }
 
 .row {

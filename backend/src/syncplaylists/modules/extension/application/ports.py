@@ -100,6 +100,9 @@ class DeliveredTask:
     args: Mapping[str, Any]
     deadline: float  # unix-время, после которого результат уже никто не ждёт
     idempotency_key: str | None = None
+    # Аккаунт площадки, под которым задачу надо выполнять (external_user_id): расширение
+    # сверяет его с сессией в браузере и при расхождении отвечает session_mismatch.
+    account: str | None = None
 
 
 class ExtensionHub(Protocol):
@@ -136,6 +139,14 @@ class ExtensionHub(Protocol):
     async def mark_online(self, user_id: UUID, device_id: UUID, ttl_seconds: int) -> None: ...
 
     async def drop_online(self, device_id: UUID) -> None: ...
+
+
+class ClientPausedPlatforms(Protocol):
+    """Площадки, на которых у пользователя есть переносы, ждущие расширение
+    (PAUSED_CLIENT). Сервер сообщает их расширению в pong: только для них расширение
+    само перепроверяет вход — и только через уже открытую вкладку площадки."""
+
+    async def for_user(self, user_id: UUID) -> set[Platform]: ...
 
 
 class DeviceCaller(Protocol):

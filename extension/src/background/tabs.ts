@@ -65,6 +65,22 @@ export class TabPool {
     return tabId;
   }
 
+  // Только уже открытая вкладка цели, которая сейчас на сайте площадки: новую не
+  // открываем и не уводим со страницы. null — такой нет. Занятую вернуть через release.
+  acquireExisting(key: string, origins: string[]): Promise<number | null> {
+    return this.exclusive(async () => {
+      const pooled = await this.store.get();
+      const entry = pooled[key];
+      if (!entry) return null;
+      const info = await this.tabs.get(entry.tabId);
+      if (info === null || info.status !== "complete" || !info.url) return null;
+      if (!matchesAny(info.url, origins)) return null;
+      entry.closeAt = null;
+      await this.store.set(pooled);
+      return entry.tabId;
+    });
+  }
+
   private async claim(key: string, url: string, origins: string[]): Promise<number> {
     const pooled = await this.store.get();
     let tabId = pooled[key]?.tabId;

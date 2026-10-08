@@ -51,7 +51,11 @@ class SoundCloudApi(Protocol):
 
     async def like(self, user_id: str, track_id: int) -> None: ...
 
-    async def create_playlist(self, title: str, description: str | None) -> dict[str, Any]: ...
+    # request_id — ключ идемпотентности создания (повтор с тем же ключом не создаёт второй
+    # сет); серверные транспорты его не используют, расширение — да (11h).
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> dict[str, Any]: ...
 
     # Список треков сета заменяется целиком (вставки по позиции у SoundCloud нет).
     async def set_playlist_tracks(
@@ -111,7 +115,9 @@ class V2Api:
     async def like(self, user_id: str, track_id: int) -> None:
         await self.transport.request("PUT", f"/users/{user_id}/track_likes/{track_id}")
 
-    async def create_playlist(self, title: str, description: str | None) -> dict[str, Any]:
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> dict[str, Any]:
         playlist: dict[str, Any] = {"title": title, "sharing": "private", "tracks": []}
         if description:
             playlist["description"] = description
@@ -175,7 +181,9 @@ class OfficialApi:
     async def like(self, user_id: str, track_id: int) -> None:
         await self.transport.request("POST", f"/likes/tracks/{track_id}")
 
-    async def create_playlist(self, title: str, description: str | None) -> dict[str, Any]:
+    async def create_playlist(
+        self, title: str, description: str | None, *, request_id: str | None = None
+    ) -> dict[str, Any]:
         playlist: dict[str, Any] = {"title": title, "sharing": "private", "tracks": []}
         if description:
             playlist["description"] = description

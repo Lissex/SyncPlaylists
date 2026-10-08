@@ -191,6 +191,20 @@ class FakeTransferRepository:
             in (source_platform(transfer.source), destination_platform(transfer.destination))
         ]
 
+    async def client_paused_platforms(self, user_id: UUID) -> set[Platform]:
+        platforms: set[Platform] = set()
+        for transfer in self._storage.values():
+            if transfer.user_id == user_id and transfer.status is TransferStatus.PAUSED_CLIENT:
+                platforms.update(
+                    p
+                    for p in (
+                        source_platform(transfer.source),
+                        destination_platform(transfer.destination),
+                    )
+                    if p is not None
+                )
+        return platforms
+
     async def pending_positions(self, transfer_id: UUID) -> list[int]:
         stored = self._storage[transfer_id]
         return [i.position for i in stored.items if i.status is TransferItemStatus.PENDING]
