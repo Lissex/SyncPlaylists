@@ -95,7 +95,7 @@
 | Аудио | **ffmpeg**, **shazamio**, **ACRCloud** (fallback), **chromaprint / pyacoustid** (проверка) |
 | Обогащение | **Genius API**, **LRCLIB**, **Deezer API**, **iTunes Search API**, **Cover Art Archive** |
 | Файлы | **SeaweedFS** (dev) / любой S3 (aioboto3), экспорт: `openpyxl` (XLSX), stdlib (CSV/JSON/M3U8/XSPF) |
-| Площадки | `spotipy`/свой клиент, `yandex-music`, `vkpymusic`, `ytmusicapi`, `soundcloud-v2` / официальный API |
+| Площадки | `spotipy`/свой клиент, `yandex-music`, VK — только через расширение (4c-5), `ytmusicapi`, `soundcloud-v2` / официальный API |
 | Качество | **uv**, **ruff**, **mypy --strict**, **pytest**, pytest-asyncio, **respx**, **testcontainers**, **import-linter**, pre-commit |
 | Наблюдаемость | **structlog**, **Sentry** |
 | Фронтенд | **React 19 + Vite + TS**, TanStack Query/Router, Tailwind + shadcn/ui, **Feature-Sliced Design** |
@@ -629,7 +629,7 @@ class UnitOfWork(Protocol):
 |---|---|---|---|
 | Spotify | Client Credentials (официально) | расширение / «свой Client ID» / OAuth dev-mode (≤5 польз.) | нет (DRM) — не нужно, есть ISRC |
 | Яндекс | `yandex-music` | `yandex-music` → расширение | да |
-| VK | токен (`vkpymusic`), пароли не храним | токен → расширение | да |
+| VK | только расширение (4c-5): веб-API страницы `vk.ru`; серверного пути и токенов нет | только расширение | да (через браузер — позже) |
 | SoundCloud | api-v2 по токену из cookie сайта (UNOFFICIAL, по умолчанию); официальный API — если в Settings есть приложение (Artist Pro) | расширение (4c; v2 с сервера закрыт DataDome) или официальный API | да |
 | YouTube Music | `ytmusicapi` | `ytmusicapi` | да (`yt-dlp`) |
 
@@ -696,7 +696,8 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 | `ru` | всё, что требует РФ-IP (VK, Яндекс) — отдельный воркер | по площадке |
 
 - Rate limit: token bucket в Redis на `(platform, account)` (реализован на этапе 4b, см. 11d).
-- Капча VK → `CaptchaRequired` → фронт показывает картинку → `resume`.
+- Капча VK (как и Яндекса/SoundCloud через расширение) → `PAUSED_CLIENT(captcha)`: человек проходит её
+  на сайте, расширение сообщает `platform_state ok` → перенос продолжается (11h).
 - Аудио-фрагменты не храним: скачали → распознали → удалили. Результаты кэшируем в `recognitions`.
 
 **Реализация с этапа 3:** `transfer`/`match`/`write` — три ARQ-таска
@@ -1716,6 +1717,60 @@ dev, e2e и небольших переносов.
 - Не проверено: видна ли `yandex_login` из страницы (шаг 0). Работает в обоих случаях,
   см. долги.
 
+**Спайк 4c-5-0: VK Музыка из контекста страницы (2026-10-08, Chrome, аккаунт владельца, домашний IP)**
+VK — только транспорт EXTENSION, серверного пути (vkpymusic, токены) нет. Снифер `fetch`/XHR в
+консоли (значения, похожие на секреты, маскировались) и прямые вызовы API из консоли.
+
+*Транспорт*
+- Основной домен — **`vk.ru`**. Веб-клиент музыки ходит в **`web.api.vk.ru/method/<метод>?v=5.289&client_id=6287487`**
+  (POST, форма; `access_token` — в теле). `al_audio.php` остался для служебного (статистика,
+  проигрывание, редактор) — нам не нужен.
+- **Только cookie не работает:** без `access_token` → `error 5`. Токен страницы (`vk1.…`, 220 симв.)
+  лежит в `localStorage` под ключом `6287487:web_token:login:auth`. **Короткоживущий:** токен,
+  перехваченный из запроса страницы, через несколько минут дал `error 5 «access_token has expired»`;
+  страница обновляет его сама, свежий запрос страницы — уже с новым.
+- Итог — правило как у SoundCloud (не как у Яндекса): **функция страницы читает токен из
+  `localStorage` перед каждым вызовом, подставляет в тело запроса, и он не покидает страницу.**
+
+*Чтение*
+- «Моя музыка»: `audio.get(owner_id, offset, count)` работает с веб-токеном (веб-клиент сам
+  использует `catalog.getSection` с курсором — нам не нужен).
+- Плейлист: `audio.getPlaylistById(owner_id, playlist_id[, access_key])` — шапка (`type`: `ugc` /
+  `album` / `generated`, `count`, `access_key`, `permissions.edit`, у альбомов `main_artists`, `year`);
+  `audio.getIdsBySource(source=playlist, entity_id=<owner>_<id>_<access_key>)` — **весь список id
+  одним ответом** (`{audio_id, track_code}`); `audio.getById(audios=…)` — детали. Схема как у
+  Яндекса: список целиком, детали пачками. Свои плейлисты — `audio.getPlaylists`.
+- Поиск: `audio.search(q, count)` работает; `catalog.getAudioSearch` тоже, но первыми отдаёт
+  собственные копии пользователя.
+- Трек: `owner_id`, `id`, `access_key`, `artist`, `title`, `duration`, `album{title, thumb}`,
+  `is_explicit`, `is_licensed`, иногда `main_artists`/`featured_artists`, `release_audio_id`.
+  **ISRC нет.** `subtitle` и `content_restricted` в выборке не встретились.
+- **Официальный трек:** `is_licensed` бесполезен (true у всех, включая «(Unreleased)» и «[V3]»).
+  Официальный релиз = непустые `main_artists` **и** есть `release_audio_id`; у оригинала
+  `owner_id` вида `-2001xxxxxx`.
+
+*Запись*
+- `audio.createPlaylist(owner_id, title, description, no_discover=1, audio_ids)` — создаёт сразу с
+  треками (id без `access_key` принимаются); ответ — плейлист с `id` и `access_key`.
+  **Не идемпотентно** → ключ `create_playlist:<request_id>` (как 4c-1).
+- **Порядок:** `createPlaylist` и `addToPlaylist` ставят **каждый** трек наверх — список `[A,B,C]`
+  читается как `[C,B,A]`; `addToPlaylist` пачкой тоже переворачивает. `editPlaylist(audio_ids=весь
+  список)` — замена списка целиком (так переупорядочивает и сам веб-клиент); в спайке список не
+  изменился (отправили тот же порядок), поэтому «порядок как отправили» подтвердит e2e.
+- **Дубли не отсеиваются:** повторный `addToPlaylist` и повторный `audio.add` создают второй экземпляр.
+- В плейлист VK кладёт **копии** треков от имени пользователя (новые `audio_id`), но в «Моей
+  музыке» они не появляются.
+- «Моя музыка»: `audio.add(owner_id, audio_id, access_key)` → `{new_owner_id, new_audio_id}`,
+  копия встаёт **наверх** (`InsertOrder.TOP`); копия сохраняет `main_artists` и `release_audio_id`
+  — по нему отсеиваем уже добавленное.
+- Удаление (для уборки в тестах): `audio.deletePlaylist`, `audio.delete(owner_id, audio_id)`.
+
+*Ошибки и капча*
+- Формат `{error: {error_code, error_msg, request_params}}`, HTTP 200. Встретились: `5` — нет/истёк
+  токен, `15` — Access denied (чужой плейлист), `104` — Not found (плейлист).
+- 10 поисков 1/с и около десятка записей подряд — **капчи не было**. Её форма (`error 14` с `captcha_sid` /
+  `captcha_img` или новый `redirect_uri`) не подтверждена — долг, уточнить по первой настоящей.
+
 ---
 
 ## 12. Фронтенд и расширение
@@ -1849,7 +1904,8 @@ dev, e2e и небольших переносов.
      **4c-3 (сделано)** — SoundCloud через расширение: гибрид, сверка аккаунта, капча, 422
      `write_requires_extension` (11h); **4c-4 (сделано)** — Яндекс
      через расширение: только cookie сессии, постраничные чтения, капча → `PAUSED_CLIENT`,
-     мимо серверного bucket (11h); дальше Spotify → VK.
+     мимо серверного bucket (11h); **4c-5-0 (сделано)** — спайк VK: веб-API `web.api.vk.ru` с
+     токеном страницы из `localStorage`, порядок и дубли записи (11h); 4c-5 — VK через расширение.
 5. **Фронтенд**: подключение, перенос, ревью.
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).
