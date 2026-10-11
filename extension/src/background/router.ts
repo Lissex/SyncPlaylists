@@ -13,7 +13,13 @@ import {
 } from "../protocol";
 import type { Journal } from "./journal";
 import type { Outbox } from "./outbox";
-import { type AccountCheck, type OperationDef, type PageCall, pageOutcome } from "./registry";
+import {
+  type AccountCheck,
+  type OperationDef,
+  type PageCall,
+  type PageErrorCode,
+  pageOutcome,
+} from "./registry";
 
 export interface RouterDeps {
   registry: ReadonlyMap<string, OperationDef>;
@@ -43,6 +49,12 @@ export interface RouterDeps {
   accountTtlMs?: number;
   // Сколько ждать ответа страницы при проверке площадки (вкладка + запрос профиля).
   probeTimeoutMs?: number;
+  // Перезагрузить вкладку цели: страница сама обновит свой веб-токен (VK). Нет — истёкший
+  // токен сразу считается выходом из аккаунта.
+  reloadTarget?(target: TargetInfo): Promise<void>;
+  // Сколько дать странице после перезагрузки, чтобы она успела обновить токен.
+  reloadSettleMs?: number;
+  random?: () => number;
 }
 
 // detail — понятная человеку причина сбоя проверки (для окна расширения, не для сервера).
@@ -90,6 +102,8 @@ export class TaskRouter {
   private readonly lastWrite = new Map<string, number>();
   // Когда закончилась последняя операция цели (для темпа minIntervalMs).
   private readonly lastOp = new Map<string, number>();
+  // Когда закончилась последняя операция с собственным темпом (OperationDef.minIntervalMs).
+  private readonly lastOfOp = new Map<string, number>();
   // Аккаунт площадки, проверенный запросом профиля: цель → {id, подсказка, когда}.
   private readonly verified = new Map<string, { id: string; hint?: string; at: number }>();
   private readonly now: () => number;
@@ -98,6 +112,8 @@ export class TaskRouter {
   private readonly minWriteIntervalMs: number;
   private readonly accountTtlMs: number;
   private readonly probeTimeoutMs: number;
+  private readonly reloadSettleMs: number;
+  private readonly random: () => number;
 
   constructor(private readonly deps: RouterDeps) {
     this.now = deps.now ?? Date.now;
@@ -106,6 +122,8 @@ export class TaskRouter {
     this.minWriteIntervalMs = deps.minWriteIntervalMs ?? 1_000;
     this.accountTtlMs = deps.accountTtlMs ?? 60_000;
     this.probeTimeoutMs = deps.probeTimeoutMs ?? 45_000;
+    this.reloadSettleMs = deps.reloadSettleMs ?? 3_000;
+    this.random = deps.random ?? Math.random;
   }
 
   handle(task: TaskMessage): Promise<void> {
@@ -156,10 +174,7 @@ export class TaskRouter {
     };
     let raw: unknown;
     try {
-      raw = await withTimeout(
-        this.deps.runInTarget(def.target, def.main, call, existingOnly),
-        this.probeTimeoutMs,
-      );
+      raw = await this.callPage(def, call, this.probeTimeoutMs, existingOnly);
     } catch (error) {
       if (existingOnly) return null; // открытой вкладки площадки нет — это не сбой
       // Причина — только в консоль фона (на сервер не уходит): для диагностики.
@@ -173,7 +188,7 @@ export class TaskRouter {
     }
     if (!outcome.data.ok) {
       this.verified.delete(def.target.key);
-      const failure: ProbeResult = { ok: false, code: outcome.data.code };
+      const failure: ProbeResult = { ok: false, code: taskCode(outcome.data.code) };
       if (outcome.data.detail) failure.detail = outcome.data.detail;
       return failure;
     }
@@ -213,18 +228,26 @@ export class TaskRouter {
     } finally {
       if (def.write) this.lastWrite.set(def.target.key, this.now());
       this.lastOp.set(def.target.key, this.now());
+      if (def.minIntervalMs) this.lastOfOp.set(def.op, this.now());
     }
   }
 
-  // Запись — не чаще minWriteIntervalMs; у цели с minIntervalMs (Яндекс) — и любая
-  // операция не чаще него.
+  // Запись — не чаще minWriteIntervalMs; у цели с minIntervalMs (Яндекс, VK) — и любая
+  // операция не чаще него; у операции со своим темпом (VK «Моя музыка») — ещё и он, со
+  // случайной добавкой: ровный такт похож на бота больше, чем живой разброс.
   private async pace(def: OperationDef): Promise<void> {
     const target = def.target.key;
     const lastWrite = this.lastWrite.get(target);
     const lastOp = this.lastOp.get(target);
+    const lastOfOp = this.lastOfOp.get(def.op);
+    const own =
+      def.minIntervalMs && lastOfOp !== undefined
+        ? lastOfOp + def.minIntervalMs + Math.floor(this.random() * (def.jitterMs ?? 0))
+        : 0;
     const until = Math.max(
       def.write && lastWrite !== undefined ? lastWrite + this.minWriteIntervalMs : 0,
       def.target.minIntervalMs && lastOp !== undefined ? lastOp + def.target.minIntervalMs : 0,
+      own,
     );
     const wait = until - this.now();
     if (wait > 0) await this.sleep(wait);
@@ -271,8 +294,9 @@ export class TaskRouter {
     let raw: unknown;
     try {
       // Дольше дедлайна задачи ждать незачем: ответ сервер уже не примет.
-      raw = await withTimeout(
-        this.deps.runInTarget(def.target, def.main, input),
+      raw = await this.callPage(
+        def,
+        input,
         Math.min(Math.max(deadline - this.now(), 1_000), 600_000),
       );
     } catch {
@@ -284,14 +308,42 @@ export class TaskRouter {
     const page = outcome.data;
     const target = def.target.key;
     if (!page.ok) {
-      if (def.session) this.onSessionProblem(target, page.code, page.account ?? null);
-      throw new TaskFailure(page.code, page.retry_after);
+      const code = taskCode(page.code);
+      // Техническая причина — только в консоль фона (на сервер не уходит): для диагностики.
+      if (page.detail) console.warn(`${def.op}: ${page.code} — ${page.detail}`);
+      if (def.session) this.onSessionProblem(target, code, page.account ?? null);
+      throw new TaskFailure(code, page.retry_after);
     }
     if (def.session && page.account) this.remember(target, page);
     const data = def.result.safeParse(page.data);
     if (!data.success) throw new TaskFailure("bad_result");
     if (JSON.stringify(data.data).length > MAX_MESSAGE_CHARS) throw new TaskFailure("bad_result");
     return data.data;
+  }
+
+  // Вызов функции в странице. Веб-токен страницы истёк (VK) — перезагружаем вкладку
+  // (страница обновит токен сама), даём ей время и повторяем один раз; снова истёк — это
+  // уже выход из аккаунта (taskCode).
+  private async callPage(
+    def: OperationDef,
+    input: unknown,
+    timeoutMs: number,
+    existingOnly = false,
+  ): Promise<unknown> {
+    const run = () =>
+      withTimeout(
+        existingOnly
+          ? this.deps.runInTarget(def.target, def.main, input, true)
+          : this.deps.runInTarget(def.target, def.main, input),
+        timeoutMs,
+      );
+    const raw = await run();
+    const outcome = pageOutcome.safeParse(raw);
+    const expired = outcome.success && !outcome.data.ok && outcome.data.code === "token_expired";
+    if (!expired || !this.deps.reloadTarget) return raw;
+    await withTimeout(this.deps.reloadTarget(def.target), timeoutMs);
+    await this.sleep(this.reloadSettleMs);
+    return run();
   }
 
   private onSessionProblem(target: string, code: TaskErrorCode, account: string | null): void {
@@ -324,4 +376,10 @@ export class TaskRouter {
   private async send(message: ResultMessage): Promise<void> {
     if (!this.deps.sendResult(message)) await this.deps.outbox.put(message);
   }
+}
+
+// Код страницы → код для сервера: token_expired, не снятый перезагрузкой вкладки, — выход
+// из аккаунта (человеку нужно снова войти на сайт).
+function taskCode(code: PageErrorCode): TaskErrorCode {
+  return code === "token_expired" ? "logged_out" : code;
 }

@@ -57,6 +57,7 @@
 - Сквозной тест расширения (фейковое расширение по WebSocket): `make e2e-extension`
 - Ручной e2e SoundCloud через настоящее расширение: `make e2e-soundcloud EMAIL=... LINK="..."`
 - Ручной e2e Яндекса через настоящее расширение (лайки SoundCloud → Яндекс): `make e2e-yandex EMAIL=...`
+- Ручной e2e VK через настоящее расширение (плейлист → VK, сначала 10, потом 50 треков; «Моя музыка» ≤ 20): `make e2e-vk EMAIL=... LINK="..." [MAX=50] [LIBRARY=1]`
 - Расширение (`extension/`, Node 24 + pnpm, на хосте): `make ext-install`, `make ext-test`
   (типы + формат + vitest), `make ext-build` / `make ext-build-firefox` → `extension/.output/`
 

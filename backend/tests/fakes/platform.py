@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Callable, Sequence
+from uuid import UUID
 
 from syncplaylists.shared_kernel.application.ports import AccountAccess
 from syncplaylists.shared_kernel.domain.errors import PlatformNotSupportedError
@@ -157,3 +158,32 @@ class FakeGatewayFactory:
         if access.platform not in self._gateways:
             self._gateways[access.platform] = FakeMusicPlatformGateway(platform=access.platform)
         return self._gateways[access.platform]
+
+
+class InMemoryWriteGuard:
+    """shared_kernel.PlatformWriteGuard в памяти: суточный бюджет без дат (одни сутки на
+    тест), ступени flood control."""
+
+    def __init__(self, *, seconds_to_next_day: float = 3600.0) -> None:
+        self.used: dict[tuple[Platform, UUID, str], int] = {}
+        self.flood: dict[tuple[Platform, UUID], int] = {}
+        self.seconds_to_next_day = seconds_to_next_day
+
+    async def take_daily(
+        self, platform: Platform, account_id: UUID, action: str, limit: int
+    ) -> float | None:
+        key = (platform, account_id, action)
+        if self.used.get(key, 0) >= limit:
+            return self.seconds_to_next_day
+        self.used[key] = self.used.get(key, 0) + 1
+        return None
+
+    async def flood_penalty(
+        self, platform: Platform, account_id: UUID, steps: Sequence[float]
+    ) -> float:
+        level = self.flood.get((platform, account_id), 0) + 1
+        self.flood[(platform, account_id)] = level
+        return steps[min(level, len(steps)) - 1]
+
+    async def clear_flood(self, platform: Platform, account_id: UUID) -> None:
+        self.flood.pop((platform, account_id), None)

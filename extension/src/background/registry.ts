@@ -18,6 +18,7 @@ import { z } from "zod";
 
 import { diagnosticsTarget, type TargetInfo } from "../platforms";
 import { soundcloudOperations } from "./soundcloud";
+import { vkOperations } from "./vk";
 import { yandexOperations } from "./yandex";
 
 // Что возвращает функция из страницы. Код ошибки — из закрытого списка: текст ошибки
@@ -34,6 +35,9 @@ export const PAGE_ERROR_CODES = [
   "conflict",
   // Площадка не приняла запрос (400) — повтор не поможет.
   "bad_request",
+  // Веб-токен страницы истёк (VK) — только внутри расширения: роутер перезагружает вкладку
+  // и повторяет задачу; на сервер не уходит.
+  "token_expired",
 ] as const;
 export type PageErrorCode = (typeof PAGE_ERROR_CODES)[number];
 // account — id аккаунта площадки, который страница проверила полным запросом профиля
@@ -84,6 +88,10 @@ export interface OperationDef {
   args: z.ZodType<Record<string, unknown>>;
   result: z.ZodType<Record<string, unknown>>;
   main: (args: never) => PageOutcome | Promise<PageOutcome>;
+  // Темп самой операции: не чаще раза в minIntervalMs (+ случайно до jitterMs) — для
+  // бережных записей (VK «Моя музыка»: 2–3 с), сверх общего темпа цели.
+  minIntervalMs?: number;
+  jitterMs?: number;
 }
 
 // ------------------------------------------------------------------ diagnostics.echo
@@ -126,5 +134,6 @@ export function buildRegistry(options: RegistryOptions): ReadonlyMap<string, Ope
   }
   defs.push(...soundcloudOperations());
   defs.push(...yandexOperations());
+  defs.push(...vkOperations());
   return new Map(defs.map((def) => [def.op, def]));
 }

@@ -351,3 +351,101 @@ describe("канарейка Яндекса: настоящая функция �
     ws.stop();
   });
 });
+
+describe("канарейка VK: веб-токен страницы уходит только в запрос к VK", () => {
+  beforeEach(() => fakeBrowser.reset());
+
+  // Токен страницы — в localStorage (как у vk.ru), ответы API несут ссылки на аудио и
+  // лишние поля с секретами. На сервер не уходит ни токен, ни ссылки, ни лишнее.
+  const TOKEN = `vk1.${CANARY}`;
+  const rawTrack = {
+    owner_id: -2001,
+    id: 5,
+    access_key: "ab12",
+    artist: "Artist",
+    title: "Song",
+    duration: 200,
+    url: `https://cs1.vkuseraudio.net/${CANARY}.mp3`,
+    track_code: CANARY,
+    ads: { content_id: CANARY },
+    main_artists: [{ name: "Artist", id: CANARY, domain: CANARY }],
+    release_audio_id: "-2001_5",
+  };
+
+  it.each([
+    ["whoami", {}],
+    ["search", { q: "song", count: 10 }],
+    ["tracks", { ids: ["-2001_5_ab12"] }],
+    ["library_page", { offset: 0, limit: 10 }],
+  ])("%s", async (op, args) => {
+    const storage: Record<string, string> = {
+      "6287487:web_token:login:auth": JSON.stringify({ access_token: TOKEN, user_id: 100500 }),
+      other: CANARY,
+    };
+    vi.stubGlobal("localStorage", {
+      get length() {
+        return Object.keys(storage).length;
+      },
+      key: (i: number) => Object.keys(storage)[i] ?? null,
+      getItem: (k: string) => storage[k] ?? null,
+    });
+    const bodies: string[] = [];
+    const fetchMock = vi.fn(async (input: string, init: RequestInit = {}) => {
+      bodies.push(String(init.body));
+      const method = new URL(input).pathname.replace("/method/", "");
+      const response =
+        method === "users.get"
+          ? [{ id: 100500, first_name: "Me", last_name: "User", email: CANARY }]
+          : method === "audio.getById"
+            ? [rawTrack]
+            : { count: 1, items: [rawTrack], next_from: CANARY };
+      return Response.json({ response });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const socket = new FakeSocket("ws://test");
+    const ws: WsClient = new WsClient({
+      url: "ws://test",
+      version: "0.1.0",
+      makeSocket: () => socket,
+      getToken: async () => DEVICE_TOKEN,
+      onRevoked: async () => undefined,
+      onState: () => undefined,
+      onWelcome: () => undefined,
+      onTask: (task) => void router.handle(task),
+    });
+    const router = new TaskRouter({
+      registry: buildRegistry({ apiBase: "http://localhost:8000", diagnostics: false }),
+      journal: new Journal(),
+      outbox: new Outbox(),
+      hasPermission: async () => true,
+      runInTarget: async (_target, main, input) => (main as (a: unknown) => unknown)(input),
+      sendResult: (message) => ws.send(message),
+      sendProgress: (taskId) => void ws.send({ type: "progress", task_id: taskId }),
+    });
+
+    await ws.ensure();
+    socket.open();
+    socket.receive({ type: "welcome", device_id: "d1", heartbeat_seconds: 20 });
+    socket.receive({
+      type: "task",
+      task_id: "t1",
+      op: `vk.${op}`,
+      args,
+      deadline: Date.now() / 1000 + 60,
+      idempotency_key: null,
+      account: "100500",
+    });
+    for (let i = 0; i < 8; i++) await flush();
+
+    const frames = socket.messages();
+    expect(frames.map((f) => f.type)).toEqual(["hello", "result"]);
+    expect(frames[1]).toMatchObject({ ok: true });
+    for (const frame of frames) expect(forbiddenPaths(frame)).toEqual([]);
+    expect(socket.sent.join("\n")).not.toContain(CANARY);
+    // Токен ушёл только в запросы к VK.
+    expect(bodies.every((body) => body.includes(`access_token=${encodeURIComponent(TOKEN)}`))).toBe(
+      true,
+    );
+    ws.stop();
+  });
+});

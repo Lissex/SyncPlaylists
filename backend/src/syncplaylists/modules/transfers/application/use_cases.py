@@ -1,4 +1,5 @@
 import contextlib
+import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -57,6 +58,8 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     Transport,
 )
 
+logger = logging.getLogger(__name__)
+
 _RUN_TRANSFER = "run_transfer"
 _RUN_MATCH = "run_match"
 _RUN_WRITE = "run_write"
@@ -110,6 +113,7 @@ async def _fail_running_transfer(
 ) -> None:
     """Для «шапки» переноса (run_match): условный переход RUNNING → FAILED в БД, без
     полного сохранения агрегата, которое перетёрло бы items параллельных джоб."""
+    logger.warning("Перенос %s → FAILED: %s", transfer.id, reason)
     if await transfers.transition_status(
         transfer.id, TransferStatus.RUNNING, TransferStatus.FAILED
     ):
@@ -127,6 +131,7 @@ async def _fail_transfer(
     """Аккаунт отключили/он истёк, плейлист пропал и т.п. посреди переноса: перенос
     FAILED (с событием для SSE), без исключения из ARQ-таска — повтор джобы не поможет.
     Только вне фазы RUNNING: полный save перетёр бы items параллельных run_match."""
+    logger.warning("Перенос %s → FAILED: %s", transfer.id, reason)
     transfer.fail(reason, datetime.now(UTC))
     uow.track(transfer)
     await transfers.save(transfer)
@@ -459,19 +464,21 @@ class PauseTransferForQuotaUseCase:
         self._transfers = transfers
         self._task_queue = task_queue
 
-    async def execute(self, transfer_id: UUID, retry_after_seconds: float) -> None:
+    async def execute(
+        self, transfer_id: UUID, retry_after_seconds: float, *, reason: str | None = None
+    ) -> None:
         now = datetime.now(UTC)
         wanted = now + timedelta(seconds=retry_after_seconds)
         async with self._uow as uow:
             # Шапка — до UPDATE: доменный переход идёт из её прежнего статуса.
             header = await self._transfers.get_header(transfer_id)
             assert header is not None, f"Transfer {transfer_id} не найден"
-            resume_at = await self._transfers.pause_for_quota(transfer_id, wanted)
+            resume_at = await self._transfers.pause_for_quota(transfer_id, wanted, reason)
             if resume_at is None:
                 return  # перенос уже не в фазе с запросами к площадке
             if resume_at == wanted:  # срок задали мы — событие (иначе чужая пауза длиннее)
                 with contextlib.suppress(InvalidTransferTransitionError):
-                    header.pause_for_quota(resume_at, now)
+                    header.pause_for_quota(resume_at, now, reason=reason)
                 uow.track(header)
             await uow.commit()
         # Ключ — с моментом: продление паузы ставит новую задачу на новый срок, а старая

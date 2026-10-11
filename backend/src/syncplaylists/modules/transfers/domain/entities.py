@@ -97,7 +97,8 @@ class Transfer(AggregateRoot):
     resume_at: datetime | None = None
     # PAUSED_QUOTA и PAUSED_CLIENT: фаза, в которую вернуться.
     paused_from: TransferStatus | None = None
-    # PAUSED_CLIENT: почему ждём расширение (ExtensionUnavailableReason).
+    # PAUSED_CLIENT: почему ждём расширение (ExtensionUnavailableReason); PAUSED_QUOTA —
+    # почему площадка просит подождать, если известно (дневной лимит VK, flood control).
     pause_reason: str | None = None
     # Источник или назначение подключены через браузерное расширение: задачи переноса
     # идут в отдельную очередь, запись — пачками. Решается один раз при старте.
@@ -216,19 +217,29 @@ class Transfer(AggregateRoot):
             self.record_event(TransferWritingStarted(occurred_at=now, transfer_id=self.id))
         return next_status
 
-    def pause_for_quota(self, resume_at: datetime, now: datetime) -> bool:
+    def pause_for_quota(
+        self, resume_at: datetime, now: datetime, *, reason: str | None = None
+    ) -> bool:
         """Квота площадки: пауза всего переноса до resume_at. Уже на паузе — срок только
         сдвигается позже (более ранний 429 не сокращает чужую паузу). True — срок
-        изменился (есть событие)."""
+        изменился (есть событие). Причина без новой не стирается."""
         self._ensure_status(*_QUOTA_PAUSABLE, TransferStatus.PAUSED_QUOTA)
         if self.status is not TransferStatus.PAUSED_QUOTA:
             self.paused_from = self.status
             self.status = TransferStatus.PAUSED_QUOTA
+            self.pause_reason = None
         elif self.resume_at is not None and resume_at <= self.resume_at:
             return False
         self.resume_at = resume_at
+        if reason is not None:
+            self.pause_reason = reason
         self.record_event(
-            TransferPausedForQuota(occurred_at=now, transfer_id=self.id, resume_at=resume_at)
+            TransferPausedForQuota(
+                occurred_at=now,
+                transfer_id=self.id,
+                resume_at=resume_at,
+                reason=self.pause_reason,
+            )
         )
         return True
 
@@ -238,6 +249,7 @@ class Transfer(AggregateRoot):
         self.status = self.paused_from
         self.paused_from = None
         self.resume_at = None
+        self.pause_reason = None
         self.record_event(
             TransferResumed(occurred_at=now, transfer_id=self.id, status=self.status.value)
         )

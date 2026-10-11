@@ -65,6 +65,27 @@ async def test_pause_extend_and_resume(session: AsyncSession, user_id: UUID) -> 
     )
 
 
+async def test_pause_reason_kept_by_extension_and_cleared_on_resume(
+    session: AsyncSession, user_id: UUID
+) -> None:
+    repo = SqlTransferRepository(session, SqlPlatformTrackRepository(session))
+    transfer = await _saved_transfer(repo, user_id)
+    await session.flush()
+    now = datetime.now(UTC)
+
+    await repo.pause_for_quota(transfer.id, now + timedelta(hours=5), "vk_library_daily_limit")
+    # Продление без причины прежнюю причину не стирает.
+    await repo.pause_for_quota(transfer.id, now + timedelta(hours=6))
+    sample = await repo.progress_sample(transfer.id, recent=1)
+    assert sample is not None
+    assert sample.pause_reason == "vk_library_daily_limit"
+
+    await repo.resume_from_quota(transfer.id, now + timedelta(hours=7))
+    resumed = await repo.get_header(transfer.id)
+    assert resumed is not None
+    assert resumed.pause_reason is None
+
+
 async def test_finished_transfer_is_not_paused(session: AsyncSession, user_id: UUID) -> None:
     repo = SqlTransferRepository(session, SqlPlatformTrackRepository(session))
     transfer = await _saved_transfer(repo, user_id)

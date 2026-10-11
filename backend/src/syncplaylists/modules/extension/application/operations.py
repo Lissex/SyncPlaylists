@@ -60,6 +60,10 @@ OPERATIONS: Final[Mapping[str, OperationSpec]] = {
     "library_ids_page": OperationSpec(timeout_seconds=60),
     "set_description": OperationSpec(timeout_seconds=30, write=True),
     "like_many": OperationSpec(timeout_seconds=30, write=True),
+    # VK (4c-5) обходится общими: playlist_info, playlist_page/library_page (страница —
+    # срез списка с деталями треков), tracks, search, create_playlist, set_playlist_tracks
+    # (замена списка целиком) и add_to_library (по одному треку, темп 2–3 с держит
+    # расширение).
 }
 
 

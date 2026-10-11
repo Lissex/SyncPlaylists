@@ -21,6 +21,7 @@ from syncplaylists.infrastructure.ratelimit.redis_token_bucket import (
     RedisTokenBucketLimiter,
     TokenBucketLimits,
 )
+from syncplaylists.infrastructure.ratelimit.redis_write_guard import RedisWriteGuard
 from syncplaylists.infrastructure.security.aes_gcm import AesGcmTokenCipher
 from syncplaylists.integrations.platforms.extension.gateway import (
     ExtensionGatewayBuilder,
@@ -48,6 +49,8 @@ from syncplaylists.integrations.platforms.soundcloud.factory import (
     SoundCloudProfileFetcher,
 )
 from syncplaylists.integrations.platforms.soundcloud.tokens import TokenEndpoint
+from syncplaylists.integrations.platforms.vk.factory import VkExtensionGatewayBuilder
+from syncplaylists.integrations.platforms.vk.gateway import VkLimits
 from syncplaylists.integrations.platforms.yandex.factory import (
     YandexClientFactory,
     YandexExtensionGatewayBuilder,
@@ -180,6 +183,7 @@ from syncplaylists.shared_kernel.application.ports import (
     EventPublisher,
     GatewayFactory,
     PlatformRateLimiter,
+    PlatformWriteGuard,
     TaskLane,
     TaskQueue,
     UnitOfWork,
@@ -328,6 +332,10 @@ class GatewayProvider(Provider):
         )
 
     @provide
+    def get_write_guard(self, redis: Redis) -> PlatformWriteGuard:
+        return RedisWriteGuard(redis)
+
+    @provide
     def get_yandex_clients(
         self, http: httpx.AsyncClient, limiter: PlatformRateLimiter, settings: Settings
     ) -> YandexClientFactory:
@@ -406,6 +414,7 @@ class GatewayProvider(Provider):
         soundcloud_apis: SoundCloudApiFactory,
         search_cache: TextCache,
         extension_channel: ExtensionChannel,
+        write_guard: PlatformWriteGuard,
     ) -> GatewayFactory:
         yandex = YandexGatewayBuilder(
             yandex_clients, batch_size=settings.platforms.yandex.batch_size
@@ -462,6 +471,20 @@ class GatewayProvider(Provider):
                     extension_channel, batch_size=settings.platforms.yandex.batch_size
                 )
             ),
+        )
+        # VK — только через расширение (4c-5). Поиск не кэшируется общим кэшем: в выдаче
+        # VK есть access_key треков и копии из «Моей музыки» искавшего — это не публичный
+        # каталог, делить его между пользователями нельзя. Настоящий шлюз VK перекрывает
+        # общий из EXTENSION__GENERIC_PLATFORMS.
+        vk = settings.platforms.vk
+        extension_builders[Platform.VK] = VkExtensionGatewayBuilder(
+            extension_channel,
+            write_guard,
+            VkLimits(
+                library_daily_limit=vk.library_daily_limit,
+                flood_backoff_seconds=tuple(minutes * 60 for minutes in vk.flood_backoff_minutes),
+            ),
+            page_size=vk.page_size,
         )
         # SoundCloud по токену — только чтение: запись закрыта антиботом DataDome (11e).
         read_only: dict[Platform, frozenset[Transport]] = {}

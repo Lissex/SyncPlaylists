@@ -1,3 +1,4 @@
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Final
@@ -44,6 +45,9 @@ router = APIRouter(prefix="/transfers", tags=["transfers"])
 links_router = APIRouter(prefix="/links", tags=["links"])
 
 
+logger = logging.getLogger(__name__)
+
+
 def _unprocessable(code: str, message: str) -> HTTPException:
     return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"code": code, "message": message})
 
@@ -88,6 +92,9 @@ def _link_or_platform_error(exc: Exception) -> HTTPException:
             },
         )
     assert isinstance(exc, PlatformError)
+    # Причина — в лог: без неё «площадка не ответила» не отличить от сбоя схемы ответа
+    # расширения. str(exc) — код и имя ошибки площадки, без токенов и данных ответа.
+    logger.warning("Ссылка/перенос: ошибка площадки %s: %s", type(exc).__name__, exc)
     return HTTPException(
         status.HTTP_503_SERVICE_UNAVAILABLE,
         {"code": "platform_unavailable", "message": "Площадка не ответила, попробуйте позже"},

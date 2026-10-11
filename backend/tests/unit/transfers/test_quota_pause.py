@@ -107,6 +107,22 @@ async def test_quota_pauses_whole_transfer_and_schedules_resume() -> None:
     assert [e.resume_at for e in paused] == [stored.resume_at]
 
 
+async def test_quota_pause_keeps_reason_until_resume() -> None:
+    env = _env()
+    transfer = await _running(env)
+
+    await _pause(env).execute(transfer.id, 600, reason="vk_library_daily_limit")
+
+    stored = await _stored(env, transfer)
+    assert stored.pause_reason == "vk_library_daily_limit"
+    paused = [e for e in _events(env) if isinstance(e, TransferPausedForQuota)]
+    assert [e.reason for e in paused] == ["vk_library_daily_limit"]
+
+    assert stored.resume_at is not None
+    await env.transfers.resume_from_quota(transfer.id, stored.resume_at)
+    assert (await _stored(env, transfer)).pause_reason is None
+
+
 async def test_shorter_second_429_does_not_shorten_pause() -> None:
     env = _env()
     transfer = await _running(env)

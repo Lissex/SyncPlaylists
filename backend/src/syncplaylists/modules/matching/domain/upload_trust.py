@@ -49,7 +49,11 @@ class UploadTrust:
 
     def classify(self, candidate: TrackCandidate, source_artists: Iterable[str]) -> UploadVerdict:
         if candidate.uploader is None:
-            return UploadVerdict(UploadKind.UNKNOWN)
+            # Площадка без заливщика, но с признаком релиза (VK: main_artists +
+            # release_audio_id) — официальный; прочие — неизвестно, без штрафа: у VK так
+            # выглядит и обычная копия трека в чьей-то медиатеке.
+            kind = UploadKind.OFFICIAL if candidate.rights_holder else UploadKind.UNKNOWN
+            return UploadVerdict(kind)
         uploader = _compact(candidate.uploader)
         for artist in source_artists:
             name = _compact(artist)

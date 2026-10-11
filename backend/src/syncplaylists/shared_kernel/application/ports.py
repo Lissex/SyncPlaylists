@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -179,3 +179,23 @@ class PlatformRateLimiter(Protocol):
     async def recent_requests(
         self, platform: Platform, account_id: UUID | None, minutes: int
     ) -> int: ...
+
+
+class PlatformWriteGuard(Protocol):
+    """Бережная запись на площадку от имени аккаунта (VK, 4c-5): суточный бюджет действий
+    и нарастающая пауза после «flood control». Счётчики — на аккаунт, не на сервер:
+    запросы идут из браузера пользователя."""
+
+    # Взять одну единицу суточного бюджета действия. None — взята; иначе — через сколько
+    # секунд начнутся следующие сутки (бюджет исчерпан, ничего не взято).
+    async def take_daily(
+        self, platform: Platform, account_id: UUID, action: str, limit: int
+    ) -> float | None: ...
+
+    # Площадка ответила «flood control»: следующая ступень паузы (steps — по возрастанию,
+    # последняя повторяется). Ступень сбрасывает clear_flood после успешной записи.
+    async def flood_penalty(
+        self, platform: Platform, account_id: UUID, steps: Sequence[float]
+    ) -> float: ...
+
+    async def clear_flood(self, platform: Platform, account_id: UUID) -> None: ...

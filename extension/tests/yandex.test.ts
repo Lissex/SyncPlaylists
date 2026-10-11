@@ -650,6 +650,30 @@ describe("роутер Яндекса", () => {
     ]);
   });
 
+  it("playlist_page по uuid с точкой (ссылка music.yandex.ru/playlists/ar.…) — в страницу", async () => {
+    const seen = stubFetch({
+      "GET /account/status": { json: STATUS },
+      "GET /playlist/ar.3b407147-297b-413a-b708-74c814e1ccfe": { json: playlist(1) },
+    });
+    const { router: r, sent } = router();
+
+    await r.handle(
+      task("playlist_page", {
+        owner: null,
+        kind: null,
+        uuid: "ar.3b407147-297b-413a-b708-74c814e1ccfe",
+        offset: 0,
+        limit: 10,
+        revision: null,
+      }),
+    );
+
+    expect(sent[0]).toMatchObject({ ok: true });
+    expect(seen.map((s) => s.url.pathname)).toContain(
+      "/playlist/ar.3b407147-297b-413a-b708-74c814e1ccfe",
+    );
+  });
+
   it("probe whoami: кто вошёл (для подключения площадки)", async () => {
     stubFetch({ "GET /account/status": { json: STATUS } });
     const { router: r } = router();
