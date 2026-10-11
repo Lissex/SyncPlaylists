@@ -9,26 +9,38 @@ export class ApiError extends Error {
   readonly code: string | null;
   /** Retry-After в секундах (429: «попробуйте через N»). */
   readonly retryAfter: number | null;
+  /** Остальные поля `detail`-объекта (например, `reason` у extension_unavailable). */
+  readonly detail: Readonly<Record<string, unknown>>;
 
-  constructor(status: number, message: string, code: string | null, retryAfter: number | null) {
+  constructor(
+    status: number,
+    message: string,
+    code: string | null,
+    retryAfter: number | null,
+    detail: Record<string, unknown> = {},
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.retryAfter = retryAfter;
+    this.detail = detail;
   }
 }
 
 const FALLBACK_MESSAGE = "Что-то пошло не так. Попробуйте ещё раз.";
 
-function parseDetail(body: unknown): { message: string; code: string | null } {
+type ParsedDetail = { message: string; code: string | null; extra?: Record<string, unknown> };
+
+function parseDetail(body: unknown): ParsedDetail {
   const detail = (body as { detail?: unknown } | null)?.detail;
   if (typeof detail === "string") return { message: detail, code: null };
   if (detail && typeof detail === "object" && !Array.isArray(detail)) {
-    const { message, code } = detail as { message?: unknown; code?: unknown };
+    const { message, code, ...extra } = detail as Record<string, unknown>;
     return {
       message: typeof message === "string" ? message : FALLBACK_MESSAGE,
       code: typeof code === "string" ? code : null,
+      extra,
     };
   }
   if (Array.isArray(detail)) return { message: "Проверьте введённые данные", code: "validation" };
@@ -49,9 +61,9 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   if (response.status === 204) return undefined as T;
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    const { message, code } = parseDetail(body);
+    const { message, code, extra } = parseDetail(body);
     const retryAfter = Number(response.headers.get("Retry-After")) || null;
-    throw new ApiError(response.status, message, code, retryAfter);
+    throw new ApiError(response.status, message, code, retryAfter, extra);
   }
   return body as T;
 }

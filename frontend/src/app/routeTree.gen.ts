@@ -16,6 +16,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppConnectionsRouteImport } from './routes/_app/connections'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppTransfersIndexRouteImport } from './routes/_app/transfers.index'
+import { Route as AppTransfersTransferIdRouteImport } from './routes/_app/transfers.$transferId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -51,6 +52,11 @@ const AppTransfersIndexRoute = AppTransfersIndexRouteImport.update({
   path: '/transfers/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppTransfersTransferIdRoute = AppTransfersTransferIdRouteImport.update({
+  id: '/transfers/$transferId',
+  path: '/transfers/$transferId',
+  getParentRoute: () => AppRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -58,6 +64,7 @@ export interface FileRoutesByFullPath {
   '/register': typeof RegisterRoute
   '/connections': typeof AppConnectionsRoute
   '/settings': typeof AppSettingsRoute
+  '/transfers/$transferId': typeof AppTransfersTransferIdRoute
   '/transfers/': typeof AppTransfersIndexRoute
 }
 export interface FileRoutesByTo {
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/connections': typeof AppConnectionsRoute
   '/settings': typeof AppSettingsRoute
   '/': typeof AppIndexRoute
+  '/transfers/$transferId': typeof AppTransfersTransferIdRoute
   '/transfers': typeof AppTransfersIndexRoute
 }
 export interface FileRoutesById {
@@ -76,14 +84,28 @@ export interface FileRoutesById {
   '/_app/connections': typeof AppConnectionsRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/transfers/$transferId': typeof AppTransfersTransferIdRoute
   '/_app/transfers/': typeof AppTransfersIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/login' | '/register' | '/connections' | '/settings' | '/transfers/'
+    | '/'
+    | '/login'
+    | '/register'
+    | '/connections'
+    | '/settings'
+    | '/transfers/$transferId'
+    | '/transfers/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/register' | '/connections' | '/settings' | '/' | '/transfers'
+  to:
+    | '/login'
+    | '/register'
+    | '/connections'
+    | '/settings'
+    | '/'
+    | '/transfers/$transferId'
+    | '/transfers'
   id:
     | '__root__'
     | '/_app'
@@ -92,6 +114,7 @@ export interface FileRouteTypes {
     | '/_app/connections'
     | '/_app/settings'
     | '/_app/'
+    | '/_app/transfers/$transferId'
     | '/_app/transfers/'
   fileRoutesById: FileRoutesById
 }
@@ -152,6 +175,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppTransfersIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/transfers/$transferId': {
+      id: '/_app/transfers/$transferId'
+      path: '/transfers/$transferId'
+      fullPath: '/transfers/$transferId'
+      preLoaderRoute: typeof AppTransfersTransferIdRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
@@ -159,6 +189,7 @@ interface AppRouteChildren {
   AppConnectionsRoute: typeof AppConnectionsRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppTransfersTransferIdRoute: typeof AppTransfersTransferIdRoute
   AppTransfersIndexRoute: typeof AppTransfersIndexRoute
 }
 
@@ -166,6 +197,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppConnectionsRoute: AppConnectionsRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,
+  AppTransfersTransferIdRoute: AppTransfersTransferIdRoute,
   AppTransfersIndexRoute: AppTransfersIndexRoute,
 }
 

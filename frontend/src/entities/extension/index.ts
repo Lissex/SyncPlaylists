@@ -6,3 +6,4 @@ export {
   type PlatformSession,
   type SessionState,
 } from "./api/extension";
+export { extensionReasonText } from "./lib/reasons";
