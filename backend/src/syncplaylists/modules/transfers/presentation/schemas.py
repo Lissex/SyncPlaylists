@@ -10,6 +10,7 @@ from syncplaylists.modules.transfers.application.dto import (
     TransferProgressDto,
 )
 from syncplaylists.modules.transfers.application.links import LinkKind, ResolvedLinkDto
+from syncplaylists.modules.transfers.application.ports import TransferSummary
 from syncplaylists.modules.transfers.domain.value_objects import (
     ExistingPlaylist,
     LibraryDestination,
@@ -154,6 +155,10 @@ class TransferItemResponse(BaseModel):
     status: str
     source_platform: Platform
     source_external_id: str
+    # Что искали — название трека источника (null, если его нет в каталоге).
+    source_title: str | None = None
+    source_artist: str | None = None
+    source_duration_ms: int | None = None
     match: MatchResultSchema | None
     candidates: list[TrackCandidateSchema]
 
@@ -175,6 +180,9 @@ class TransferItemResponse(BaseModel):
             status=dto.status,
             source_platform=dto.source_track.platform,
             source_external_id=dto.source_track.external_id,
+            source_title=dto.source_meta.title if dto.source_meta else None,
+            source_artist=dto.source_meta.artist if dto.source_meta else None,
+            source_duration_ms=dto.source_meta.duration_ms if dto.source_meta else None,
             match=match,
             candidates=[
                 TrackCandidateSchema(
@@ -204,6 +212,8 @@ class TransferProgressSchema(BaseModel):
     not_found: int
     added: int
     failed: int
+    # Пропущены пользователем на ревью (в т.ч. не решённые сомнительные при «Записать»).
+    skipped: int = 0
     # Оценка оставшегося времени матчинга по скорости последних треков, секунды.
     # Только для status=running; null — данных пока мало или фаза не матчинг.
     eta_seconds: int | None
@@ -226,6 +236,7 @@ class TransferProgressSchema(BaseModel):
             not_found=dto.not_found,
             added=dto.added,
             failed=dto.failed,
+            skipped=dto.skipped,
             eta_seconds=dto.eta_seconds,
             resume_at=dto.resume_at,
             pause_reason=dto.pause_reason,
@@ -243,6 +254,10 @@ class TransferResponse(BaseModel):
     # Созданные под NewPlaylist плейлисты: обычно один, несколько — если треков больше,
     # чем вмещает плейлист площадки («<название> (1/N)», ...).
     resolved_targets: list[str] = []
+    source_title: str | None = None
+    created_at: datetime | None = None
+    # Сколько треков найдено каждым методом: isrc, fuzzy, audio, manual, ...
+    match_methods: dict[str, int] = {}
 
     @classmethod
     def from_dto(cls, dto: TransferDto) -> "TransferResponse":
@@ -255,7 +270,65 @@ class TransferResponse(BaseModel):
             items=[TransferItemResponse.from_dto(item) for item in dto.items],
             progress=TransferProgressSchema.from_dto(dto.progress) if dto.progress else None,
             resolved_targets=[ref.external_id for ref in dto.resolved_targets],
+            source_title=dto.source_title,
+            created_at=dto.created_at,
+            match_methods=dict(dto.match_methods),
         )
+
+
+class TransferItemsPage(BaseModel):
+    items: list[TransferItemResponse]
+    # Передать как `after` за следующей страницей; null — страниц больше нет.
+    next_after: int | None
+
+
+class TransferSummaryResponse(BaseModel):
+    id: UUID
+    status: str
+    source: PlaylistSourceSchema | LibrarySourceSchema
+    destination: ExistingPlaylistSchema | NewPlaylistSchema | LibraryDestinationSchema
+    source_title: str | None
+    total: int
+    matched: int
+    uncertain: int
+    not_found: int
+    added: int
+    failed: int
+    skipped: int
+    resolved_targets: list[str]
+    resume_at: datetime | None
+    pause_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_summary(cls, summary: TransferSummary) -> "TransferSummaryResponse":
+        progress = summary.progress
+        return cls(
+            id=summary.id,
+            status=summary.status.value,
+            source=source_to_schema(summary.source),
+            destination=destination_to_schema(summary.destination),
+            source_title=summary.source_title,
+            total=progress.total,
+            matched=progress.matched,
+            uncertain=progress.uncertain,
+            not_found=progress.not_found,
+            added=progress.added,
+            failed=progress.failed,
+            skipped=progress.skipped,
+            resolved_targets=[ref.external_id for ref in summary.resolved_targets],
+            resume_at=summary.resume_at,
+            pause_reason=summary.pause_reason,
+            created_at=summary.created_at,
+            updated_at=summary.updated_at,
+        )
+
+
+class TransferHistoryPage(BaseModel):
+    items: list[TransferSummaryResponse]
+    # Передать как `cursor` за следующей страницей; null — это последняя.
+    next_cursor: str | None
 
 
 class ResolveItemRequest(BaseModel):

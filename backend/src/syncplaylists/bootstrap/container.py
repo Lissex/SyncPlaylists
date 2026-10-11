@@ -111,6 +111,7 @@ from syncplaylists.modules.extension.application.ports import (
     ExtensionChannel,
     ExtensionDeviceRepository,
     ExtensionHub,
+    ExtensionPresenceReader,
     PairingStore,
     ProbeStore,
 )
@@ -119,6 +120,7 @@ from syncplaylists.modules.extension.application.use_cases import (
     ClaimPairingUseCase,
     ConfirmPairingUseCase,
     ConnectPlatformViaExtensionUseCase,
+    GetExtensionStatusUseCase,
     ListDevicesUseCase,
     PairingConfig,
     RevokeDeviceUseCase,
@@ -165,6 +167,8 @@ from syncplaylists.modules.transfers.application.use_cases import (
     FailTransferUseCase,
     GetTransferProgressUseCase,
     GetTransferUseCase,
+    ListTransferItemsUseCase,
+    ListTransfersUseCase,
     MatchTransferItemUseCase,
     PauseTransferForClientUseCase,
     PauseTransferForQuotaUseCase,
@@ -173,6 +177,7 @@ from syncplaylists.modules.transfers.application.use_cases import (
     ResumeClientPausedTransfersUseCase,
     ResumeTransferUseCase,
     StartTransferUseCase,
+    StartWritingUseCase,
     SweepStaleTransfersUseCase,
     WriteTransferUseCase,
 )
@@ -289,6 +294,12 @@ class RedisProvider(Provider):
 
     @provide
     def get_device_caller(self, channel: RedisExtensionChannel) -> DeviceCaller:
+        return channel
+
+    @provide
+    def get_extension_presence_reader(
+        self, channel: RedisExtensionChannel
+    ) -> ExtensionPresenceReader:
         return channel
 
     @provide
@@ -794,6 +805,12 @@ class ExtensionProvider(Provider):
         return ListDevicesUseCase(devices)
 
     @provide(scope=Scope.REQUEST)
+    def get_extension_status(
+        self, devices: ExtensionDeviceRepository, presence: ExtensionPresenceReader
+    ) -> GetExtensionStatusUseCase:
+        return GetExtensionStatusUseCase(devices, presence)
+
+    @provide(scope=Scope.REQUEST)
     def get_start_probe(
         self, devices: ExtensionDeviceRepository, store: ProbeStore, task_queue: TaskQueue
     ) -> StartProbeUseCase:
@@ -907,9 +924,15 @@ class TransfersProvider(Provider):
 
     @provide
     def get_resolve_uncertain_item(
-        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+        self, uow: UnitOfWork, transfers: TransferRepository
     ) -> ResolveUncertainItemUseCase:
-        return ResolveUncertainItemUseCase(uow, transfers, task_queue)
+        return ResolveUncertainItemUseCase(uow, transfers)
+
+    @provide
+    def get_start_writing(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> StartWritingUseCase:
+        return StartWritingUseCase(uow, transfers, task_queue)
 
     @provide
     def get_write_transfer(
@@ -960,8 +983,20 @@ class TransfersProvider(Provider):
         return ClientPausedPlatformsUseCase(transfers)
 
     @provide
-    def get_get_transfer(self, transfers: TransferRepository) -> GetTransferUseCase:
-        return GetTransferUseCase(transfers)
+    def get_get_transfer(
+        self, transfers: TransferRepository, platform_tracks: PlatformTrackRepository
+    ) -> GetTransferUseCase:
+        return GetTransferUseCase(transfers, platform_tracks)
+
+    @provide
+    def get_list_transfer_items(
+        self, transfers: TransferRepository, platform_tracks: PlatformTrackRepository
+    ) -> ListTransferItemsUseCase:
+        return ListTransferItemsUseCase(transfers, platform_tracks)
+
+    @provide
+    def get_list_transfers(self, transfers: TransferRepository) -> ListTransfersUseCase:
+        return ListTransfersUseCase(transfers)
 
     @provide
     def get_transfer_progress(self, transfers: TransferRepository) -> GetTransferProgressUseCase:

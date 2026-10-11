@@ -105,6 +105,23 @@ class DeliveredTask:
     account: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DevicePlatformState:
+    """Свежее (в пределах TTL присутствия) сообщение устройства о площадке."""
+
+    device_id: UUID
+    presence: PlatformPresence
+
+
+class ExtensionPresenceReader(Protocol):
+    """Сторона сайта: что сейчас известно о расширениях пользователя — какие устройства
+    на связи и в каком состоянии у них площадки. Только чтение, без задач."""
+
+    async def online(self, device_ids: Sequence[UUID]) -> set[UUID]: ...
+
+    async def presence(self, user_id: UUID) -> list[DevicePlatformState]: ...
+
+
 class ExtensionHub(Protocol):
     """Сторона WebSocket (процесс api): присутствие расширений и выдача им задач."""
 

@@ -16,7 +16,7 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     Platform,
     PlaylistRef,
 )
-from tests.fakes import FakeTransferRepository
+from tests.fakes import FakePlatformTrackRepository, FakeTransferRepository
 
 _NOW = datetime(2026, 10, 3, 12, 0, 0, tzinfo=UTC)
 
@@ -88,7 +88,9 @@ async def test_get_transfer_includes_progress_and_eta_while_running() -> None:
     now = datetime.now(UTC)
     transfer = await _running_transfer(repo, _every(0.5, 10, end=now))
 
-    dto = await GetTransferUseCase(repo).execute(transfer.user_id, transfer.id)
+    dto = await GetTransferUseCase(repo, FakePlatformTrackRepository()).execute(
+        transfer.user_id, transfer.id
+    )
 
     assert dto is not None
     assert dto.progress is not None

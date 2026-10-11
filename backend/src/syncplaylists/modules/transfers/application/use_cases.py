@@ -1,5 +1,6 @@
 import contextlib
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -10,10 +11,16 @@ from syncplaylists.modules.matching.application.use_cases import ResolveTrackMat
 from syncplaylists.modules.matching.domain.pipeline import MatchStatus
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
 from syncplaylists.modules.transfers.application.dto import (
+    SourceTrackMeta,
     TransferDto,
+    TransferItemDto,
     TransferProgressDto,
 )
-from syncplaylists.modules.transfers.application.ports import TransferRepository
+from syncplaylists.modules.transfers.application.ports import (
+    TransferCursor,
+    TransferRepository,
+    TransferSummary,
+)
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.errors import InvalidTransferTransitionError
 from syncplaylists.modules.transfers.domain.progress import ETA_WINDOW
@@ -175,13 +182,24 @@ class StartTransferUseCase:
         self._gateway_factory = gateway_factory
 
     async def execute(
-        self, user_id: UUID, source: TrackSource, destination: TrackDestination
+        self,
+        user_id: UUID,
+        source: TrackSource,
+        destination: TrackDestination,
+        source_title: str | None = None,
     ) -> TransferDto:
         """Бросает AccountNotAvailableError, PlatformNotSupportedError,
         WriteRequiresExtensionError (назначение подключено транспортом только для чтения),
         PlaylistNotWritableError/PlaylistNotFoundError (назначение — чужой или
         несуществующий плейлист) и прочие PlatformError."""
-        transfer = Transfer(id=uuid4(), user_id=user_id, source=source, destination=destination)
+        transfer = Transfer(
+            id=uuid4(),
+            user_id=user_id,
+            source=source,
+            destination=destination,
+            source_title=source_title,
+            created_at=datetime.now(UTC),
+        )
         for platform in (source_platform(source), destination_platform(destination)):
             if platform is not None and not self._gateway_factory.supports(platform):
                 raise PlatformNotSupportedError(platform)
@@ -667,12 +685,13 @@ async def _commit_item_outcome(
 
 
 class ResolveUncertainItemUseCase:
-    def __init__(
-        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
-    ) -> None:
+    """Ручное решение по одному треку на ревью. Запись после последнего решения сама не
+    начинается — пользователь запускает её явно (StartWritingUseCase): до этого он может
+    пересмотреть решения."""
+
+    def __init__(self, uow: UnitOfWork, transfers: TransferRepository) -> None:
         self._uow = uow
         self._transfers = transfers
-        self._task_queue = task_queue
 
     async def execute(
         self,
@@ -681,24 +700,46 @@ class ResolveUncertainItemUseCase:
         position: int,
         chosen_ref: ExternalTrackRef | None,
     ) -> None:
-        next_step: str | None = None
+        """Бросает TransferNotFoundError и InvalidTransferTransitionError (перенос не на
+        ревью, трек не ждёт решения, трек не с площадки назначения)."""
         async with self._uow as uow:
             transfer = await self._transfers.get_for_update(transfer_id)
             if transfer is None or transfer.user_id != user_id:
                 raise TransferNotFoundError(str(transfer_id))
-
-            now = datetime.now(UTC)
-            transfer.resolve_item(position, chosen_ref, now)
-            if not transfer.has_unresolved_items():
-                transfer.begin_writing(now)
-                next_step = _RUN_WRITE
-
+            transfer.resolve_item(position, chosen_ref, datetime.now(UTC))
             uow.track(transfer)
             await self._transfers.save(transfer)
             await uow.commit()
 
-        if next_step is not None:
-            await self._task_queue.enqueue(next_step, transfer_id, lane=_lane(transfer))
+
+class StartWritingUseCase:
+    """«Записать в <площадку>» после ревью: REVIEW → WRITING и задача run_write.
+    Не решённые сомнительные треки пропускаются, ненайденные остаются в отчёте как
+    ненайденные."""
+
+    def __init__(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._task_queue = task_queue
+
+    async def execute(self, user_id: UUID, transfer_id: UUID) -> None:
+        """Бросает TransferNotFoundError и InvalidTransferTransitionError (перенос не на
+        ревью — например, запись уже идёт после повторного нажатия)."""
+        async with self._uow as uow:
+            transfer = await self._transfers.get_for_update(transfer_id)
+            if transfer is None or transfer.user_id != user_id:
+                raise TransferNotFoundError(str(transfer_id))
+            if transfer.status is not TransferStatus.REVIEW:
+                raise InvalidTransferTransitionError(
+                    f"Transfer {transfer_id}: запись запускается только с ревью"
+                )
+            transfer.begin_writing(datetime.now(UTC))
+            uow.track(transfer)
+            await self._transfers.save(transfer)
+            await uow.commit()
+        await self._task_queue.enqueue(_RUN_WRITE, transfer_id, lane=_lane(transfer))
 
 
 class WriteTransferUseCase:
@@ -904,17 +945,84 @@ class ClientPausedPlatformsUseCase:
         return await self._transfers.client_paused_platforms(user_id)
 
 
-class GetTransferUseCase:
-    def __init__(self, transfers: TransferRepository) -> None:
-        self._transfers = transfers
+async def _source_meta(
+    platform_tracks: PlatformTrackRepository, items: Sequence[TransferItem]
+) -> dict[ExternalTrackRef, SourceTrackMeta]:
+    tracks = await platform_tracks.find_by_refs([item.source_track for item in items])
+    return {
+        ref: SourceTrackMeta(
+            title=track.raw_title,
+            artist=track.raw_artist,
+            duration_ms=track.duration.milliseconds if track.duration else None,
+        )
+        for ref, track in tracks.items()
+    }
 
-    async def execute(self, user_id: UUID, transfer_id: UUID) -> TransferDto | None:
-        transfer = await self._transfers.get(transfer_id)
+
+class GetTransferUseCase:
+    def __init__(
+        self, transfers: TransferRepository, platform_tracks: PlatformTrackRepository
+    ) -> None:
+        self._transfers = transfers
+        self._platform_tracks = platform_tracks
+
+    async def execute(
+        self, user_id: UUID, transfer_id: UUID, *, with_items: bool = True
+    ) -> TransferDto | None:
+        """with_items=False — только шапка (снэпшот SSE: на тысячах треков items весят
+        мегабайты, сайт берёт их постранично через ListTransferItemsUseCase)."""
+        if with_items:
+            transfer = await self._transfers.get(transfer_id)
+        else:
+            transfer = await self._transfers.get_header(transfer_id)
         if transfer is None or transfer.user_id != user_id:
             return None
         sample = await self._transfers.progress_sample(transfer_id, ETA_WINDOW)
         progress = TransferProgressDto.from_sample(sample, datetime.now(UTC)) if sample else None
-        return TransferDto.from_domain(transfer, progress)
+        return TransferDto.from_domain(
+            transfer,
+            progress,
+            source_meta=await _source_meta(self._platform_tracks, transfer.items),
+            match_methods=await self._transfers.match_method_counts(transfer_id),
+        )
+
+
+class ListTransferItemsUseCase:
+    """Страница треков переноса (ревью, отчёт) с названиями треков источника."""
+
+    def __init__(
+        self, transfers: TransferRepository, platform_tracks: PlatformTrackRepository
+    ) -> None:
+        self._transfers = transfers
+        self._platform_tracks = platform_tracks
+
+    async def execute(
+        self,
+        user_id: UUID,
+        transfer_id: UUID,
+        statuses: Sequence[TransferItemStatus] = (),
+        after_position: int | None = None,
+        limit: int = 50,
+    ) -> list[TransferItemDto] | None:
+        """None — переноса нет или он чужой."""
+        sample = await self._transfers.progress_sample(transfer_id, 0)
+        if sample is None or sample.user_id != user_id:
+            return None
+        items = await self._transfers.list_items(transfer_id, statuses, after_position, limit)
+        meta = await _source_meta(self._platform_tracks, items)
+        return [TransferItemDto.from_domain(item, meta.get(item.source_track)) for item in items]
+
+
+class ListTransfersUseCase:
+    """История переносов пользователя, новые первыми (keyset-пагинация)."""
+
+    def __init__(self, transfers: TransferRepository) -> None:
+        self._transfers = transfers
+
+    async def execute(
+        self, user_id: UUID, before: TransferCursor | None = None, limit: int = 20
+    ) -> list[TransferSummary]:
+        return await self._transfers.list_summaries(user_id, before, limit)
 
 
 class GetTransferProgressUseCase:

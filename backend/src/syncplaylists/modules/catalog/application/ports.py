@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
@@ -9,6 +10,11 @@ class PlatformTrackRepository(Protocol):
     async def find_by_ref(self, ref: ExternalTrackRef) -> PlatformTrack | None: ...
 
     async def find_by_id(self, pt_id: UUID) -> PlatformTrack | None: ...
+
+    # Пачкой: страница ревью/отчёта показывает названия треков источника одним запросом.
+    async def find_by_refs(
+        self, refs: Sequence[ExternalTrackRef]
+    ) -> dict[ExternalTrackRef, PlatformTrack]: ...
 
     # Атомарный get-or-create (INSERT ... ON CONFLICT DO NOTHING + SELECT) — несколько
     # ARQ-джоб (`run_match`) могут одновременно резолвить один и тот же ExternalTrackRef,

@@ -131,6 +131,25 @@ async def test_extension_unpairs_itself(make_client: ClientFactory) -> None:
         assert [d["revoked"] for d in devices] == [True]
 
 
+async def test_status_shows_paired_device_and_platforms(make_client: ClientFactory) -> None:
+    async with make_client() as site, make_client() as extension, make_client() as anonymous:
+        await _logged_in(site)
+        assert (await anonymous.get("/extension/status")).status_code == 401
+        empty = (await site.get("/extension/status")).json()
+        assert empty["devices"] == []
+
+        await _paired(site, extension)
+        status = (await site.get("/extension/status")).json()
+
+        # WebSocket не открыт — устройство привязано, но не на связи.
+        assert [(d["name"], d["online"]) for d in status["devices"]] == [
+            (_DEVICE["device_name"], False)
+        ]
+        assert "token_hash" not in status["devices"][0]
+        assert {p["platform"] for p in status["platforms"]} >= {"yandex", "vk", "soundcloud"}
+        assert all(p["state"] is None for p in status["platforms"])
+
+
 def _client_factory(settings: Settings, *, dev_tools: bool) -> ClientFactory:
     # Флаги — явно: фикстура settings читает .env разработчика, где dev-инструменты
     # обычно включены.

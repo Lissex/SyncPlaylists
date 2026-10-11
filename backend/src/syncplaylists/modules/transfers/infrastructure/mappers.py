@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from syncplaylists.modules.catalog.application.ports import PlatformTrackRepository
+from syncplaylists.modules.transfers.application.ports import TransferSummary
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
     ExistingPlaylist,
@@ -188,6 +189,35 @@ def item_result_columns(item: TransferItem) -> dict[str, object]:
     }
 
 
+def progress_from_orm(orm: TransferOrm) -> TransferProgress:
+    return TransferProgress(
+        total=orm.total,
+        pending=orm.pending,
+        matched=orm.matched,
+        uncertain=orm.uncertain,
+        not_found=orm.not_found,
+        added=orm.added,
+        failed=orm.failed,
+        skipped=orm.skipped,
+    )
+
+
+def transfer_summary_from_orm(orm: TransferOrm) -> TransferSummary:
+    return TransferSummary(
+        id=orm.id,
+        status=TransferStatus(orm.status),
+        source=_columns_to_source(orm),
+        destination=_columns_to_destination(orm),
+        source_title=orm.source_title,
+        progress=progress_from_orm(orm),
+        resolved_targets=_columns_to_resolved_targets(orm),
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
+        resume_at=orm.resume_at,
+        pause_reason=orm.pause_reason,
+    )
+
+
 def progress_columns(progress: TransferProgress) -> dict[str, int]:
     return {
         "total": progress.total,
@@ -197,6 +227,7 @@ def progress_columns(progress: TransferProgress) -> dict[str, int]:
         "not_found": progress.not_found,
         "added": progress.added,
         "failed": progress.failed,
+        "skipped": progress.skipped,
     }
 
 
@@ -255,6 +286,10 @@ async def transfer_to_orm(
         paused_from=transfer.paused_from.value if transfer.paused_from else None,
         pause_reason=transfer.pause_reason,
         via_client=transfer.via_client,
+        source_title=transfer.source_title,
+        # created_at не передаём, пока его нет: иначе merge запишет NULL поверх
+        # server_default.
+        **({"created_at": transfer.created_at} if transfer.created_at else {}),
         items=items,
         **progress_columns(TransferProgress.from_statuses(i.status for i in transfer.items)),
         **_source_to_columns(transfer.source),
@@ -278,6 +313,8 @@ async def transfer_to_domain(
         paused_from=TransferStatus(orm.paused_from) if orm.paused_from else None,
         pause_reason=orm.pause_reason,
         via_client=orm.via_client,
+        source_title=orm.source_title,
+        created_at=orm.created_at,
         items=items,
     )
 
@@ -295,5 +332,7 @@ def transfer_header_to_domain(orm: TransferOrm) -> Transfer:
         paused_from=TransferStatus(orm.paused_from) if orm.paused_from else None,
         pause_reason=orm.pause_reason,
         via_client=orm.via_client,
+        source_title=orm.source_title,
+        created_at=orm.created_at,
         items=[],
     )

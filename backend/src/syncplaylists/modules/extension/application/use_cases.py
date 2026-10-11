@@ -1,18 +1,24 @@
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Final
 from uuid import UUID, uuid4
 
 from syncplaylists.modules.accounts.application.dto import AccountDto
 from syncplaylists.modules.accounts.application.use_cases import ConnectAccountUseCase
 from syncplaylists.modules.extension.application.dto import (
     DeviceDto,
+    DeviceStatusDto,
+    ExtensionStatusDto,
     PairingResult,
     PairingStarted,
+    PlatformStatusDto,
 )
 from syncplaylists.modules.extension.application.ports import (
+    DevicePlatformState,
     ExtensionDeviceRepository,
     ExtensionHub,
+    ExtensionPresenceReader,
     PairingStore,
     PendingPairing,
 )
@@ -23,6 +29,7 @@ from syncplaylists.modules.extension.domain.errors import (
     PlatformAccountConflictError,
 )
 from syncplaylists.modules.extension.domain.value_objects import (
+    SessionState,
     generate_device_token,
     generate_pairing_code,
     hash_secret,
@@ -155,6 +162,58 @@ class ListDevicesUseCase:
 
     async def execute(self, user_id: UUID) -> list[DeviceDto]:
         return [DeviceDto.from_domain(d) for d in await self._devices.list_for_user(user_id)]
+
+
+# Какое состояние площадки показать, если устройств несколько: лучшее — то, с которым
+# переносы пойдут (OK), дальше — что пользователю проще исправить.
+_STATE_RANK: Final = (
+    SessionState.OK,
+    SessionState.CAPTCHA,
+    SessionState.LOGGED_OUT,
+    SessionState.NO_PERMISSION,
+)
+
+
+class GetExtensionStatusUseCase:
+    """Для сайта: привязанные (не отозванные) устройства, кто из них на связи, и
+    состояние каждой площадки в браузере."""
+
+    def __init__(
+        self, devices: ExtensionDeviceRepository, presence: ExtensionPresenceReader
+    ) -> None:
+        self._devices = devices
+        self._presence = presence
+
+    async def execute(self, user_id: UUID) -> ExtensionStatusDto:
+        devices = [d for d in await self._devices.list_for_user(user_id) if d.revoked_at is None]
+        online = await self._presence.online([d.id for d in devices])
+        known = {d.id for d in devices}
+        best: dict[Platform, DevicePlatformState] = {}
+        for entry in await self._presence.presence(user_id):
+            if entry.device_id not in known:
+                continue  # отозванное устройство, присутствие которого ещё не истекло
+            platform = entry.presence.platform
+            current = best.get(platform)
+            if current is None or _STATE_RANK.index(entry.presence.session) < _STATE_RANK.index(
+                current.presence.session
+            ):
+                best[platform] = entry
+        return ExtensionStatusDto(
+            devices=tuple(
+                DeviceStatusDto(DeviceDto.from_domain(d), online=d.id in online) for d in devices
+            ),
+            platforms=tuple(
+                PlatformStatusDto(
+                    platform=platform,
+                    state=best[platform].presence.session if platform in best else None,
+                    device_id=best[platform].device_id if platform in best else None,
+                    external_user_id=(
+                        best[platform].presence.external_user_id if platform in best else None
+                    ),
+                )
+                for platform in Platform
+            ),
+        )
 
 
 class RevokeDeviceUseCase:

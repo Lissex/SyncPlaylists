@@ -5,7 +5,12 @@ from types import TracebackType
 from typing import Any
 from uuid import UUID
 
-from syncplaylists.modules.transfers.application.ports import ClientPause, ProgressSample
+from syncplaylists.modules.transfers.application.ports import (
+    ClientPause,
+    ProgressSample,
+    TransferCursor,
+    TransferSummary,
+)
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
     TransferItemStatus,
@@ -218,6 +223,60 @@ class FakeTransferRepository:
     async def pending_positions(self, transfer_id: UUID) -> list[int]:
         stored = self._storage[transfer_id]
         return [i.position for i in stored.items if i.status is TransferItemStatus.PENDING]
+
+    async def list_summaries(
+        self, user_id: UUID, before: TransferCursor | None, limit: int
+    ) -> list[TransferSummary]:
+        summaries = [
+            TransferSummary(
+                id=t.id,
+                status=t.status,
+                source=t.source,
+                destination=t.destination,
+                source_title=t.source_title,
+                progress=TransferProgress.from_statuses(i.status for i in t.items),
+                resolved_targets=t.resolved_targets,
+                created_at=t.created_at or datetime.now(UTC),
+                updated_at=self._updated_at.get(t.id, datetime.now(UTC)),
+                resume_at=t.resume_at,
+                pause_reason=t.pause_reason,
+            )
+            for t in self._storage.values()
+            if t.user_id == user_id
+        ]
+        summaries.sort(key=lambda s: (s.created_at, s.id), reverse=True)
+        if before is not None:
+            summaries = [
+                s for s in summaries if (s.created_at, s.id) < (before.created_at, before.id)
+            ]
+        return summaries[:limit]
+
+    async def list_items(
+        self,
+        transfer_id: UUID,
+        statuses: Sequence[TransferItemStatus],
+        after_position: int | None,
+        limit: int,
+    ) -> list[TransferItem]:
+        stored = self._storage.get(transfer_id)
+        items = sorted(stored.items, key=lambda i: i.position) if stored else []
+        return [
+            dataclasses.replace(i)
+            for i in items
+            if (not statuses or i.status in statuses)
+            and (after_position is None or i.position > after_position)
+        ][:limit]
+
+    async def match_method_counts(self, transfer_id: UUID) -> dict[str, int]:
+        stored = self._storage.get(transfer_id)
+        counts: dict[str, int] = {}
+        for item in stored.items if stored else []:
+            if item.match is not None and item.status in (
+                TransferItemStatus.MATCHED,
+                TransferItemStatus.ADDED,
+            ):
+                counts[item.match.method] = counts.get(item.match.method, 0) + 1
+        return counts
 
     async def find_overdue_paused(self, due_before: datetime) -> list[UUID]:
         return [

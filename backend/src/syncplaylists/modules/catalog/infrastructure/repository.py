@@ -1,6 +1,7 @@
+from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +32,20 @@ class SqlPlatformTrackRepository:
     async def find_by_id(self, pt_id: UUID) -> PlatformTrack | None:
         orm = await self._session.get(PlatformTrackOrm, pt_id)
         return platform_track_to_domain(orm) if orm is not None else None
+
+    async def find_by_refs(
+        self, refs: Sequence[ExternalTrackRef]
+    ) -> dict[ExternalTrackRef, PlatformTrack]:
+        if not refs:
+            return {}
+        pairs = {(ref.platform.value, ref.external_id) for ref in refs}
+        rows = await self._session.scalars(
+            select(PlatformTrackOrm).where(
+                tuple_(PlatformTrackOrm.platform, PlatformTrackOrm.external_id).in_(pairs)
+            )
+        )
+        tracks = (platform_track_to_domain(orm) for orm in rows)
+        return {ExternalTrackRef(t.platform, t.external_id): t for t in tracks}
 
     async def get_or_create(self, candidate: PlatformTrack) -> PlatformTrack:
         values = platform_track_to_orm(candidate)

@@ -19,6 +19,8 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     ExistingPlaylist,
     MatchResult,
     PlaylistSource,
+    TransferItemStatus,
+    TransferStatus,
 )
 from syncplaylists.shared_kernel.domain.search import TrackCandidate
 from syncplaylists.shared_kernel.domain.value_objects import (
@@ -171,7 +173,7 @@ def test_resolve_item_with_chosen_candidate_marks_matched() -> None:
     assert transfer.items[0].match.method == "manual"
 
 
-def test_resolve_item_without_candidate_marks_failed() -> None:
+def test_resolve_item_without_candidate_marks_skipped() -> None:
     transfer = _transfer()
     transfer.start(_NOW)
     transfer.add_item(0, ExternalTrackRef(Platform.VK, "src-1"))
@@ -180,19 +182,64 @@ def test_resolve_item_without_candidate_marks_failed() -> None:
 
     transfer.resolve_item(0, None, _NOW)
 
-    assert transfer.items[0].status.value == "failed"
+    assert transfer.items[0].status is TransferItemStatus.SKIPPED
 
 
-def test_resolve_item_twice_raises() -> None:
+def test_resolving_last_item_keeps_review_until_explicit_write() -> None:
     transfer = _transfer()
     transfer.start(_NOW)
     transfer.add_item(0, ExternalTrackRef(Platform.VK, "src-1"))
-    transfer.record_not_found(0, (), _NOW)
+    transfer.record_uncertain(0, (_candidate(),), _NOW)
     transfer.enter_review()
+
+    transfer.resolve_item(0, _candidate().ref, _NOW)
+
+    assert transfer.status is TransferStatus.REVIEW
+
+
+def test_decision_can_be_changed_while_in_review() -> None:
+    transfer = _transfer()
+    transfer.start(_NOW)
+    transfer.add_item(0, ExternalTrackRef(Platform.VK, "src-1"))
+    transfer.record_uncertain(0, (_candidate("a"), _candidate("b")), _NOW)
+    transfer.enter_review()
+
     transfer.resolve_item(0, None, _NOW)
+    transfer.resolve_item(0, _candidate("a").ref, _NOW)
+    transfer.resolve_item(0, _candidate("b").ref, _NOW)
+
+    item = transfer.items[0]
+    assert item.status is TransferItemStatus.MATCHED
+    assert item.match is not None
+    assert item.match.target_ref == _candidate("b").ref
+
+    transfer.resolve_item(0, None, _NOW)
+    assert item.status is TransferItemStatus.SKIPPED
+    assert item.match is None
+
+
+def test_auto_matched_item_cannot_be_resolved() -> None:
+    transfer = _transfer()
+    transfer.start(_NOW)
+    transfer.add_item(0, ExternalTrackRef(Platform.VK, "src-1"))
+    transfer.add_item(1, ExternalTrackRef(Platform.VK, "src-2"))
+    transfer.record_match(0, _match_result(), _NOW)
+    transfer.record_not_found(1, (), _NOW)
+    transfer.enter_review()
 
     with pytest.raises(InvalidTransferTransitionError):
         transfer.resolve_item(0, None, _NOW)
+
+
+def test_resolve_rejects_track_from_another_platform() -> None:
+    transfer = _transfer()
+    transfer.start(_NOW)
+    transfer.add_item(0, ExternalTrackRef(Platform.VK, "src-1"))
+    transfer.record_not_found(0, (), _NOW)
+    transfer.enter_review()
+
+    with pytest.raises(InvalidTransferTransitionError):
+        transfer.resolve_item(0, ExternalTrackRef(Platform.YANDEX, "1"), _NOW)
 
 
 def test_begin_writing_from_running_without_unresolved_items() -> None:
@@ -219,6 +266,48 @@ def test_begin_writing_fails_with_unresolved_items() -> None:
         transfer.begin_writing(_NOW)
 
 
+def test_begin_writing_from_review_skips_undecided_uncertain_and_keeps_not_found() -> None:
+    transfer = _transfer()
+    transfer.start(_NOW)
+    transfer.add_item(0, ExternalTrackRef(Platform.VK, "src-1"))
+    transfer.add_item(1, ExternalTrackRef(Platform.VK, "src-2"))
+    transfer.record_uncertain(0, (_candidate(),), _NOW)
+    transfer.record_not_found(1, (), _NOW)
+    transfer.enter_review()
+
+    transfer.begin_writing(_NOW)
+
+    assert transfer.status is TransferStatus.WRITING
+    assert transfer.items[0].status is TransferItemStatus.SKIPPED
+    assert transfer.items[1].status is TransferItemStatus.NOT_FOUND
+
+
+def test_complete_counts_skipped_and_not_found_separately() -> None:
+    transfer = _transfer()
+    transfer.start(_NOW)
+    for position in range(3):
+        transfer.add_item(position, ExternalTrackRef(Platform.VK, f"src-{position}"))
+    transfer.record_match(0, _match_result(), _NOW)
+    transfer.record_uncertain(1, (_candidate("x"),), _NOW)
+    transfer.record_not_found(2, (), _NOW)
+    transfer.enter_review()
+    transfer.begin_writing(_NOW)
+    transfer.mark_added(0)
+    transfer.pull_domain_events()
+
+    transfer.complete(_NOW)
+
+    (event,) = transfer.pull_domain_events()
+    assert isinstance(event, TransferCompleted)
+    assert (event.total, event.added, event.failed, event.skipped, event.not_found) == (
+        3,
+        1,
+        0,
+        1,
+        1,
+    )
+
+
 def test_begin_writing_from_review_after_all_resolved() -> None:
     transfer = _transfer()
     transfer.start(_NOW)
@@ -243,7 +332,7 @@ def test_complete_requires_all_items_in_terminal_write_status() -> None:
         transfer.complete(_NOW)
 
 
-def test_complete_emits_report_with_added_and_failed_counts() -> None:
+def test_complete_emits_report_with_added_and_skipped_counts() -> None:
     transfer = _transfer()
     transfer.start(_NOW)
     transfer.add_item(0, ExternalTrackRef(Platform.VK, "src-1"))
@@ -251,7 +340,7 @@ def test_complete_emits_report_with_added_and_failed_counts() -> None:
     transfer.record_match(0, _match_result("tgt-1"), _NOW)
     transfer.record_not_found(1, (), _NOW)
     transfer.enter_review()
-    transfer.resolve_item(1, None, _NOW)  # не нашли кандидата -> FAILED
+    transfer.resolve_item(1, None, _NOW)  # не нашли кандидата -> SKIPPED
     transfer.begin_writing(_NOW)
     transfer.mark_added(0)
     transfer.pull_domain_events()
@@ -263,7 +352,8 @@ def test_complete_emits_report_with_added_and_failed_counts() -> None:
     assert isinstance(events[0], TransferCompleted)
     assert events[0].total == 2
     assert events[0].added == 1
-    assert events[0].failed == 1
+    assert events[0].failed == 0
+    assert events[0].skipped == 1
 
 
 def test_mark_added_requires_matched_item() -> None:
@@ -272,7 +362,7 @@ def test_mark_added_requires_matched_item() -> None:
     transfer.add_item(0, ExternalTrackRef(Platform.VK, "src-1"))
     transfer.record_not_found(0, (), _NOW)
     transfer.enter_review()
-    transfer.resolve_item(0, None, _NOW)  # -> FAILED, не MATCHED
+    transfer.resolve_item(0, None, _NOW)  # -> SKIPPED, не MATCHED
     transfer.begin_writing(_NOW)
 
     with pytest.raises(InvalidTransferTransitionError):

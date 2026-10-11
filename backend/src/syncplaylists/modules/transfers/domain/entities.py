@@ -24,6 +24,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     TransferItemStatus,
     TransferProgress,
     TransferStatus,
+    destination_platform,
 )
 from syncplaylists.shared_kernel.domain.base import AggregateRoot, Entity
 from syncplaylists.shared_kernel.domain.search import TrackCandidate
@@ -43,6 +44,32 @@ _UNRESOLVED_ITEM_STATUSES = (
     TransferItemStatus.UNCERTAIN,
     TransferItemStatus.NOT_FOUND,
 )
+# Статусы item в завершённом переносе: записан, не записан из-за сбоя, пропущен
+# пользователем, не найден на площадке назначения.
+_FINAL_ITEM_STATUSES = (
+    TransferItemStatus.ADDED,
+    TransferItemStatus.FAILED,
+    TransferItemStatus.SKIPPED,
+    TransferItemStatus.NOT_FOUND,
+)
+# MatchResult.method ручного выбора на ревью.
+MANUAL_METHOD = "manual"
+
+
+def _awaits_decision(item: "TransferItem") -> bool:
+    """Item можно (пере)решить на ревью: сомнительный, ненайденный, уже пропущенный
+    или уже выбранный вручную. Найденное автоматически ревью не трогает."""
+    if item.status in (
+        TransferItemStatus.UNCERTAIN,
+        TransferItemStatus.NOT_FOUND,
+        TransferItemStatus.SKIPPED,
+    ):
+        return True
+    return (
+        item.status is TransferItemStatus.MATCHED
+        and item.match is not None
+        and item.match.method == MANUAL_METHOD
+    )
 
 
 @dataclass(eq=False, slots=True)
@@ -103,6 +130,11 @@ class Transfer(AggregateRoot):
     # Источник или назначение подключены через браузерное расширение: задачи переноса
     # идут в отдельную очередь, запись — пачками. Решается один раз при старте.
     via_client: bool = False
+    # Название источника на момент старта (плейлист «Летний вайб») — для истории и
+    # отчёта; у медиатеки и у источников без названия — None.
+    source_title: str | None = None
+    # Когда перенос создан; None — ещё не сохранён (время ставит БД).
+    created_at: datetime | None = None
     items: list[TransferItem] = field(default_factory=list)
 
     def _ensure_status(self, *allowed: TransferStatus) -> None:
@@ -305,20 +337,29 @@ class Transfer(AggregateRoot):
     def resolve_item(
         self, position: int, chosen_ref: ExternalTrackRef | None, now: datetime
     ) -> None:
+        """Ручное решение на ревью: выбранный кандидат (или любой трек площадки
+        назначения) → MATCHED (method="manual"), None → SKIPPED. Пока перенос в REVIEW,
+        решение можно поменять (передумал: выбрать другой кандидат или вернуть пропущенный).
+        Запись не начинается сама — только явным begin_writing()."""
         self._ensure_status(TransferStatus.REVIEW)
         item = self._item(position)
-        if item.status not in (TransferItemStatus.UNCERTAIN, TransferItemStatus.NOT_FOUND):
+        if not _awaits_decision(item):
             raise InvalidTransferTransitionError(
                 f"TransferItem {position} не ожидает ручного решения (статус {item.status})"
             )
         if chosen_ref is None:
-            item.status = TransferItemStatus.FAILED
+            item.status = TransferItemStatus.SKIPPED
+            item.match = None
             return
+        if chosen_ref.platform is not destination_platform(self.destination):
+            raise InvalidTransferTransitionError(
+                f"Трек {chosen_ref} не с площадки назначения переноса"
+            )
         chosen = next((c for c in item.candidates if c.ref == chosen_ref), None)
         restriction = chosen.restriction.value if chosen and chosen.restriction else None
         result = MatchResult(
             target_ref=chosen_ref,
-            method="manual",
+            method=MANUAL_METHOD,
             score=MatchScore(1.0),
             restriction=restriction,
         )
@@ -332,9 +373,17 @@ class Transfer(AggregateRoot):
         return any(item.status in _UNRESOLVED_ITEM_STATUSES for item in self.items)
 
     def begin_writing(self, now: datetime) -> None:
+        """RUNNING → WRITING, когда решать нечего; REVIEW → WRITING — только по явной
+        команде пользователя («Записать»). Не решённые на ревью сомнительные треки
+        пропускаются (SKIPPED), ненайденные остаются NOT_FOUND — в отчёте они разные."""
         self._ensure_status(TransferStatus.RUNNING, TransferStatus.REVIEW)
-        if self.has_unresolved_items():
+        if self.status is TransferStatus.RUNNING and self.has_unresolved_items():
             raise InvalidTransferTransitionError("есть нерешённые items")
+        if any(item.status is TransferItemStatus.PENDING for item in self.items):
+            raise InvalidTransferTransitionError("есть необработанные items")
+        for item in self.items:
+            if item.status is TransferItemStatus.UNCERTAIN:
+                item.status = TransferItemStatus.SKIPPED
         self.status = TransferStatus.WRITING
         self.record_event(TransferWritingStarted(occurred_at=now, transfer_id=self.id))
 
@@ -354,21 +403,19 @@ class Transfer(AggregateRoot):
 
     def complete(self, now: datetime) -> None:
         self._ensure_status(TransferStatus.WRITING)
-        if any(
-            item.status not in (TransferItemStatus.ADDED, TransferItemStatus.FAILED)
-            for item in self.items
-        ):
+        if any(item.status not in _FINAL_ITEM_STATUSES for item in self.items):
             raise InvalidTransferTransitionError("есть items без финального статуса записи")
         self.status = TransferStatus.DONE
-        added = sum(1 for item in self.items if item.status is TransferItemStatus.ADDED)
-        failed = sum(1 for item in self.items if item.status is TransferItemStatus.FAILED)
+        progress = TransferProgress.from_statuses(item.status for item in self.items)
         self.record_event(
             TransferCompleted(
                 occurred_at=now,
                 transfer_id=self.id,
-                total=len(self.items),
-                added=added,
-                failed=failed,
+                total=progress.total,
+                added=progress.added,
+                failed=progress.failed,
+                skipped=progress.skipped,
+                not_found=progress.not_found,
             )
         )
 

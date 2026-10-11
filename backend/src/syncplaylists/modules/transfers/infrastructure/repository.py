@@ -2,12 +2,17 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from syncplaylists.modules.catalog.application.ports import PlatformTrackRepository
-from syncplaylists.modules.transfers.application.ports import ClientPause, ProgressSample
+from syncplaylists.modules.transfers.application.ports import (
+    ClientPause,
+    ProgressSample,
+    TransferCursor,
+    TransferSummary,
+)
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
     TransferItemStatus,
@@ -18,6 +23,7 @@ from syncplaylists.modules.transfers.infrastructure.mappers import (
     item_result_columns,
     item_to_domain,
     transfer_header_to_domain,
+    transfer_summary_from_orm,
     transfer_to_domain,
     transfer_to_orm,
 )
@@ -84,6 +90,7 @@ class SqlTransferRepository:
                     TransferOrm.not_found,
                     TransferOrm.added,
                     TransferOrm.failed,
+                    TransferOrm.skipped,
                     TransferOrm.resume_at,
                     TransferOrm.pause_reason,
                 ).where(TransferOrm.id == transfer_id)
@@ -113,6 +120,7 @@ class SqlTransferRepository:
                 not_found=header.not_found,
                 added=header.added,
                 failed=header.failed,
+                skipped=header.skipped,
             ),
             recent_processed_at=tuple(at for at in processed if at is not None),
             resume_at=header.resume_at,
@@ -176,6 +184,7 @@ class SqlTransferRepository:
                     TransferOrm.not_found,
                     TransferOrm.added,
                     TransferOrm.failed,
+                    TransferOrm.skipped,
                 )
             )
         ).one()
@@ -187,6 +196,7 @@ class SqlTransferRepository:
             not_found=row.not_found,
             added=row.added,
             failed=row.failed,
+            skipped=row.skipped,
         )
 
     async def transition_status(
@@ -315,6 +325,50 @@ class SqlTransferRepository:
             .order_by(TransferItemOrm.position)
         )
         return list(rows)
+
+    async def list_summaries(
+        self, user_id: UUID, before: TransferCursor | None, limit: int
+    ) -> list[TransferSummary]:
+        query = select(TransferOrm).where(TransferOrm.user_id == user_id)
+        if before is not None:
+            query = query.where(
+                tuple_(TransferOrm.created_at, TransferOrm.id) < (before.created_at, before.id)
+            )
+        rows = await self._session.scalars(
+            query.order_by(TransferOrm.created_at.desc(), TransferOrm.id.desc()).limit(limit)
+        )
+        return [transfer_summary_from_orm(orm) for orm in rows]
+
+    async def list_items(
+        self,
+        transfer_id: UUID,
+        statuses: Sequence[TransferItemStatus],
+        after_position: int | None,
+        limit: int,
+    ) -> list[TransferItem]:
+        query = select(TransferItemOrm).where(TransferItemOrm.transfer_id == transfer_id)
+        if statuses:
+            query = query.where(TransferItemOrm.status.in_([s.value for s in statuses]))
+        if after_position is not None:
+            query = query.where(TransferItemOrm.position > after_position)
+        rows = (
+            await self._session.scalars(query.order_by(TransferItemOrm.position).limit(limit))
+        ).all()
+        return [await item_to_domain(orm, self._platform_tracks) for orm in rows]
+
+    async def match_method_counts(self, transfer_id: UUID) -> dict[str, int]:
+        rows = await self._session.execute(
+            select(TransferItemOrm.match_method, func.count())
+            .where(
+                TransferItemOrm.transfer_id == transfer_id,
+                TransferItemOrm.status.in_(
+                    [TransferItemStatus.MATCHED.value, TransferItemStatus.ADDED.value]
+                ),
+                TransferItemOrm.match_method.is_not(None),
+            )
+            .group_by(TransferItemOrm.match_method)
+        )
+        return {method: count for method, count in rows if method is not None}
 
     async def find_overdue_paused(self, due_before: datetime) -> list[UUID]:
         rows = await self._session.scalars(

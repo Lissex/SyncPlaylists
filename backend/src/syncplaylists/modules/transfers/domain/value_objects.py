@@ -37,6 +37,9 @@ class TransferItemStatus(StrEnum):
     NOT_FOUND = "not_found"
     ADDED = "added"
     FAILED = "failed"
+    # Пользователь на ревью отказался от трека («Пропустить») или начал запись, не решив
+    # его, — не ошибка: в отчёте отдельной строкой от FAILED (сбой сопоставления/записи).
+    SKIPPED = "skipped"
 
 
 class FileFormat(StrEnum):
@@ -130,6 +133,7 @@ class TransferProgress(ValueObject):
     not_found: int = 0
     added: int = 0
     failed: int = 0
+    skipped: int = 0
 
     @classmethod
     def from_statuses(cls, statuses: Iterable[TransferItemStatus]) -> "TransferProgress":
@@ -142,6 +146,7 @@ class TransferProgress(ValueObject):
             not_found=counts[TransferItemStatus.NOT_FOUND],
             added=counts[TransferItemStatus.ADDED],
             failed=counts[TransferItemStatus.FAILED],
+            skipped=counts[TransferItemStatus.SKIPPED],
         )
 
     def status_after_matching(self) -> TransferStatus | None:

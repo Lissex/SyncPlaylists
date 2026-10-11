@@ -1,33 +1,48 @@
+import base64
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import Final
+from datetime import datetime
+from typing import Annotated, Final
 from uuid import UUID
 
 from dishka import AsyncContainer
 from dishka.integrations.fastapi import FromDishka, inject
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from redis.asyncio import Redis
 from sse_starlette.sse import EventSourceResponse
 
 from syncplaylists.modules.identity.presentation.dependencies import CurrentUserId
 from syncplaylists.modules.transfers.application.links import ResolvePlaylistLinkUseCase
+from syncplaylists.modules.transfers.application.ports import TransferCursor, TransferSummary
 from syncplaylists.modules.transfers.application.use_cases import (
     GetTransferProgressUseCase,
     GetTransferUseCase,
+    ListTransferItemsUseCase,
+    ListTransfersUseCase,
     ResolveUncertainItemUseCase,
     StartTransferUseCase,
+    StartWritingUseCase,
     TransferNotFoundError,
 )
-from syncplaylists.modules.transfers.domain.value_objects import TrackDestination, TrackSource
+from syncplaylists.modules.transfers.domain.errors import InvalidTransferTransitionError
+from syncplaylists.modules.transfers.domain.value_objects import (
+    TrackDestination,
+    TrackSource,
+    TransferItemStatus,
+)
 from syncplaylists.modules.transfers.presentation.schemas import (
     LinkSchema,
     ResolvedLinkResponse,
     ResolveItemRequest,
     ResolveLinkRequest,
     StartTransferRequest,
+    TransferHistoryPage,
+    TransferItemResponse,
+    TransferItemsPage,
     TransferProgressSchema,
     TransferResponse,
+    TransferSummaryResponse,
 )
 from syncplaylists.shared_kernel.application.ports import AccountNotAvailableError
 from syncplaylists.shared_kernel.domain.errors import (
@@ -111,10 +126,12 @@ _HANDLED_ERRORS = (
 
 async def _resolve_request(
     request: StartTransferRequest, user_id: UUID, resolve_link: ResolvePlaylistLinkUseCase
-) -> tuple[TrackSource, TrackDestination]:
+) -> tuple[TrackSource, TrackDestination, str | None]:
+    source_title: str | None = None
     if isinstance(request.source, LinkSchema):
         resolved_source = await resolve_link.execute(user_id, request.source.url, preview=False)
         source: TrackSource = resolved_source.as_source()
+        source_title = resolved_source.title
     else:
         source = request.source.to_domain()
     if isinstance(request.destination, LinkSchema):
@@ -122,7 +139,7 @@ async def _resolve_request(
         destination: TrackDestination = resolved.as_destination()
     else:
         destination = request.destination.to_domain()
-    return source, destination
+    return source, destination, source_title
 
 
 @router.post("", status_code=201)
@@ -134,11 +151,42 @@ async def start_transfer(
     resolve_link: FromDishka[ResolvePlaylistLinkUseCase],
 ) -> TransferResponse:
     try:
-        source, destination = await _resolve_request(request, user_id, resolve_link)
-        dto = await use_case.execute(user_id, source, destination)
+        source, destination, source_title = await _resolve_request(request, user_id, resolve_link)
+        dto = await use_case.execute(user_id, source, destination, source_title)
     except _HANDLED_ERRORS as exc:
         raise _link_or_platform_error(exc) from exc
     return TransferResponse.from_dto(dto)
+
+
+def _encode_cursor(summary: TransferSummary) -> str:
+    raw = f"{summary.created_at.isoformat()}|{summary.id}"
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> TransferCursor:
+    try:
+        created_at, transfer_id = base64.urlsafe_b64decode(cursor.encode()).decode().split("|")
+        return TransferCursor(datetime.fromisoformat(created_at), UUID(transfer_id))
+    except ValueError as exc:  # binascii.Error — тоже ValueError
+        raise _unprocessable("bad_cursor", "Неверный курсор страницы") from exc
+
+
+@router.get("")
+@inject
+async def list_transfers(
+    user_id: CurrentUserId,
+    use_case: FromDishka[ListTransfersUseCase],
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> TransferHistoryPage:
+    """История переносов пользователя, новые первыми."""
+    before = _decode_cursor(cursor) if cursor else None
+    summaries = await use_case.execute(user_id, before, limit + 1)
+    page, more = summaries[:limit], len(summaries) > limit
+    return TransferHistoryPage(
+        items=[TransferSummaryResponse.from_summary(s) for s in page],
+        next_cursor=_encode_cursor(page[-1]) if more else None,
+    )
 
 
 @links_router.post("/resolve")
@@ -168,6 +216,44 @@ async def get_transfer(
     return TransferResponse.from_dto(dto)
 
 
+@router.get("/{transfer_id}/items")
+@inject
+async def list_transfer_items(
+    transfer_id: UUID,
+    user_id: CurrentUserId,
+    use_case: FromDishka[ListTransferItemsUseCase],
+    status_: Annotated[list[TransferItemStatus] | None, Query(alias="status")] = None,
+    after: int | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> TransferItemsPage:
+    """Треки переноса постранично: ревью (`status=uncertain&status=not_found`) и отчёт."""
+    dtos = await use_case.execute(user_id, transfer_id, status_ or (), after, limit + 1)
+    if dtos is None:
+        raise HTTPException(status_code=404, detail="Transfer не найден")
+    page, more = dtos[:limit], len(dtos) > limit
+    return TransferItemsPage(
+        items=[TransferItemResponse.from_dto(dto) for dto in page],
+        next_after=page[-1].position if more else None,
+    )
+
+
+@router.post("/{transfer_id}/write", status_code=204)
+@inject
+async def start_writing(
+    transfer_id: UUID, user_id: CurrentUserId, use_case: FromDishka[StartWritingUseCase]
+) -> None:
+    """«Записать в <площадку>» после ревью. Не решённые сомнительные треки пропускаются."""
+    try:
+        await use_case.execute(user_id, transfer_id)
+    except TransferNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Transfer не найден") from exc
+    except InvalidTransferTransitionError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "not_in_review", "message": "Перенос не ждёт ревью — запись уже идёт"},
+        ) from exc
+
+
 @router.post("/{transfer_id}/items/{position}/resolve", status_code=204)
 @inject
 async def resolve_item(
@@ -181,6 +267,11 @@ async def resolve_item(
         await use_case.execute(user_id, transfer_id, position, request.chosen_ref())
     except TransferNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Transfer не найден") from exc
+    except InvalidTransferTransitionError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "item_not_resolvable", "message": "Этот трек сейчас нельзя изменить"},
+        ) from exc
 
 
 # Как часто SSE шлёт событие `progress` (счётчики + ETA) — и при потоке событий, и
@@ -210,7 +301,9 @@ async def transfer_events(
     redis: FromDishka[Redis],
 ) -> EventSourceResponse:
     # EventSource на том же origin шлёт cookie сам; с другого — withCredentials: true.
-    dto = await get_transfer.execute(user_id, transfer_id)
+    # Снэпшот — без items: на тысячах треков они весят мегабайты, сайт берёт их
+    # постранично (GET /transfers/{id}/items).
+    dto = await get_transfer.execute(user_id, transfer_id, with_items=False)
     if dto is None:
         raise HTTPException(status_code=404, detail="Transfer не найден")
     app_container: AsyncContainer = request.app.state.dishka_container

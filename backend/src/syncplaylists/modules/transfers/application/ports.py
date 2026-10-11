@@ -5,8 +5,14 @@ from typing import Protocol
 from uuid import UUID
 
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
-from syncplaylists.modules.transfers.domain.value_objects import TransferProgress, TransferStatus
-from syncplaylists.shared_kernel.domain.value_objects import Platform
+from syncplaylists.modules.transfers.domain.value_objects import (
+    TrackDestination,
+    TrackSource,
+    TransferItemStatus,
+    TransferProgress,
+    TransferStatus,
+)
+from syncplaylists.shared_kernel.domain.value_objects import Platform, PlaylistRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +34,31 @@ class ClientPause:
     расширение до вызова (None — не ждал, пауза поставлена сейчас)."""
 
     previous_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TransferSummary:
+    """Строка истории переносов: шапка со счётчиками, без items."""
+
+    id: UUID
+    status: TransferStatus
+    source: TrackSource
+    destination: TrackDestination
+    source_title: str | None
+    progress: TransferProgress
+    resolved_targets: tuple[PlaylistRef, ...]
+    created_at: datetime
+    updated_at: datetime
+    resume_at: datetime | None = None
+    pause_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TransferCursor:
+    """Позиция в истории (keyset): переносы старше этой пары (created_at, id)."""
+
+    created_at: datetime
+    id: UUID
 
 
 class TransferRepository(Protocol):
@@ -100,6 +131,26 @@ class TransferRepository(Protocol):
     async def client_paused_platforms(self, user_id: UUID) -> set[Platform]: ...
 
     async def pending_positions(self, transfer_id: UUID) -> list[int]: ...
+
+    # --- чтение для сайта (история, ревью, отчёт) ---
+
+    # История пользователя, новые первыми; before — курсор предыдущей страницы.
+    async def list_summaries(
+        self, user_id: UUID, before: TransferCursor | None, limit: int
+    ) -> list[TransferSummary]: ...
+
+    # Страница items по позиции: только statuses (пусто — все), позиции больше after.
+    async def list_items(
+        self,
+        transfer_id: UUID,
+        statuses: Sequence[TransferItemStatus],
+        after_position: int | None,
+        limit: int,
+    ) -> list[TransferItem]: ...
+
+    # Сколько треков с совпадением (MATCHED/ADDED) найдено каждым методом — для отчёта
+    # («найдено по звуку», «подтверждено вручную»).
+    async def match_method_counts(self, transfer_id: UUID) -> dict[str, int]: ...
 
     # Для sweeper-а: переносы на паузе по квоте, срок которых прошёл до `due_before`
     # (задача resume_transfer потерялась).

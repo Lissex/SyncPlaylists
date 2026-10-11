@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from uuid import UUID
 
 from syncplaylists.modules.catalog.domain.entities import CanonicalTrack, PlatformTrack
@@ -13,6 +14,12 @@ class FakePlatformTrackRepository:
 
     async def find_by_id(self, pt_id: UUID) -> PlatformTrack | None:
         return next((t for t in self._by_ref.values() if t.id == pt_id), None)
+
+    async def find_by_refs(
+        self, refs: Sequence[ExternalTrackRef]
+    ) -> dict[ExternalTrackRef, PlatformTrack]:
+        found = {ref: self._by_ref.get((ref.platform, ref.external_id)) for ref in refs}
+        return {ref: track for ref, track in found.items() if track is not None}
 
     async def get_or_create(self, candidate: PlatformTrack) -> PlatformTrack:
         key = (candidate.platform, candidate.external_id)

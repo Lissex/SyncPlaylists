@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from syncplaylists.modules.extension.application.dto import DeviceDto
+from syncplaylists.modules.extension.application.dto import DeviceDto, ExtensionStatusDto
 from syncplaylists.modules.extension.domain.value_objects import SessionState
 from syncplaylists.shared_kernel.domain.value_objects import Platform
 
@@ -69,6 +69,43 @@ class DeviceSchema(BaseModel):
             created_at=dto.created_at,
             last_seen_at=dto.last_seen_at,
             revoked=dto.revoked,
+        )
+
+
+class DeviceStatusSchema(DeviceSchema):
+    online: bool
+
+
+class PlatformStatusSchema(BaseModel):
+    platform: Platform
+    # null — ни одно устройство на связи о площадке не сообщало.
+    state: SessionState | None
+    device_id: UUID | None
+    external_user_id: str | None
+
+
+class ExtensionStatusResponse(BaseModel):
+    """Для сайта: расширения пользователя и площадки в его браузере."""
+
+    devices: list[DeviceStatusSchema]
+    platforms: list[PlatformStatusSchema]
+
+    @classmethod
+    def from_dto(cls, dto: ExtensionStatusDto) -> "ExtensionStatusResponse":
+        return cls(
+            devices=[
+                DeviceStatusSchema(**DeviceSchema.from_dto(d.device).model_dump(), online=d.online)
+                for d in dto.devices
+            ],
+            platforms=[
+                PlatformStatusSchema(
+                    platform=p.platform,
+                    state=p.state,
+                    device_id=p.device_id,
+                    external_user_id=p.external_user_id,
+                )
+                for p in dto.platforms
+            ],
         )
 
 

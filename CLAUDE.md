@@ -53,7 +53,9 @@
 - Всё приложение: `docker compose --profile app up -d --build`
 - Логи: `docker compose logs -f api worker`
 - Миграции в контейнере: `docker compose run --rm api alembic upgrade head`
-- Тесты в контейнере (нужно для аудио): `docker compose run --rm api pytest`
+- Интеграционные тесты (testcontainers) — только с хоста: `make test-integration`
+  (из контейнера `api` они не работают — см. `docker-compose.override.yml`)
+- Тесты в контейнере — только аудио (ffmpeg, chromaprint): `docker compose run --rm api pytest`
 - Сквозной тест расширения (фейковое расширение по WebSocket): `make e2e-extension`
 - Ручной e2e SoundCloud через настоящее расширение: `make e2e-soundcloud EMAIL=... LINK="..."`
 - Ручной e2e Яндекса через настоящее расширение (лайки SoundCloud → Яндекс): `make e2e-yandex EMAIL=...`
