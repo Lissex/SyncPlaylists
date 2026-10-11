@@ -1,3 +1,4 @@
+export { historyQuery, transferItemsQuery, transferQuery, type ItemStatus } from "./api/queries";
 export {
   transferKeys,
   type ResolvedLink,
@@ -7,3 +8,16 @@ export {
   type TransferProgress,
   type TransferSummary,
 } from "./api/transfer";
+export {
+  currentStep,
+  formatDuration,
+  formatEta,
+  isFinished,
+  isPaused,
+  methodLabel,
+  statusLabel,
+  STEPS,
+  type Step,
+  type TransferStatus,
+} from "./lib/status";
+export { useTransferEvents, type TransferStream } from "./model/use-transfer-events";

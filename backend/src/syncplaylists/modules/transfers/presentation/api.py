@@ -207,10 +207,15 @@ async def resolve_link(
 @router.get("/{transfer_id}")
 @inject
 async def get_transfer(
-    transfer_id: UUID, user_id: CurrentUserId, use_case: FromDishka[GetTransferUseCase]
+    transfer_id: UUID,
+    user_id: CurrentUserId,
+    use_case: FromDishka[GetTransferUseCase],
+    include_items: bool = True,
 ) -> TransferResponse:
+    """include_items=false — только шапка со счётчиками (экран переноса берёт треки
+    постранично через /items)."""
     # Чужой перенос — тот же 404, что и несуществующий: не подтверждаем, что id есть.
-    dto = await use_case.execute(user_id, transfer_id)
+    dto = await use_case.execute(user_id, transfer_id, with_items=include_items)
     if dto is None:
         raise HTTPException(status_code=404, detail="Transfer не найден")
     return TransferResponse.from_dto(dto)

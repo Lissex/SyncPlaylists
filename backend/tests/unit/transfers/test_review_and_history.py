@@ -184,6 +184,21 @@ async def test_get_transfer_reports_match_methods_and_title() -> None:
     assert dto.match_methods == {"isrc": 1, "manual": 1}
 
 
+async def test_get_transfer_header_only_has_no_items_but_counts() -> None:
+    env = _Env()
+    transfer = _in_review()
+    await env.transfers.save(transfer)
+
+    dto = await GetTransferUseCase(env.transfers, env.platform_tracks).execute(
+        _USER, transfer.id, with_items=False
+    )
+
+    assert dto is not None
+    assert dto.items == ()
+    assert dto.progress is not None
+    assert (dto.progress.total, dto.progress.uncertain, dto.progress.not_found) == (3, 1, 1)
+
+
 async def test_history_is_newest_first_with_keyset_cursor() -> None:
     env = _Env()
     old, mid, new = (_transfer(_NOW + timedelta(minutes=m)) for m in (0, 1, 2))

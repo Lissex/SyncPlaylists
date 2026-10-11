@@ -220,7 +220,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Transfer */
+        /**
+         * Get Transfer
+         * @description include_items=false — только шапка со счётчиками (экран переноса берёт треки
+         *     постранично через /items).
+         */
         get: operations["get_transfer_transfers__transfer_id__get"];
         put?: never;
         post?: never;
@@ -1403,7 +1407,9 @@ export interface operations {
     };
     get_transfer_transfers__transfer_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                include_items?: boolean;
+            };
             header?: never;
             path: {
                 transfer_id: string;

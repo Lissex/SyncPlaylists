@@ -483,6 +483,7 @@
           "transfers"
         ],
         "summary": "Get Transfer",
+        "description": "include_items=false — только шапка со счётчиками (экран переноса берёт треки\nпостранично через /items).",
         "operationId": "get_transfer_transfers__transfer_id__get",
         "parameters": [
           {
@@ -493,6 +494,16 @@
               "type": "string",
               "format": "uuid",
               "title": "Transfer Id"
+            }
+          },
+          {
+            "name": "include_items",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Items"
             }
           }
         ],
