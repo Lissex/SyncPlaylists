@@ -18,11 +18,21 @@ class PlatformAuthError(PlatformError):
 
 
 class PlatformRateLimitedError(PlatformError):
-    """Площадка (или наш token bucket) просит подождать."""
+    """Площадка (или наш token bucket) просит подождать. reason — машиночитаемая
+    причина долгой паузы, если она известна (`vk_library_daily_limit`,
+    `vk_flood_control`): её видит пользователь у переноса на паузе (PAUSED_QUOTA)."""
 
-    def __init__(self, platform: Platform, retry_after_seconds: float, message: str = "") -> None:
+    def __init__(
+        self,
+        platform: Platform,
+        retry_after_seconds: float,
+        message: str = "",
+        *,
+        reason: str | None = None,
+    ) -> None:
         super().__init__(platform, message or f"retry after {retry_after_seconds:.1f}s")
         self.retry_after_seconds = retry_after_seconds
+        self.reason = reason
 
 
 class PlatformUnavailableError(PlatformError):

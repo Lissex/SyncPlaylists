@@ -85,11 +85,13 @@ def _parse_spotify(path: str, query: dict[str, list[str]]) -> ResolvedLink:
 # external_id: "<owner_id>_<playlist_id>[_<access_hash>]" — owner у сообществ отрицательный.
 
 _VK_HOSTS: Final = re.compile(r"^(?:m\.|www\.)?vk\.(?:com|ru)$")
-_VK_ID: Final = r"(?P<owner>-?\d+)_(?P<id>\d+)"
+# id плейлиста отрицательный у сгенерированных VK («Открытия»: 415573253_-24_…).
+_VK_ID: Final = r"(?P<owner>-?\d+)_(?P<id>-?\d+)"
 _VK_PATH_PLAYLIST: Final = re.compile(
     rf"^/(?:music/(?:playlist|album)/|audio_playlist){_VK_ID}(?:_(?P<hash>[0-9a-f]+))?/?$"
 )
-_VK_Z_PLAYLIST: Final = re.compile(rf"^audio_playlist{_VK_ID}(?:/(?P<hash>[0-9a-f]+))?$")
+# Хэш — через «/» (старые ссылки) или «_» (веб-клиент vk.ru).
+_VK_Z_PLAYLIST: Final = re.compile(rf"^audio_playlist{_VK_ID}(?:[/_](?P<hash>[0-9a-f]+))?$")
 
 
 def _vk_ref(owner: str, playlist_id: str, access_hash: str | None) -> PlaylistLink:

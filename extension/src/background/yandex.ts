@@ -398,6 +398,9 @@ const MAX_PAGE = 5000;
 const MAX_TRACKS = 100;
 
 const id = z.string().regex(/^[A-Za-z0-9-]{1,64}$/);
+// uuid плейлиста из ссылок music.yandex.ru/playlists/<uuid>: бывает с точкой ("ar.3b40…") —
+// тот же набор символов, что принимает LinkResolver на сервере.
+const playlistUuid = z.string().regex(/^[A-Za-z0-9._-]{1,100}$/);
 const uid = z.string().regex(/^\d{1,20}$/);
 // Трек в запросе: "<id>" или "<id>:<альбом>" — как track-ids у Яндекса.
 const trackRef = z.string().regex(/^[A-Za-z0-9-]{1,64}(:\d{1,20})?$/);
@@ -472,7 +475,7 @@ const OPERATIONS: YmOperation[] = [
           .regex(/^[A-Za-z0-9._-]{1,100}$/)
           .nullable(),
         kind: count.nullable(),
-        uuid: id.nullable(),
+        uuid: playlistUuid.nullable(),
         ...page,
       })
       .refine((a) => (a.uuid === null) === (a.owner !== null && a.kind !== null)),

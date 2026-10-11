@@ -109,6 +109,31 @@ async def test_bonus_does_not_lift_version_mismatch_to_auto() -> None:
     assert attempt.status is MatchStatus.UNCERTAIN
 
 
+def _vk(track_id: str, *, official: bool) -> TrackCandidate:
+    # У VK нет заливщика; официальный релиз — main_artists + release_audio_id (4c-5-0).
+    return TrackCandidate(
+        ref=ExternalTrackRef(Platform.VK, track_id),
+        title="Lucid Dreams",
+        artist="Juice WRLD",
+        duration=Duration(240_000),
+        rights_holder=official,
+    )
+
+
+async def test_vk_official_release_beats_user_upload() -> None:
+    normalizer = TrackNormalizer()
+    for candidates in (
+        [_vk("1_1", official=False), _vk("-2001_2", official=True)],
+        [_vk("-2001_2", official=True), _vk("1_1", official=False)],
+    ):
+        gateway = FakeMusicPlatformGateway(Platform.VK, search_results=candidates)
+        strategy = FuzzySearchStrategy(gateway, normalizer, MatchScorer(normalizer))
+        attempt = await strategy.attempt(MatchRequest(source=_SOURCE, target_platform=Platform.VK))
+        assert attempt is not None
+        assert attempt.match is not None
+        assert attempt.match.target_ref.external_id == "-2001_2"
+
+
 def test_classify() -> None:
     trust = UploadTrust()
     plain = TrackCandidate(ref=ExternalTrackRef(Platform.SPOTIFY, "x"), title="t", artist="a")
@@ -119,6 +144,9 @@ def test_classify() -> None:
     assert kino == UploadVerdict(UploadKind.OFFICIAL, uploader_artist="кино")
     label = _sc("2", "Lucid Dreams", "Grade A", rights_holder=True)
     assert trust.classify(label, {"juice wrld"}) == UploadVerdict(UploadKind.OFFICIAL)
+    # Без заливщика: релиз — официальный, остальное — неизвестно (не штраф).
+    assert trust.classify(_vk("-2001_2", official=True), {"x"}).kind is UploadKind.OFFICIAL
+    assert trust.classify(_vk("1_1", official=False), {"x"}).kind is UploadKind.UNKNOWN
 
 
 def test_adjust_clamps() -> None:

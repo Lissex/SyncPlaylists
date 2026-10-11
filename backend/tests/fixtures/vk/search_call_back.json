@@ -1,0 +1,61 @@
+{
+  "_comment": "Проекция ответа audio.search из расширения (спайк 4c-5-0, «Don Toliver Call Back»). id треков, имена и признаки — как в спайке; access_key, release_audio_id и ссылки обложек — выдуманные, аккаунт владельца заменён на 100500.",
+  "tracks": [
+    {
+      "owner_id": 474499302,
+      "id": 456949008,
+      "access_key": "0a1b2c3d4e5f6a7b8c",
+      "artist": "Don Toliver",
+      "title": "Call Back",
+      "duration": 124,
+      "album_title": "unnamed",
+      "cover_url": "https://sun9-1.userapi.com/impg/fixture-600.jpg",
+      "main_artists": ["Don Toliver"],
+      "featured_artists": [],
+      "release_audio_id": "-2001400099_99400099"
+    },
+    {
+      "owner_id": 379159236,
+      "id": 456242164,
+      "access_key": "1b2c3d4e5f6a7b8c9d",
+      "artist": "Don Toliver",
+      "title": "Call Back (Unreleased)",
+      "duration": 126,
+      "main_artists": [],
+      "featured_artists": []
+    },
+    {
+      "owner_id": 275781245,
+      "id": 456242012,
+      "access_key": "2c3d4e5f6a7b8c9d0e",
+      "artist": "Don Toliver",
+      "title": "Call Back [V3]",
+      "duration": 121,
+      "album_title": "unnamed",
+      "main_artists": [],
+      "featured_artists": [],
+      "release_audio_id": "-2001555555_9555555"
+    },
+    {
+      "owner_id": 632989458,
+      "id": 456241839,
+      "access_key": "3d4e5f6a7b8c9d0e1f",
+      "artist": "DON TOLIVER",
+      "title": "CALL BACK",
+      "duration": 124,
+      "main_artists": [],
+      "featured_artists": []
+    },
+    {
+      "owner_id": 100500,
+      "id": 456241703,
+      "access_key": "4e5f6a7b8c9d0e1f2a",
+      "artist": "Don Toliver",
+      "title": "Call Back",
+      "duration": 124,
+      "main_artists": ["Don Toliver"],
+      "featured_artists": [],
+      "release_audio_id": "-2001400099_99400099"
+    }
+  ]
+}

@@ -61,9 +61,13 @@ class RecordingPause:
 
     def __init__(self) -> None:
         self.calls: list[tuple[UUID, float]] = []
+        self.reasons: list[str | None] = []
 
-    async def execute(self, transfer_id: UUID, retry_after_seconds: float) -> None:
+    async def execute(
+        self, transfer_id: UUID, retry_after_seconds: float, *, reason: str | None = None
+    ) -> None:
         self.calls.append((transfer_id, retry_after_seconds))
+        self.reasons.append(reason)
 
 
 class FakeTransferRepository:
@@ -136,7 +140,9 @@ class FakeTransferRepository:
         stored.status = to_status
         return True
 
-    async def pause_for_quota(self, transfer_id: UUID, resume_at: datetime) -> datetime | None:
+    async def pause_for_quota(
+        self, transfer_id: UUID, resume_at: datetime, reason: str | None = None
+    ) -> datetime | None:
         stored = self._storage[transfer_id]
         pausable = (TransferStatus.QUEUED, TransferStatus.RUNNING, TransferStatus.WRITING)
         if stored.status is TransferStatus.PAUSED_QUOTA:
@@ -145,8 +151,11 @@ class FakeTransferRepository:
         elif stored.status in pausable:
             stored.paused_from, stored.status = stored.status, TransferStatus.PAUSED_QUOTA
             stored.resume_at = resume_at
+            stored.pause_reason = None
         else:
             return None
+        if reason is not None:
+            stored.pause_reason = reason
         return stored.resume_at
 
     async def resume_from_quota(self, transfer_id: UUID, now: datetime) -> TransferStatus | None:
@@ -158,6 +167,7 @@ class FakeTransferRepository:
         if stored.resume_at > now:
             return None
         stored.status, stored.paused_from, stored.resume_at = stored.paused_from, None, None
+        stored.pause_reason = None
         return stored.status
 
     async def pause_for_client(self, transfer_id: UUID, reason: str) -> ClientPause | None:

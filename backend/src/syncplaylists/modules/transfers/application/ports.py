@@ -69,9 +69,12 @@ class TransferRepository(Protocol):
     # паузы ещё могут дописываться результаты run_match, полный save() их бы затёр ---
 
     # QUEUED|RUNNING|WRITING → PAUSED_QUOTA (paused_from = прежний статус), а если уже на
-    # паузе — resume_at = max(старый, новый). Возвращает действующий resume_at; None —
-    # перенос не в фазе, где паузу можно поставить (уже DONE/FAILED/REVIEW).
-    async def pause_for_quota(self, transfer_id: UUID, resume_at: datetime) -> datetime | None: ...
+    # паузе — resume_at = max(старый, новый). reason (если задан) — причина паузы, без
+    # неё прежняя причина остаётся. Возвращает действующий resume_at; None — перенос не в
+    # фазе, где паузу можно поставить (уже DONE/FAILED/REVIEW).
+    async def pause_for_quota(
+        self, transfer_id: UUID, resume_at: datetime, reason: str | None = None
+    ) -> datetime | None: ...
 
     # PAUSED_QUOTA → paused_from, только если resume_at <= now. Возвращает фазу, в
     # которую вернулись; None — не на паузе или срок ещё не наступил.

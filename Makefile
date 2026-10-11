@@ -13,8 +13,10 @@ LINK ?=
 TITLE ?=
 ACCEPT ?= 0
 EMAIL ?=
+MAX ?= 10
+LIBRARY ?= 0
 
-.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud e2e-yandex test test-integration test-live lint check ext-install ext-build ext-build-firefox ext-test
+.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud e2e-yandex e2e-vk test test-integration test-live lint check ext-install ext-build ext-build-firefox ext-test
 
 help: ## Список команд
 	@[Console]::OutputEncoding = [Text.Encoding]::UTF8; Select-String -Path Makefile -Pattern '^([a-z0-9-]+):.*## (.*)$$' | ForEach-Object { '  make {0,-18} {1}' -f $$_.Matches[0].Groups[1].Value, $$_.Matches[0].Groups[2].Value }
@@ -45,6 +47,9 @@ e2e-soundcloud: ## Ручной e2e 4c-3 (расширение привязан�
 
 e2e-yandex: ## Ручной e2e 4c-4 (лайки SoundCloud → Яндекс через расширение): make e2e-yandex EMAIL=... [LINK="..."] [ACCEPT=1] [TITLE="..."]
 	./scripts/e2e-yandex-extension.ps1 -Email '$(EMAIL)' -Link '$(LINK)' -Title '$(TITLE)' $(if $(filter 1,$(ACCEPT)),-AcceptUncertain,)
+
+e2e-vk: ## Ручной e2e 4c-5 (плейлист → VK через расширение): make e2e-vk EMAIL=... LINK="..." [MAX=10|50] [LIBRARY=1] [ACCEPT=1]
+	./scripts/e2e-vk-extension.ps1 -Email '$(EMAIL)' -Link '$(LINK)' -Title '$(TITLE)' -MaxTracks $(MAX) $(if $(filter 1,$(LIBRARY)),-ToLibrary,) $(if $(filter 1,$(ACCEPT)),-AcceptUncertain,)
 
 test: ## Unit-тесты и тесты адаптеров без Docker
 	Set-Location backend; uv run pytest tests/unit tests/integration/platforms

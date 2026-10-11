@@ -66,6 +66,26 @@ def test_second_429_only_extends_pause() -> None:
     assert transfer.paused_from is TransferStatus.RUNNING  # фаза не потерялась
 
 
+def test_pause_reason_is_kept_until_resume() -> None:
+    """Причина паузы по квоте — для понятного сообщения: «дневной лимит добавлений
+    VK» и т.п. (4c-5). Повтор без причины её не стирает."""
+    transfer = _running()
+    later = _NOW + timedelta(hours=5)
+
+    transfer.pause_for_quota(later, _NOW, reason="vk_library_daily_limit")
+    assert transfer.pause_reason == "vk_library_daily_limit"
+    transfer.pause_for_quota(later + timedelta(minutes=1), _NOW)
+    assert transfer.pause_reason == "vk_library_daily_limit"
+    events = transfer.pull_domain_events()
+    assert [e.reason for e in events if isinstance(e, TransferPausedForQuota)] == [
+        "vk_library_daily_limit",
+        "vk_library_daily_limit",
+    ]
+
+    transfer.resume_after_quota(_NOW)
+    assert transfer.pause_reason is None
+
+
 def test_item_started_before_pause_still_records_result() -> None:
     transfer = _running()
     item = transfer.items[0]

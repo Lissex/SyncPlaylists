@@ -180,6 +180,7 @@ export default defineBackground(() => {
       const info = platformInfo(key);
       if (info) void setStatus(info, session, account, null);
     },
+    reloadTarget: (target) => pool.reload(target.key, target.tabUrl),
   });
 
   // ---------------------------------------------------------------- площадки

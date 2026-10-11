@@ -135,12 +135,26 @@ class SoundCloudSettings(BaseModel):
         return value
 
 
+class VkSettings(BaseModel):
+    """VK Музыка — только через браузерное расширение (4c-5). Запись бережная: VK
+    отвечает «flood control» (error 9) на частые добавления."""
+
+    # Не больше стольких добавлений в «Мою музыку» за сутки (по Москве) на аккаунт;
+    # дальше — пауза переноса (PAUSED_QUOTA) до следующих суток.
+    library_daily_limit: int = 300
+    # Ступени паузы после «flood control», минуты (последняя повторяется).
+    flood_backoff_minutes: list[float] = [5, 15, 60]
+    # Треков на страницу чтения плейлиста и медиатеки из браузера (≤ 500).
+    page_size: int = 500
+
+
 class PlatformsSettings(BaseModel):
     # Площадки, которые обслуживает in-memory фейк (dev/тесты) — вместо настоящего
     # адаптера, если он есть. Настоящие адаптеры — у Яндекса и SoundCloud.
     fake: list[Platform] = []
     yandex: YandexSettings = YandexSettings()
     soundcloud: SoundCloudSettings = SoundCloudSettings()
+    vk: VkSettings = VkSettings()
     # Раскрытие коротких ссылок (vk.cc, on.soundcloud.com, ...).
     link_expander_timeout_seconds: float = 5.0
     # Кэш результатов поиска площадок в Redis (экономия квоты); 0 — выключен.

@@ -96,6 +96,15 @@ export class TabPool {
     return tabId;
   }
 
+  // Перезагрузить вкладку цели (VK: страница при загрузке обновит свой веб-токен). Нет
+  // вкладки — нечего перезагружать: следующая задача откроет новую, уже со свежим токеном.
+  async reload(key: string, url: string): Promise<void> {
+    const tabId = await this.exclusive(async () => (await this.store.get())[key]?.tabId ?? null);
+    if (tabId === null || (await this.tabs.get(tabId)) === null) return;
+    await this.tabs.navigate(tabId, url);
+    await this.tabs.waitComplete(tabId, this.loadTimeoutMs);
+  }
+
   release(key: string): Promise<void> {
     return this.exclusive(async () => {
       const pooled = await this.store.get();

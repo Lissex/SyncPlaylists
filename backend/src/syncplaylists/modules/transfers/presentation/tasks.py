@@ -65,7 +65,7 @@ async def _pause(
         exc,
         exc.retry_after_seconds,
     )
-    await pause.execute(transfer_id, exc.retry_after_seconds)
+    await pause.execute(transfer_id, exc.retry_after_seconds, reason=exc.reason)
 
 
 async def _pause_for_client(

@@ -118,6 +118,18 @@ describe("фоновые вкладки", () => {
     expect(env.tabs.navigated).toEqual([[tabId, SC.url]]);
   });
 
+  it("перезагрузка: открытая вкладка цели уходит на её страницу, без вкладки — ничего", async () => {
+    const env = setup();
+    await env.pool.reload(SC.key, SC.url); // вкладки ещё нет — не открываем
+    expect(env.tabs.created).toEqual([]);
+
+    const tabId = await env.pool.acquire(SC.key, SC.url, SC.origins);
+    await env.pool.reload(SC.key, SC.url);
+
+    expect(env.tabs.navigated).toEqual([[tabId, SC.url]]);
+    expect(env.tabs.created).toEqual([SC.url]);
+  });
+
   it("разные площадки — разные вкладки", async () => {
     const env = setup();
 

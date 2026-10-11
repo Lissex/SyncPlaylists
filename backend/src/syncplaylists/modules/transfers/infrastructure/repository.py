@@ -200,8 +200,12 @@ class SqlTransferRepository:
         )
         return result.first() is not None
 
-    async def pause_for_quota(self, transfer_id: UUID, resume_at: datetime) -> datetime | None:
+    async def pause_for_quota(
+        self, transfer_id: UUID, resume_at: datetime, reason: str | None = None
+    ) -> datetime | None:
         paused = TransferStatus.PAUSED_QUOTA.value
+        # Новая пауза начинается без причины прошлой; повтор без причины её не стирает.
+        kept_reason = case((TransferOrm.status == paused, TransferOrm.pause_reason), else_=None)
         result = await self._session.execute(
             update(TransferOrm)
             .where(
@@ -215,6 +219,7 @@ class SqlTransferRepository:
                 ),
                 status=paused,
                 resume_at=func.greatest(func.coalesce(TransferOrm.resume_at, resume_at), resume_at),
+                pause_reason=reason if reason is not None else kept_reason,
             )
             .returning(TransferOrm.resume_at)
         )
@@ -229,7 +234,9 @@ class SqlTransferRepository:
                 TransferOrm.status == TransferStatus.PAUSED_QUOTA.value,
                 TransferOrm.resume_at <= now,
             )
-            .values(status=TransferOrm.paused_from, paused_from=None, resume_at=None)
+            .values(
+                status=TransferOrm.paused_from, paused_from=None, resume_at=None, pause_reason=None
+            )
             .returning(TransferOrm.status)
         )
         row = result.first()

@@ -8,7 +8,7 @@
   e2e --api http://localhost:8000` (см. scripts/e2e-extension.ps1).
 
 Площадка — общий демо-каталог фейка (DEMO_TRACKS, те же ISRC): перенос «фейковый
-Spotify → VK через расширение» находит все треки через IsrcStrategy."""
+Spotify → YouTube Music через расширение» находит все треки через IsrcStrategy."""
 
 import argparse
 import asyncio
@@ -343,6 +343,111 @@ class FakeYandexBrowser(FakeBrowserPlatform):
         return [ref for tracks in self.lists.values() for ref in tracks]
 
 
+@dataclass
+class FakeVkBrowser(FakeBrowserPlatform):
+    """VK Музыка «в браузере» (4c-5): операции отвечают проекциями формы web.api.vk.ru
+    (integrations/platforms/vk/extension_wire.py). Как у VK: в плейлист и «Мою музыку»
+    кладутся копии треков с новыми id (owner — пользователь, release_audio_id — оригинал),
+    дубли не отсеиваются, «Моя музыка» — новое сверху. `captcha` — любой запрос → captcha."""
+
+    platform: Platform = Platform.VK
+    external_user_id: str = "100500"
+    page_size: int = 2
+    catalog: dict[str, dict[str, Any]] = field(default_factory=dict)
+    lists: dict[int, list[str]] = field(default_factory=dict)
+    list_titles: dict[int, str] = field(default_factory=dict)
+    saved: list[str] = field(default_factory=list)
+    captcha: bool = False
+    next_id: int = 900
+
+    def _vk_track(self, plain: str) -> dict[str, Any]:
+        if plain not in self.catalog:
+            owner, _, audio = plain.partition("_")
+            self.catalog[plain] = {
+                "owner_id": int(owner),
+                "id": int(audio),
+                "artist": "Artist",
+                "title": f"Track {audio}",
+                "duration": 200,
+            }
+        return self.catalog[plain]
+
+    def _copy(self, plain: str) -> str:
+        original = self._vk_track(plain)
+        self.next_id += 1
+        copy = {
+            **original,
+            "owner_id": int(self.external_user_id),
+            "id": self.next_id,
+            "release_audio_id": original.get("release_audio_id") or plain,
+        }
+        copy_plain = f"{self.external_user_id}_{self.next_id}"
+        self.catalog[copy_plain] = copy
+        return copy_plain
+
+    def _slice(self, items: list[str], args: Mapping[str, Any]) -> dict[str, Any]:
+        start = int(args.get("offset") or 0)
+        end = start + min(int(args.get("limit") or self.page_size), self.page_size)
+        out: dict[str, Any] = {
+            "total": len(items),
+            "tracks": [self._vk_track(i) for i in items[start:end]],
+        }
+        if end < len(items):
+            out["next_offset"] = end
+        return out
+
+    def _header(self, playlist_id: int) -> dict[str, Any]:
+        if playlist_id not in self.lists:
+            raise OpError("not_found")
+        return {
+            "owner_id": int(self.external_user_id),
+            "id": playlist_id,
+            "access_key": f"k{playlist_id}",
+            "title": self.list_titles[playlist_id],
+            "count": len(self.lists[playlist_id]),
+            "type": "ugc",
+            "editable": True,
+        }
+
+    def _run(self, op: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        if self.captcha:
+            raise OpError("captcha")
+        if op == "whoami":
+            return {"id": self.external_user_id, "username": "Fake VK"}
+        if op == "search":
+            return {"tracks": [self._vk_track("-2001_424242")]}
+        if op == "tracks":
+            return {"tracks": [self._vk_track("_".join(i.split("_")[:2])) for i in args["ids"]]}
+        if op == "playlist_info":
+            return {"playlist": self._header(int(args["playlist_id"]))}
+        if op == "playlist_page":
+            playlist_id = int(args["playlist_id"])
+            header = self._header(playlist_id)
+            return {"playlist": header, **self._slice(self.lists[playlist_id], args)}
+        if op == "library_page":
+            return self._slice(self.saved, args)
+        if op == "create_playlist":
+            playlist_id = 158 + len(self.lists)
+            self.lists[playlist_id] = []
+            self.list_titles[playlist_id] = str(args["title"])
+            owner = int(self.external_user_id)
+            return {"owner_id": owner, "id": playlist_id, "access_key": f"k{playlist_id}"}
+        if op == "set_playlist_tracks":
+            playlist_id = int(args["playlist_id"])
+            self._header(playlist_id)
+            own = f"{self.external_user_id}_"
+            self.lists[playlist_id] = [
+                plain if plain.startswith(own) else self._copy(plain) for plain in args["audio_ids"]
+            ]
+            return {}
+        if op == "add_to_library":
+            copy = self._copy(f"{args['owner_id']}_{args['audio_id']}")
+            self.saved.insert(0, copy)
+            copy_owner, _, copy_id = copy.partition("_")
+            return {"owner_id": int(copy_owner), "id": int(copy_id)}
+        raise OpError("unsupported_op", op)
+
+
 async def run_task(
     platform: FakeBrowserPlatform,
     op: str,
@@ -529,14 +634,19 @@ async def _e2e(api: str) -> int:
         ).json()
         print("расширение привязано к:", me["user_email"])
 
-        platform = FakeBrowserPlatform(Platform.VK, external_user_id=f"vk-{uuid.uuid4().hex[:6]}")
+        platform = FakeBrowserPlatform(
+            Platform.YTMUSIC, external_user_id=f"yt-{uuid.uuid4().hex[:6]}"
+        )
         extension = WsFakeExtension(ws_url, claimed["device_token"], platform)
 
         async def connected() -> bool:
             return bool(extension.connected_accounts)
 
         await extension.run(connect_platform=True, until=connected)
-        print("VK подключён через расширение:", extension.connected_accounts[0]["account_id"])
+        print(
+            "YouTube Music подключён через расширение:",
+            extension.connected_accounts[0]["account_id"],
+        )
 
         transfer = (
             await http.post(
@@ -545,7 +655,7 @@ async def _e2e(api: str) -> int:
                     "source": {"kind": "playlist", "platform": "spotify", "external_id": "demo"},
                     "destination": {
                         "kind": "new",
-                        "platform": "vk",
+                        "platform": "ytmusic",
                         "title": "E2E через расширение",
                     },
                 },

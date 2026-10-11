@@ -46,9 +46,12 @@ export const PLATFORMS: readonly PlatformInfo[] = [
   {
     id: "vk",
     title: "VK Музыка",
-    origins: ["https://vk.com/*"],
-    tabUrl: "https://vk.com/audio",
-    available: false,
+    // Основной домен — vk.ru (спайк 4c-5-0); vk.com переадресует туда же.
+    origins: ["https://vk.ru/*"],
+    tabUrl: "https://vk.ru/audio",
+    available: true,
+    // Спайк: 10 поисков и десяток записей по одному в секунду прошли без капчи.
+    minIntervalMs: 1_000,
   },
 ];
 

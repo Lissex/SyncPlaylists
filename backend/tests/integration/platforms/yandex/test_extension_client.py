@@ -41,6 +41,7 @@ from syncplaylists.shared_kernel.domain.value_objects import (
     Transport,
 )
 from tests.fakes.extension import ScriptedChannel
+from tests.fakes.platform import InMemoryWriteGuard
 from tests.integration.platforms.yandex.test_gateway import API, UID, CountingLimiter, fixture
 
 _PLAYLIST = PlaylistRef(Platform.YANDEX, f"{UID}:1001")
@@ -409,6 +410,7 @@ async def test_container_search_via_extension_bypasses_server_limiter(
             soundcloud,
             _NoCache(),
             channel,
+            InMemoryWriteGuard(),
         )
         raw = fixture("search_tracks")["result"]["tracks"]["results"]
         channel.reply("search", {"tracks": [_track(t) for t in raw]})

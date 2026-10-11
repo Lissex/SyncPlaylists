@@ -42,10 +42,12 @@ class CaptchaRequired(DomainEvent):
 @dataclass(frozen=True, slots=True)
 class TransferPausedForQuota(DomainEvent):
     """Площадка попросила подождать дольше разумного повтора — перенос на паузе до
-    resume_at (повторный 429 сдвигает срок и даёт событие снова)."""
+    resume_at (повторный 429 сдвигает срок и даёт событие снова). reason — почему, если
+    площадка это знает (дневной лимит добавлений VK, flood control); иначе None."""
 
     transfer_id: UUID
     resume_at: datetime
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

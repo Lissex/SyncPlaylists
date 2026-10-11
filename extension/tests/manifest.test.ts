@@ -67,14 +67,32 @@ describe("манифест", () => {
       "add_tracks",
       "like_many",
     ];
+    const vk = [
+      "whoami",
+      "search",
+      "tracks",
+      "playlist_info",
+      "playlist_page",
+      "library_page",
+      "create_playlist",
+      "set_playlist_tracks",
+      "add_to_library",
+    ];
+    const sites: Record<string, string> = {
+      soundcloud: "https://soundcloud.com/*",
+      yandex: "https://music.yandex.ru/*",
+      vk: "https://vk.ru/*",
+    };
 
     expect([...registry.keys()].sort()).toEqual(
-      [...soundcloud.map((n) => `soundcloud.${n}`), ...yandex.map((n) => `yandex.${n}`)].sort(),
+      [
+        ...soundcloud.map((n) => `soundcloud.${n}`),
+        ...yandex.map((n) => `yandex.${n}`),
+        ...vk.map((n) => `vk.${n}`),
+      ].sort(),
     );
     for (const def of registry.values()) {
-      const site = def.op.startsWith("yandex.")
-        ? "https://music.yandex.ru/*"
-        : "https://soundcloud.com/*";
+      const site = sites[def.op.split(".")[0]!];
       expect(def.target.origins).toEqual([site]);
       expect(optionalOrigins()).toEqual(expect.arrayContaining(def.target.origins));
     }

@@ -124,6 +124,21 @@ def _playlist(platform: Platform, external_id: str) -> PlaylistLink:
             "https://vk.com/audio_playlist-147845620_2949",
             _playlist(Platform.VK, "-147845620_2949"),
         ),
+        # Веб-клиент vk.ru (спайк 4c-5-0): хэш через «_», а не через «/».
+        (
+            "https://vk.ru/audios415573253?block=my_playlists&section=all"
+            "&z=audio_playlist415573253_158_34350a7d6b46fde270",
+            _playlist(Platform.VK, "415573253_158_34350a7d6b46fde270"),
+        ),
+        # Сгенерированные плейлисты («Открытия») — с отрицательным id.
+        (
+            "https://vk.ru/audios415573253?z=audio_playlist415573253_-24_3f450d61e179c9ced6",
+            _playlist(Platform.VK, "415573253_-24_3f450d61e179c9ced6"),
+        ),
+        (
+            "https://vk.ru/music/playlist/415573253_-24_3f450d61e179c9ced6",
+            _playlist(Platform.VK, "415573253_-24_3f450d61e179c9ced6"),
+        ),
         # --- SoundCloud ---
         (
             "https://soundcloud.com/lofi_girl/sets/lofi-hip-hop-beats",
