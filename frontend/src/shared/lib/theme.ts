@@ -27,3 +27,24 @@ export function setThemePreference(preference: ThemePreference): void {
   writeStored(KEY, preference);
   applyTheme(preference);
 }
+
+/*
+ * Акцент бренда: два кандидата на выбор владельцу (этап 5-2). После выбора останется один
+ * цвет в app/styles/index.css, а этот переключатель удалится.
+ */
+export type AccentOption = "violet" | "teal";
+
+const ACCENT_KEY = "sp-accent";
+
+export function getAccent(): AccentOption {
+  return readStored(ACCENT_KEY) === "teal" ? "teal" : "violet";
+}
+
+export function applyAccent(accent: AccentOption): void {
+  document.documentElement.dataset.accent = accent;
+}
+
+export function setAccent(accent: AccentOption): void {
+  writeStored(ACCENT_KEY, accent);
+  applyAccent(accent);
+}

@@ -39,6 +39,15 @@
   --danger: #ff453a;
 }
 
+/* Кандидат акцента «Бирюза» (выбор в настройках до решения владельца). */
+:root[data-accent="teal"] {
+  --brand: #0f9e94;
+}
+.dark[data-accent="teal"] {
+  --brand: #2ec4b6;
+  --brand-foreground: #00211e;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);

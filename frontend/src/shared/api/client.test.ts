@@ -1,15 +1,10 @@
 import { http, HttpResponse } from "msw";
-import { setupServer } from "msw/node";
+
+import { apiUrl as at, setupMswServer } from "@/test/server";
 
 import { ApiError, api } from "./client";
 
-const server = setupServer();
-
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
-afterEach(() => server.resetHandlers());
-afterAll(() => server.close());
-
-const at = (path: string) => `${window.location.origin}/api${path}`;
+const server = setupMswServer();
 
 describe("api client", () => {
   it("returns JSON and sends cookies with the request", async () => {
