@@ -91,3 +91,6 @@ logs/
 
 # Ответы API площадок, записанные tests/tools/record_*.py (сверка, не фикстуры)
 backend/tests/fixtures/*/recorded/
+
+# Временные файлы генератора маршрутов TanStack Router
+.tanstack/
