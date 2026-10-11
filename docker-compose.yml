@@ -137,6 +137,23 @@ services:
       timeout: 5s
       retries: 10
 
+  # SPA (nginx). Он же проксирует /api → api:8000: страница и API на одном origin.
+  # Порт 5173 — тот же, что у `pnpm dev`: CORS и OAuth-редирект бэкенда настроены на него.
+  frontend:
+    profiles: ["app"]
+    build:
+      context: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 volumes:
   pg_data:
   redis_data:

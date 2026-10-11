@@ -16,7 +16,7 @@ EMAIL ?=
 MAX ?= 10
 LIBRARY ?= 0
 
-.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud e2e-yandex e2e-vk test test-integration test-live lint check ext-install ext-build ext-build-firefox ext-test
+.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud e2e-yandex e2e-vk test test-integration test-live lint check ext-install ext-build ext-build-firefox ext-test fe-install fe-dev fe-build fe-test fe-gen-api
 
 help: ## Список команд
 	@[Console]::OutputEncoding = [Text.Encoding]::UTF8; Select-String -Path Makefile -Pattern '^([a-z0-9-]+):.*## (.*)$$' | ForEach-Object { '  make {0,-18} {1}' -f $$_.Matches[0].Groups[1].Value, $$_.Matches[0].Groups[2].Value }
@@ -75,4 +75,19 @@ ext-build-firefox: ## Расширение: сборка Firefox → extension/.
 ext-test: ## Расширение: типы, формат, vitest
 	Set-Location extension; pnpm typecheck; if ($$?) { pnpm format:check }; if ($$?) { pnpm test }
 
-check: lint test ext-test ## lint + тесты без Docker (бэкенд и расширение)
+fe-install: ## Фронтенд: установить зависимости (pnpm)
+	Set-Location frontend; pnpm install
+
+fe-dev: ## Фронтенд: dev-сервер http://localhost:5173 (/api → localhost:8000)
+	Set-Location frontend; pnpm dev
+
+fe-build: ## Фронтенд: сборка → frontend/dist
+	Set-Location frontend; pnpm build
+
+fe-test: ## Фронтенд: типы, ESLint (слои FSD), формат, vitest
+	Set-Location frontend; pnpm check
+
+fe-gen-api: ## Фронтенд: типы API из OpenAPI бэкенда (без Docker)
+	Set-Location frontend; pnpm gen:api
+
+check: lint test ext-test fe-test ## lint + тесты без Docker (бэкенд, расширение, фронтенд)

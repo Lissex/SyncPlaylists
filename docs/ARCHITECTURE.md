@@ -1923,6 +1923,27 @@ VK — только транспорт EXTENSION, серверного пути 
   подключённым аккаунтом.
 - e2e-скрипты: после решений на ревью — `POST /transfers/{id}/write`.
 
+**5-1 (каркас фронта) — что сделано**
+- `frontend/`: Vite 8 + React 19 + TS 6.0 strict (не 7: `typescript-eslint` пока не поддерживает
+  TS 7; расширение остаётся на 7), TanStack Router (файловые маршруты в `src/app/routes`,
+  страницы — в `pages`) и Query, Tailwind 4 (токены — CSS-переменные в `app/styles/index.css`,
+  акцент `--brand` один на всё), Inter из пакета (без Google Fonts), vitest + Testing Library + msw.
+- FSD закреплён ESLint: `eslint-plugin-boundaries` — импорт только в нижележащие слои, между
+  слайсами одного слоя — нельзя (проверено намеренным нарушением).
+- Типы API — из OpenAPI бэкенда без Docker: `backend/tests/tools/export_openapi.py` →
+  `frontend/openapi.json` → `openapi-typescript` → `src/shared/api/schema.d.ts` (`make fe-gen-api`);
+  обе выгрузки в git, сборка фронта от бэкенда не зависит. `shared/api/client.ts` — `fetch` с
+  `credentials: include`, ошибки бэкенда (`detail` строкой, `{code, message}`, списком 422) →
+  `ApiError` с `code` и `Retry-After`.
+- Один origin: `pnpm dev` проксирует `/api` → `localhost:8000` (Vite слушает все интерфейсы:
+  на Windows иначе только `::1`; заодно открывается с телефона в той же сети). В Docker
+  `frontend/Dockerfile` (Node 24 + pnpm → `nginx:1.27-alpine`): SPA-fallback, `/api/` →
+  `api:8000` без буферизации и с таймаутом 1 ч (SSE), CSP и прочие заголовки — сниппетом в каждом
+  location (nginx не наследует `add_header`). Сервис `frontend` в compose (профиль `app`,
+  порт 5173 — тот же, что у dev: на него настроены CORS и OAuth-редирект бэкенда).
+- pnpm 12 падает на пропущенных скриптах установки — `pnpm-workspace.yaml: allowBuilds`
+  перечисляет их явно (msw, unrs-resolver — не запускаются).
+
 **Долги 5-0**
 - Обложки трека источника нет (появится на этапе 7, enrichment) — сайт показывает заглушку.
 - Причина `not_found`/`failed` по треку не хранится — отчёт показывает только статус.
@@ -2070,6 +2091,7 @@ VK — только транспорт EXTENSION, серверного пути 
 5. **Фронтенд**: подключение, перенос, ревью, история (план и подэтапы — 11i).
    **5-0 (сделано)** — API для сайта: явная запись после ревью, статус `skipped`, история,
    треки постранично с названиями источника, статус расширения (11i).
+   **5-1 (сделано)** — каркас фронта, типы API из OpenAPI, FSD в ESLint, Docker-сервис `frontend` (11i).
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).
 8. **backups**: экспорт во все форматы, импорт из файла, расписания, S3 (SeaweedFS).

@@ -1,0 +1,70 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+/* Тема: класс .dark на <html> (по умолчанию тёмная, переключатель — shared/lib/theme). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Токены в духе iOS: фон, inset-группы, разделители, вторичный текст.
+ * --brand — акцент SyncPlaylists; финальный цвет выбирается в 5-2 (два варианта),
+ * поэтому он задан одной переменной и больше нигде не захардкожен.
+ */
+:root {
+  --background: #f2f2f7;
+  --surface: #ffffff;
+  --surface-raised: #e5e5ea;
+  --separator: #c6c6c8;
+  --label: #000000;
+  --label-secondary: #6c6c70;
+  --label-tertiary: #aeaeb2;
+  --brand: #6e5bff;
+  --brand-foreground: #ffffff;
+  --warning: #c93400;
+  --success: #248a3d;
+  --danger: #d70015;
+}
+
+.dark {
+  --background: #000000;
+  --surface: #1c1c1e;
+  --surface-raised: #2c2c2e;
+  --separator: #38383a;
+  --label: #ffffff;
+  --label-secondary: #8e8e93;
+  --label-tertiary: #636366;
+  --brand: #8b7bff;
+  --brand-foreground: #ffffff;
+  --warning: #ff9f0a;
+  --success: #30d158;
+  --danger: #ff453a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-separator: var(--separator);
+  --color-label: var(--label);
+  --color-label-secondary: var(--label-secondary);
+  --color-label-tertiary: var(--label-tertiary);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Inter Variable", system-ui, "Segoe UI", sans-serif;
+  --radius-group: 12px;
+  --ease-ios: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-background font-sans text-label antialiased;
+    min-height: 100dvh;
+  }
+}
