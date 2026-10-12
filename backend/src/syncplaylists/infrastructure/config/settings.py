@@ -186,6 +186,71 @@ class ExtensionSettings(BaseModel):
         return value or []
 
 
+class ShazamSettings(BaseModel):
+    """Shazam (неофициальный API, подпись — shazamio-core). Вежливо: общий на сервер темп,
+    без повторов, 429 — пауза для всех воркеров (ARCHITECTURE.md, 11j)."""
+
+    enabled: bool = True
+    # 1 запрос в 5 с на весь сервер; ждать токен дольше max_wait — задача откладывается.
+    rate_limit: RateLimitSettings = RateLimitSettings(
+        capacity=1, refill_per_second=0.2, max_wait_seconds=10.0
+    )
+    # Пауза распознавания после 429 (или Retry-After, если он больше).
+    cooldown_seconds: float = 600.0
+    timeout_seconds: float = 15.0
+    # Подпись — по центральному куску окна такой длины (shazamio-core).
+    signature_seconds: int = 12
+
+
+class AcrCloudSettings(BaseModel):
+    """Проект ACRCloud (Identification API) — запасной распознаватель. Не задан — выключен."""
+
+    host: str
+    access_key: str
+    access_secret: SecretStr
+    timeout_seconds: float = 15.0
+    rate_limit: RateLimitSettings = RateLimitSettings(
+        capacity=1, refill_per_second=1.0, max_wait_seconds=10.0
+    )
+
+
+class RecognitionSettings(BaseModel):
+    """Распознавание по звуку (этап 6, ARCHITECTURE.md 11j)."""
+
+    enabled: bool = True
+    # Окно из середины трека, секунды.
+    fragment_seconds: int = 18
+    # Короче — не распознаём.
+    min_track_seconds: int = 20
+    # Больше стольких байт на окно не качаем (у mp3 320 кбит/с 18 с — ~0,7 МБ).
+    max_fragment_bytes: int = 1_500_000
+    # Временные файлы ffmpeg; в compose — tmpfs, на диск не попадают.
+    temp_dir: str | None = "/tmp/recognize"
+    ffmpeg_timeout_seconds: float = 30.0
+    no_match_ttl_days: int = 30
+    no_audio_ttl_days: int = 7
+    # Лок «трек распознаётся» — дольше самого долгого распознавания.
+    lock_ttl_seconds: int = 180
+    # Потолок фазы распознавания на перенос: потом — текстовый результат в ревью.
+    transfer_phase_limit_minutes: int = 15
+    shazam: ShazamSettings = ShazamSettings()
+    acrcloud: AcrCloudSettings | None = None
+
+    @field_validator("fragment_seconds")
+    @classmethod
+    def _fragment_15_to_20(cls, value: int) -> int:
+        if not 15 <= value <= 20:
+            raise ValueError("fragment_seconds — от 15 до 20 секунд")
+        return value
+
+    @field_validator("acrcloud", mode="before")
+    @classmethod
+    def _blank_acrcloud_is_none(cls, value: object) -> object:
+        if isinstance(value, dict) and not (value.get("host") and value.get("access_key")):
+            return None  # пустые RECOGNITION__ACRCLOUD__* из compose — выключен
+        return value
+
+
 class QueueSettings(BaseModel):
     """Очереди ARQ. Задачи переносов через браузерное расширение (TaskLane.CLIENT) —
     в своей очереди со своим воркером: они держат слот, пока расширение выполняет
@@ -193,6 +258,11 @@ class QueueSettings(BaseModel):
 
     default_queue_name: str = "arq:queue"  # имя очереди ARQ по умолчанию
     client_queue_name: str = "arq:extension"
+    # Распознавание по звуку (TaskLane.RECOGNIZE, сервис worker-recognize): ffmpeg и
+    # Shazam не занимают слоты переносов, слотов мало — темп Shazam общий на сервер.
+    recognize_queue_name: str = "arq:recognize"
+    recognize_max_jobs: int = 2
+    recognize_job_timeout_seconds: int = 180
     max_jobs: int = 10
     client_max_jobs: int = 50
     # Самая долгая задача — пачка записи (client_write_batch × 1,5 с + 30 с); с запасом.
@@ -220,6 +290,7 @@ class Settings(BaseSettings):
     platforms: PlatformsSettings = PlatformsSettings()
     extension: ExtensionSettings = ExtensionSettings()
     queue: QueueSettings = QueueSettings()
+    recognition: RecognitionSettings = RecognitionSettings()
 
     @model_validator(mode="after")
     def _prod_safety(self) -> Self:

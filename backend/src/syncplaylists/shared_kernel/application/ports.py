@@ -44,6 +44,8 @@ class TaskLane(StrEnum):
 
     DEFAULT = "default"
     CLIENT = "client"
+    # Распознавание по звуку (ffmpeg + Shazam): свой воркер с малым числом слотов.
+    RECOGNIZE = "recognize"
 
 
 class TaskQueue(Protocol):

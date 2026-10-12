@@ -1,0 +1,36 @@
+{
+  "status": {
+    "msg": "Success",
+    "code": 0,
+    "version": "1.0"
+  },
+  "metadata": {
+    "music": [
+      {
+        "external_ids": {
+          "isrc": "USUG11800685",
+          "upc": "00602567870727"
+        },
+        "play_offset_ms": 120360,
+        "title": "Lucid Dreams",
+        "artists": [
+          {
+            "name": "Juice WRLD"
+          }
+        ],
+        "album": {
+          "name": "Goodbye & Good Riddance"
+        },
+        "acrid": "6049f11da7095e8bb8266871d4a70873",
+        "result_from": 3,
+        "score": 100,
+        "duration_ms": 239836,
+        "release_date": "2018-05-23",
+        "label": "Grade A Productions/Interscope Records"
+      }
+    ],
+    "timestamp_utc": "2026-10-12 19:00:00"
+  },
+  "cost_time": 0.69,
+  "result_type": 0
+}

@@ -284,12 +284,18 @@ class PlatformsSettings(BaseModel):      # этап 4b
     soundcloud: SoundCloudSettings = SoundCloudSettings()   # 4b-2
     link_expander_timeout_seconds: float = 5.0
 
-class RecognitionSettings(BaseModel):
-    shazam_enabled: bool = True
-    acrcloud_host: str | None = None
-    acrcloud_key: SecretStr | None = None
-    acrcloud_secret: SecretStr | None = None
-    fragment_seconds: int = 18
+class RecognitionSettings(BaseModel):     # этап 6-1 (11j)
+    enabled: bool = True
+    fragment_seconds: int = 18           # 15–20 (валидатор), окно из середины
+    min_track_seconds: int = 20
+    max_fragment_bytes: int = 1_500_000
+    temp_dir: str | None = "/tmp/recognize"   # в compose — tmpfs
+    no_match_ttl_days: int = 30          # отрицательный кэш; распознанное — без срока
+    no_audio_ttl_days: int = 7
+    transfer_phase_limit_minutes: int = 15
+    shazam: ShazamSettings = ShazamSettings()   # enabled, rate_limit 1/5 с на сервер,
+                                         # cooldown_seconds 600 после 429, timeout
+    acrcloud: AcrCloudSettings | None = None    # host, access_key, access_secret: SecretStr
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -465,9 +471,10 @@ MATCHED; иначе лучший — оригинал под потолком с
 use case, а не вызывают из домена напрямую), можно оставлять в `application/ports.py` того же модуля.
 
 Так, с этапа 2: `MusicPlatformGateway` и его DTO `TrackQuery`/`TrackCandidate` лежат в
-`shared_kernel/domain`; `TrackMatchRepository`, а также заглушки `AudioRecognizer`/
-`FingerprintComparer` (ещё не подключены к пайплайну, задел под этап 6) — в
-`modules/matching/domain/ports.py`. С этапа 3 `MusicPlatformGateway` дополнен методами
+`shared_kernel/domain`; `TrackMatchRepository` — в `modules/matching/domain/ports.py`.
+Порты распознавания (этап 6-1) — в `modules/recognition/application/ports.py` (ими
+пользуется только use case), `RecognizedTrack` — в `shared_kernel/domain/search.py` (его
+читают recognition и matching). С этапа 3 `MusicPlatformGateway` дополнен методами
 `get_playlist`/`create_playlist`/`add_tracks`/`get_library`/`add_to_library`/
 `library_insert_order` (раздел ниже — актуальные сигнатуры, реализованные в коде).
 
@@ -592,14 +599,30 @@ class SessionTokenService(Protocol): # реализация — RedisSessionStor
     async def revoke(self, token: str) -> None: ...
     async def revoke_all(self, user_id: UUID) -> None: ...
 
-class AudioSource(Protocol):
-    async def fetch_fragment(self, ref: ExternalTrackRef, seconds: int) -> AudioFragment: ...
-
-class AudioRecognizer(Protocol):
-    async def recognize(self, fragment: AudioFragment) -> RecognitionResult | None: ...
-
-class FingerprintComparer(Protocol):
-    async def similarity(self, a: AudioFragment, b: AudioFragment) -> float: ...
+# recognition/application/ports.py (этап 6-1). Ошибки — recognition/domain/errors.py:
+# AudioUnavailableError(NoAudioReason: encrypted | no_stream | too_large) — в кэш как NO_AUDIO;
+# AudioTemporarilyUnavailableError — не кэшируется; RecognizerBusyError(retry_after),
+# RecognizerUnavailableError.
+class AudioSource(Protocol):          # качает только окно (Range, сегменты окна)
+    platform: Platform
+    async def fetch(self, ref: ExternalTrackRef, length_ms: int,
+                    duration_ms: int | None) -> SourceAudio: ...   # data, window, lead_ms, preview
+class AudioSourceRegistry(Protocol):  # integrations/platforms/audio.py: PlatformAudioSources
+    def for_track(self, ref, access: AccountAccess | None) -> AudioSource | None: ...
+class AudioTrimmer(Protocol):         # FfmpegTrimmer: окно → wav 16 кГц mono, temp — в вызове
+    async def to_wav(self, audio: SourceAudio) -> bytes: ...
+class AudioRecognizer(Protocol):      # ShazamRecognizer, AcrCloudRecognizer (integrations/recognizers)
+    provider: str
+    async def recognize(self, wav: bytes) -> RecognizedTrack | None: ...
+class RecognizerThrottle(Protocol):   # RedisServiceThrottle: token bucket ratelimit:tb:svc:<имя>
+    async def acquire(self, provider: str) -> float | None: ...   # число — ждать дольше допустимого
+    async def penalize(self, provider: str, seconds: float) -> None: ...   # 429 → пауза всем
+class RecognitionRepository(Protocol):   # одна запись на трек источника, upsert
+    async def find(self, source_ref) -> Recognition | None: ...
+    async def save(self, recognition: Recognition) -> None: ...
+class RecognitionLock(Protocol):      # RedisRecognitionLock: SET NX + TTL, снятие только своего
+    def hold(self, source_ref) -> AbstractAsyncContextManager[bool]: ...
+# FingerprintComparer (chromaprint, сверка звука цели) — не на этапе 6: нужен звук цели.
 
 # TaskQueue/EventPublisher/UnitOfWork — реализованы с этапа 3 в
 # shared_kernel/application/ports.py (нужны нескольким контекстам, вызываются из
@@ -656,7 +679,10 @@ platform_tracks     id, platform, external_id, canonical_id, raw_title, raw_arti
                     raw jsonb, UNIQUE(platform, external_id)
 track_matches       id, source_pt_id, target_platform, target_pt_id, method, score, confirmations,
                     restriction (4b-2: preview_only), UNIQUE(source_pt_id, target_platform)
-recognitions        id, platform_track_id, provider, result jsonb, created_at
+recognitions        id, source_pt_id UNIQUE → platform_tracks, outcome (recognized|no_match|no_audio),
+                    no_audio_reason, provider, title, artist, isrc, provider_ref, exact,
+                    offset_ms, time_skew, frequency_skew, window_start_ms, window_length_ms,
+                    created_at, expires_at (NULL — без срока)              -- 6-1, звук не хранится
 transfers           id, user_id,
                     source_kind (playlist|library), source_platform, source_playlist_id,
                     destination_kind (existing|new|library), target_platform, target_playlist_id,
@@ -2110,7 +2136,51 @@ VK — только транспорт EXTENSION, серверного пути 
 - Иначе результат — подсказка в ревью: кандидаты не выше UNCERTAIN, с причиной («звук изменён»,
   «не совпадает с названием»).
 - Источники с тегом `sped_up` / `slowed` (и nightcore) на распознавание не отправляются.
-- `recognitions` хранит `offset_s`, `time_skew`, `frequency_skew`.
+- `recognitions` хранит `offset_ms`, `time_skew`, `frequency_skew`.
+
+**6-1 (контекст recognition) — что сделано (2026-10-12)**
+- **Домен** `modules/recognition/domain`:
+  - `Recognition` — кэш на трек источника, исходы `RECOGNIZED | NO_MATCH | NO_AUDIO`;
+    отрицательные со сроком (`expires_at`);
+  - `FragmentWindow.middle` — окно из середины; для превью — из середины превью;
+    короткий трек — с начала;
+  - `SourceAudio` — байты окна с запасом и `lead_ms`;
+  - `RecognitionPolicy.check` — кого не распознаём: перенос без опции, площадка без звука,
+    есть ISRC, sped up / slowed, короче 20 с;
+  - ошибки (`NoAudioReason`).
+- **`RecognizeSourceTrackUseCase`**:
+  - свежий кэш → лок `recognition:lock:<трек>` → кэш ещё раз → окно → wav →
+    распознаватели по очереди;
+  - кэшируется только окончательное: `NO_MATCH`, если все ответили «не знаю», и `NO_AUDIO`;
+  - «занят» хоть один → `RecognitionDeferred(retry_after)`;
+  - сбой → `RecognitionUnavailable` без записи.
+- **`ShazamRecognizer`** — подпись shazamio-core, свой httpx:
+  - User-Agent httpx как есть, без повторов;
+  - `exact` — |skew| < 1 %;
+  - 429 → `penalize` общего bucket на `max(cooldown 600 с, Retry-After)`.
+- **`AcrCloudRecognizer`** — HMAC-SHA1 по документации:
+  - `exact` при score ≥ 90;
+  - 3003 / 3015 → пауза;
+  - регистрируется, только если задан `RECOGNITION__ACRCLOUD__*`.
+- **`FfmpegTrimmer`** — `-ss` после `-i` (точная вырезка склеенных сегментов),
+  `TemporaryDirectory` вызова в `temp_dir`, удаляется и при ошибке.
+- **`RedisServiceThrottle`** — те же Lua-скрипты token bucket, ключи `ratelimit:tb:svc:<имя>`;
+  у площадок поведение не менялось.
+- **Обвязка:**
+  - миграция `d4f1a8c3e6b2` (`recognitions`);
+  - `TaskLane.RECOGNIZE`, `QueueSettings.recognize_*`;
+  - `RecognizeWorkerSettings` (пока только `ping`; задача трека — 6-2);
+  - сервис `worker-recognize` с tmpfs;
+  - `RecognitionProvider` в `container.py` (реестр источников звука пока пуст — 6-3);
+  - `shazamio_core` запрещён доменам и application (import-linter).
+- **Тесты:**
+  - unit: домен, use case на фейках, настройки;
+  - respx: Shazam на ответах спайка (ремикс — exact; slowed — не exact), ACRCloud на ответах
+    формы из документации;
+  - testcontainers: репозиторий (round trip, замена строки), лок (исключительность, не
+    снимает чужой, снимается при ошибке), темп (общий на процессы, `penalize`);
+  - `audio` (только в контейнере, `make test-audio`): ffmpeg вырезает 18 с wav 16 кГц mono
+    из синуса, мусор → NO_AUDIO, временный каталог пуст.
 
 ---
 
@@ -2187,7 +2257,7 @@ VK — только транспорт EXTENSION, серверного пути 
 | `api` | `backend/Dockerfile` → uvicorn | `app` |
 | `worker` | тот же образ → `arq ...WorkerSettings` (очереди transfer/match/write) | `app` |
 | `worker-extension` | тот же образ → `arq ...ExtensionWorkerSettings` (очередь `client`: переносы через расширение) | `app` |
-| `worker-recognize` | тот же образ, очередь `recognize`; ffmpeg + chromaprint внутри | `app` |
+| `worker-recognize` | тот же образ → `arq ...RecognizeWorkerSettings` (очередь `arq:recognize`, `TaskLane.RECOGNIZE`); ffmpeg + chromaprint внутри; **tmpfs `/tmp/recognize`** — фрагменты не попадают на диск | `app` |
 | `frontend` | `frontend/Dockerfile` → nginx | `app` |
 | `caddy` | `caddy:2` (только прод) | `prod` |
 
@@ -2256,7 +2326,10 @@ VK — только транспорт EXTENSION, серверного пути 
    **5-2…5-5 (сделано)** — вход и оболочка; «Подключения»; новый перенос; прогресс, ревью,
    отчёт, история (11i).
    **5-6 (сделано)** — удалены dev-страница `/extension/pair` и `diagnostics.echo` (11i).
-6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
+6. **recognition**: ffmpeg, Shazam (shazamio-core), ACRCloud (план, правки владельца и
+   итоги — 11j). **6-0 (сделано)** — спайк: что реально отдают площадки и Shazam (11j).
+   **6-1 (сделано)** — контекст recognition, Shazam/ACRCloud/ffmpeg, кэш `recognitions`,
+   `worker-recognize` (11j).
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).
 8. **backups**: экспорт во все форматы, импорт из файла, расписания, S3 (SeaweedFS).
 9. **library_tools**: дубли, слияние, сравнение площадок, недоступные треки.

@@ -62,6 +62,20 @@ class ExtensionWorkerSettings:
     redis_settings = ArqRedisSettings.from_dsn(str(settings.redis.dsn))
 
 
+class RecognizeWorkerSettings:
+    """Воркер распознавания по звуку (TaskLane.RECOGNIZE, сервис `worker-recognize`):
+    ffmpeg и Shazam не занимают слоты переносов. Слотов мало — темп Shazam всё равно
+    общий на сервер (RecognitionSettings.shazam.rate_limit). Задача распознавания трека
+    переноса — с подэтапа 6-2."""
+
+    functions = (ping,)
+    queue_name = settings.queue.recognize_queue_name
+    max_jobs = settings.queue.recognize_max_jobs
+    job_timeout = settings.queue.recognize_job_timeout_seconds
+    redis_settings = ArqRedisSettings.from_dsn(str(settings.redis.dsn))
+
+
 container = make_container(settings)
 setup_dishka(container, WorkerSettings)
 setup_dishka(container, ExtensionWorkerSettings)
+setup_dishka(container, RecognizeWorkerSettings)

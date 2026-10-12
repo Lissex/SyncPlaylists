@@ -86,9 +86,11 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 # live — тесты на настоящей площадке с токеном из .env; только явно: pytest -m live
-addopts = "-m 'not live'"
+# audio — ffmpeg/chromaprint, только в контейнере: make test-audio
+addopts = "-m 'not live and not audio'"
 markers = [
     "live: обращается к настоящей площадке (нужен токен в .env, запуск: pytest -m live)",
+    "audio: нужен ffmpeg — только в контейнере (make test-audio)",
 ]
 
 [tool.importlinter]
@@ -114,7 +116,7 @@ source_modules = [
 forbidden_modules = [
     "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
     "arq", "pydantic_settings", "authlib", "boto3", "aioboto3",
-    "argon2", "cryptography", "email_validator", "yandex_music", "aiohttp",
+    "argon2", "cryptography", "email_validator", "yandex_music", "aiohttp", "shazamio_core",
 ]
 
 [[tool.importlinter.contracts]]
@@ -186,7 +188,7 @@ source_modules = [
 forbidden_modules = [
     "fastapi", "starlette", "sse_starlette", "sqlalchemy", "redis", "httpx", "dishka",
     "arq", "pydantic_settings", "authlib", "boto3", "aioboto3",
-    "argon2", "cryptography", "email_validator", "yandex_music", "aiohttp",
+    "argon2", "cryptography", "email_validator", "yandex_music", "aiohttp", "shazamio_core",
     "syncplaylists.modules.identity.infrastructure",
     "syncplaylists.modules.identity.presentation",
     "syncplaylists.modules.accounts.infrastructure",

@@ -1,5 +1,5 @@
-from collections.abc import AsyncIterator
-from datetime import timedelta
+from collections.abc import AsyncIterator, Sequence
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from arq.connections import ArqRedis, create_pool
@@ -18,11 +18,13 @@ from syncplaylists.infrastructure.http.url_expander import HttpxUrlExpander
 from syncplaylists.infrastructure.queue.arq_queue import ArqTaskQueue
 from syncplaylists.infrastructure.ratelimit.redis_fixed_window import RedisFixedWindowLimiter
 from syncplaylists.infrastructure.ratelimit.redis_token_bucket import (
+    RedisServiceThrottle,
     RedisTokenBucketLimiter,
     TokenBucketLimits,
 )
 from syncplaylists.infrastructure.ratelimit.redis_write_guard import RedisWriteGuard
 from syncplaylists.infrastructure.security.aes_gcm import AesGcmTokenCipher
+from syncplaylists.integrations.platforms.audio import AudioSourceBuilder, PlatformAudioSources
 from syncplaylists.integrations.platforms.extension.gateway import (
     ExtensionGatewayBuilder,
     ExtensionPlatformTraits,
@@ -57,6 +59,10 @@ from syncplaylists.integrations.platforms.yandex.factory import (
     YandexGatewayBuilder,
     YandexProfileFetcher,
 )
+from syncplaylists.integrations.recognizers import acrcloud, shazam
+from syncplaylists.integrations.recognizers.acrcloud import AcrCloudRecognizer
+from syncplaylists.integrations.recognizers.ffmpeg import FfmpegTrimmer
+from syncplaylists.integrations.recognizers.shazam import CoreShazamSigner, ShazamRecognizer
 from syncplaylists.modules.accounts.application.access import (
     AccountAccessService,
     AccountCredentialsRefresher,
@@ -151,6 +157,23 @@ from syncplaylists.modules.matching.domain.normalization import TrackNormalizer
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
 from syncplaylists.modules.matching.domain.scoring import MatchScorer
 from syncplaylists.modules.matching.infrastructure.repository import SqlTrackMatchRepository
+from syncplaylists.modules.recognition.application.ports import (
+    AudioRecognizer,
+    AudioSourceRegistry,
+    AudioTrimmer,
+    RecognitionLock,
+    RecognitionRepository,
+    RecognizerThrottle,
+)
+from syncplaylists.modules.recognition.application.use_cases import (
+    GetRecognitionQuery,
+    RecognitionLimits,
+    RecognizeSourceTrackUseCase,
+)
+from syncplaylists.modules.recognition.infrastructure.lock import RedisRecognitionLock
+from syncplaylists.modules.recognition.infrastructure.repository import (
+    SqlRecognitionRepository,
+)
 from syncplaylists.modules.transfers.application.links import ResolvePlaylistLinkUseCase
 from syncplaylists.modules.transfers.application.ports import TransferRepository
 from syncplaylists.modules.transfers.application.use_cases import (
@@ -263,6 +286,7 @@ class RedisProvider(Provider):
             {
                 TaskLane.DEFAULT: settings.queue.default_queue_name,
                 TaskLane.CLIENT: settings.queue.client_queue_name,
+                TaskLane.RECOGNIZE: settings.queue.recognize_queue_name,
             },
         )
 
@@ -555,6 +579,114 @@ class MatchingProvider(Provider):
         scorer: MatchScorer,
     ) -> MatchingPipelineFactory:
         return DefaultMatchingPipelineFactory(gateway_factory, track_matches, normalizer, scorer)
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _limits(rate: RateLimitSettings) -> TokenBucketLimits:
+    return TokenBucketLimits(
+        capacity=rate.capacity,
+        refill_per_second=rate.refill_per_second,
+        max_wait_seconds=rate.max_wait_seconds,
+    )
+
+
+class RecognitionProvider(Provider):
+    """Распознавание по звуку (этап 6). Источники звука — по площадкам (6-3), цепочка
+    распознавателей — Shazam, затем ACRCloud, если задан его проект."""
+
+    @provide(scope=Scope.APP)
+    def get_throttle(self, redis: Redis, settings: Settings) -> RecognizerThrottle:
+        recognition = settings.recognition
+        limits = {shazam.PROVIDER: _limits(recognition.shazam.rate_limit)}
+        if recognition.acrcloud is not None:
+            limits[acrcloud.PROVIDER] = _limits(recognition.acrcloud.rate_limit)
+        return RedisServiceThrottle(redis, limits)
+
+    @provide(scope=Scope.APP)
+    def get_recognizers(
+        self, http: httpx.AsyncClient, throttle: RecognizerThrottle, settings: Settings
+    ) -> Sequence[AudioRecognizer]:
+        recognition = settings.recognition
+        recognizers: list[AudioRecognizer] = []
+        if recognition.shazam.enabled:
+            recognizers.append(
+                ShazamRecognizer(
+                    http,
+                    CoreShazamSigner(recognition.shazam.signature_seconds),
+                    throttle,
+                    timeout_seconds=recognition.shazam.timeout_seconds,
+                    cooldown_seconds=recognition.shazam.cooldown_seconds,
+                )
+            )
+        if recognition.acrcloud is not None:
+            recognizers.append(
+                AcrCloudRecognizer(
+                    http,
+                    throttle,
+                    host=recognition.acrcloud.host,
+                    access_key=recognition.acrcloud.access_key,
+                    access_secret=recognition.acrcloud.access_secret.get_secret_value(),
+                    timeout_seconds=recognition.acrcloud.timeout_seconds,
+                )
+            )
+        return recognizers
+
+    @provide(scope=Scope.APP)
+    def get_trimmer(self, settings: Settings) -> AudioTrimmer:
+        return FfmpegTrimmer(
+            temp_dir=settings.recognition.temp_dir,
+            timeout_seconds=settings.recognition.ffmpeg_timeout_seconds,
+        )
+
+    @provide(scope=Scope.APP)
+    def get_audio_sources(self) -> AudioSourceRegistry:
+        # Источники звука площадок появятся в 6-3 (SoundCloud анонимно, Яндекс по токену).
+        builders: dict[Platform, AudioSourceBuilder] = {}
+        return PlatformAudioSources(builders)
+
+    @provide(scope=Scope.APP)
+    def get_lock(self, redis: Redis, settings: Settings) -> RecognitionLock:
+        return RedisRecognitionLock(redis, settings.recognition.lock_ttl_seconds)
+
+    @provide(scope=Scope.REQUEST)
+    def get_repository(
+        self, session: AsyncSession, platform_tracks: PlatformTrackRepository
+    ) -> RecognitionRepository:
+        return SqlRecognitionRepository(session, platform_tracks)
+
+    @provide(scope=Scope.REQUEST)
+    def get_recognize_source_track(
+        self,
+        sources: AudioSourceRegistry,
+        trimmer: AudioTrimmer,
+        recognizers: Sequence[AudioRecognizer],
+        repository: RecognitionRepository,
+        lock: RecognitionLock,
+        ensure_platform_track: EnsurePlatformTrackUseCase,
+        settings: Settings,
+    ) -> RecognizeSourceTrackUseCase:
+        recognition = settings.recognition
+        return RecognizeSourceTrackUseCase(
+            sources,
+            trimmer,
+            recognizers,
+            repository,
+            lock,
+            ensure_platform_track,
+            RecognitionLimits(
+                fragment_ms=recognition.fragment_seconds * 1000,
+                no_match_ttl=timedelta(days=recognition.no_match_ttl_days),
+                no_audio_ttl=timedelta(days=recognition.no_audio_ttl_days),
+            ),
+            clock=_now,
+        )
+
+    @provide(scope=Scope.REQUEST)
+    def get_recognition_query(self, repository: RecognitionRepository) -> GetRecognitionQuery:
+        return GetRecognitionQuery(repository, clock=_now)
 
 
 class SecurityProvider(Provider):
@@ -991,5 +1123,6 @@ def make_container(settings: Settings) -> AsyncContainer:
         ExtensionProvider(),
         CatalogProvider(),
         MatchingProvider(),
+        RecognitionProvider(),
         TransfersProvider(),
     )

@@ -29,6 +29,12 @@ x-backend-env: &backend-env
   QUEUE__MAX_JOBS: ${QUEUE__MAX_JOBS:-10}
   QUEUE__CLIENT_MAX_JOBS: ${QUEUE__CLIENT_MAX_JOBS:-50}
   QUEUE__CLIENT_WRITE_BATCH: ${QUEUE__CLIENT_WRITE_BATCH:-100}
+  QUEUE__RECOGNIZE_MAX_JOBS: ${QUEUE__RECOGNIZE_MAX_JOBS:-2}
+  RECOGNITION__ENABLED: ${RECOGNITION__ENABLED:-true}
+  RECOGNITION__SHAZAM__ENABLED: ${RECOGNITION__SHAZAM__ENABLED:-true}
+  RECOGNITION__ACRCLOUD__HOST: ${RECOGNITION__ACRCLOUD__HOST:-}
+  RECOGNITION__ACRCLOUD__ACCESS_KEY: ${RECOGNITION__ACRCLOUD__ACCESS_KEY:-}
+  RECOGNITION__ACRCLOUD__ACCESS_SECRET: ${RECOGNITION__ACRCLOUD__ACCESS_SECRET:-}
 
 services:
   # postgres:17 временно без сборки под linux/amd64 (переход базового образа
@@ -124,6 +130,28 @@ services:
       target: prod
     command: ["arq", "syncplaylists.bootstrap.worker.ExtensionWorkerSettings"]
     environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'arq ' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Распознавание по звуку (своя очередь ARQ, TaskLane.RECOGNIZE): ffmpeg + Shazam.
+  # Фрагменты — только в tmpfs /tmp/recognize: на диск хоста и в слой образа не попадают.
+  worker-recognize:
+    profiles: ["app"]
+    build:
+      context: ./backend
+      target: prod
+    command: ["arq", "syncplaylists.bootstrap.worker.RecognizeWorkerSettings"]
+    environment: *backend-env
+    tmpfs:
+      - /tmp/recognize:size=64m,mode=1777
     depends_on:
       postgres:
         condition: service_healthy
