@@ -1,6 +1,6 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from syncplaylists.modules.extension.domain.entities import ExtensionDevice
@@ -164,35 +164,3 @@ class ClientPausedPlatforms(Protocol):
     само перепроверяет вход — и только через уже открытую вкладку площадки."""
 
     async def for_user(self, user_id: UUID) -> set[Platform]: ...
-
-
-class DeviceCaller(Protocol):
-    """Операция на конкретном устройстве, без площадки (диагностика связи). Возвращает
-    исход как прислало расширение ({ok, data} | {ok: false, error}); бросает
-    DeviceUnavailableError (устройство не на связи / не ответило вовремя)."""
-
-    async def call_device(
-        self,
-        user_id: UUID,
-        device_id: UUID,
-        operation: str,
-        args: Mapping[str, Any],
-        timeout_seconds: float,
-    ) -> Mapping[str, Any]: ...
-
-
-@dataclass(frozen=True, slots=True)
-class ProbeRecord:
-    """Проверка связи с устройством: pending, затем ok (data) или error (code)."""
-
-    user_id: UUID
-    device_id: UUID
-    status: Literal["pending", "ok", "error"]
-    data: Mapping[str, Any] | None = None
-    error: str | None = None
-
-
-class ProbeStore(Protocol):
-    async def save(self, probe_id: str, record: ProbeRecord, ttl_seconds: int) -> None: ...
-
-    async def get(self, probe_id: str) -> ProbeRecord | None: ...

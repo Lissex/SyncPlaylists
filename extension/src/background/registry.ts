@@ -16,7 +16,7 @@
 
 import { z } from "zod";
 
-import { diagnosticsTarget, type TargetInfo } from "../platforms";
+import type { TargetInfo } from "../platforms";
 import { soundcloudOperations } from "./soundcloud";
 import { vkOperations } from "./vk";
 import { yandexOperations } from "./yandex";
@@ -94,44 +94,9 @@ export interface OperationDef {
   jitterMs?: number;
 }
 
-// ------------------------------------------------------------------ diagnostics.echo
-
-const echoArgs = z.strictObject({ nonce: z.string().min(1).max(64) });
-const echoResult = z.strictObject({
-  nonce: z.string().max(64),
-  page_title: z.string().max(200),
-  path: z.string().max(200),
-});
-
-// Выполняется в странице: возвращает nonce и что это за страница.
-function echoInPage(args: { nonce: string }): PageOutcome {
-  return {
-    ok: true,
-    data: {
-      nonce: args.nonce,
-      page_title: document.title.slice(0, 200),
-      path: location.pathname,
-    },
-  };
-}
-
-export interface RegistryOptions {
-  apiBase: string;
-  diagnostics: boolean;
-}
-
-export function buildRegistry(options: RegistryOptions): ReadonlyMap<string, OperationDef> {
+/** Все операции расширения: только площадки, другого кода в реестре нет. */
+export function buildRegistry(): ReadonlyMap<string, OperationDef> {
   const defs: OperationDef[] = [];
-  if (options.diagnostics) {
-    defs.push({
-      op: "diagnostics.echo",
-      target: diagnosticsTarget(options.apiBase),
-      write: false,
-      args: echoArgs,
-      result: echoResult,
-      main: echoInPage,
-    });
-  }
   defs.push(...soundcloudOperations());
   defs.push(...yandexOperations());
   defs.push(...vkOperations());

@@ -1,7 +1,7 @@
 """OpenAPI-схема API в файл — для генерации типов фронтенда (frontend: `pnpm gen:api`).
 
 Без Postgres и Redis: приложение только собирается, запросов нет. Настройки — фиктивные,
-как в тестах; dev-инструменты расширения выключены, поэтому их маршрутов в схеме нет.
+как в тестах.
 
     uv run python -m tests.tools.export_openapi ../frontend/openapi.json
 """
@@ -20,7 +20,6 @@ def main(out: Path) -> None:
         db={"dsn": "postgresql+asyncpg://openapi:openapi@localhost:5432/openapi"},
         redis={"dsn": "redis://localhost:6379/0"},
         security=TEST_SECURITY,
-        extension={"dev_page_enabled": False, "diagnostics_enabled": False},
     )
     schema = create_app(settings).openapi()
     out.write_text(json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

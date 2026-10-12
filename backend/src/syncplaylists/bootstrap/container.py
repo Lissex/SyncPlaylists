@@ -97,23 +97,16 @@ from syncplaylists.modules.catalog.infrastructure.repository import (
     SqlCanonicalTrackRepository,
     SqlPlatformTrackRepository,
 )
-from syncplaylists.modules.extension.application.diagnostics import (
-    GetProbeUseCase,
-    RunProbeUseCase,
-    StartProbeUseCase,
-)
 from syncplaylists.modules.extension.application.ports import (
     AttemptLimiter as ExtensionAttemptLimiter,
 )
 from syncplaylists.modules.extension.application.ports import (
     ClientPausedPlatforms,
-    DeviceCaller,
     ExtensionChannel,
     ExtensionDeviceRepository,
     ExtensionHub,
     ExtensionPresenceReader,
     PairingStore,
-    ProbeStore,
 )
 from syncplaylists.modules.extension.application.use_cases import (
     AuthenticateDeviceUseCase,
@@ -127,7 +120,6 @@ from syncplaylists.modules.extension.application.use_cases import (
     StartPairingUseCase,
 )
 from syncplaylists.modules.extension.infrastructure.pairing_store import RedisPairingStore
-from syncplaylists.modules.extension.infrastructure.probe_store import RedisProbeStore
 from syncplaylists.modules.extension.infrastructure.redis_channel import RedisExtensionChannel
 from syncplaylists.modules.extension.infrastructure.repository import (
     SqlExtensionDeviceRepository,
@@ -293,18 +285,10 @@ class RedisProvider(Provider):
         return channel
 
     @provide
-    def get_device_caller(self, channel: RedisExtensionChannel) -> DeviceCaller:
-        return channel
-
-    @provide
     def get_extension_presence_reader(
         self, channel: RedisExtensionChannel
     ) -> ExtensionPresenceReader:
         return channel
-
-    @provide
-    def get_probe_store(self, redis: Redis) -> ProbeStore:
-        return RedisProbeStore(redis)
 
 
 class GatewayProvider(Provider):
@@ -809,20 +793,6 @@ class ExtensionProvider(Provider):
         self, devices: ExtensionDeviceRepository, presence: ExtensionPresenceReader
     ) -> GetExtensionStatusUseCase:
         return GetExtensionStatusUseCase(devices, presence)
-
-    @provide(scope=Scope.REQUEST)
-    def get_start_probe(
-        self, devices: ExtensionDeviceRepository, store: ProbeStore, task_queue: TaskQueue
-    ) -> StartProbeUseCase:
-        return StartProbeUseCase(devices, store, task_queue)
-
-    @provide(scope=Scope.REQUEST)
-    def get_run_probe(self, caller: DeviceCaller, store: ProbeStore) -> RunProbeUseCase:
-        return RunProbeUseCase(caller, store)
-
-    @provide(scope=Scope.REQUEST)
-    def get_get_probe(self, store: ProbeStore) -> GetProbeUseCase:
-        return GetProbeUseCase(store)
 
     @provide(scope=Scope.REQUEST)
     def get_revoke_device(

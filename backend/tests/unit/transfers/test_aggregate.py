@@ -214,8 +214,9 @@ def test_decision_can_be_changed_while_in_review() -> None:
     assert item.match.target_ref == _candidate("b").ref
 
     transfer.resolve_item(0, None, _NOW)
-    assert item.status is TransferItemStatus.SKIPPED
-    assert item.match is None
+    skipped = transfer.items[0]  # заново: mypy сузил тип item после assert выше
+    assert skipped.status is TransferItemStatus.SKIPPED
+    assert skipped.match is None
 
 
 def test_auto_matched_item_cannot_be_resolved() -> None:

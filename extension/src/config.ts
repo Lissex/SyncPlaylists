@@ -5,6 +5,5 @@ export const API_BASE = (import.meta.env.WXT_API_BASE ?? "http://localhost:8000"
   "",
 );
 export const WS_URL = `${API_BASE.replace(/^http/, "ws")}/extension/ws`;
-export const PAIR_URL = import.meta.env.WXT_PAIR_URL ?? `${API_BASE}/extension/pair`;
-// Тестовая операция diagnostics.echo — только в dev-сборках.
-export const DIAGNOSTICS = import.meta.env.WXT_DIAGNOSTICS === "true";
+// Страница сайта, где вводят код привязки («Подключения»).
+export const PAIR_URL = import.meta.env.WXT_PAIR_URL ?? "http://localhost:5173/connections";

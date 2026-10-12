@@ -466,7 +466,7 @@ function router(overrides: Partial<RouterDeps> = {}) {
   const sent: ResultMessage[] = [];
   const states: Array<[string, string, string | null]> = [];
   const deps: RouterDeps = {
-    registry: buildRegistry({ apiBase: "http://localhost:8000", diagnostics: false }),
+    registry: buildRegistry(),
     journal: new Journal(() => clock),
     outbox: new Outbox(),
     hasPermission: async () => true,

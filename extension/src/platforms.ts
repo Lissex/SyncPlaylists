@@ -64,21 +64,12 @@ export function optionalOrigins(): string[] {
   return PLATFORMS.filter((platform) => platform.available).flatMap((p) => p.origins);
 }
 
-// «Площадка» тестовой операции diagnostics.echo — страница нашего же API. Она под
-// обязательным host permission, отдельного согласия не требует.
+// Где выполняется операция: сайт площадки (вкладка) и её хосты.
 export interface TargetInfo {
   key: string;
   origins: string[];
   tabUrl: string;
   minIntervalMs?: number;
-}
-
-export function diagnosticsTarget(apiBase: string): TargetInfo {
-  return {
-    key: "diagnostics",
-    origins: [`${apiBase}/*`],
-    tabUrl: `${apiBase}/extension/diagnostics/page`,
-  };
 }
 
 export function platformTarget(platform: PlatformInfo): TargetInfo {

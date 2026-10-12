@@ -7,7 +7,6 @@ from dishka.integrations.arq import setup_dishka
 
 from syncplaylists.bootstrap.container import make_container
 from syncplaylists.infrastructure.config.settings import Settings
-from syncplaylists.modules.extension.presentation.tasks import probe_extension
 from syncplaylists.modules.transfers.presentation.tasks import (
     RATE_LIMITED_MAX_TRIES,
     resume_client_transfers,
@@ -36,7 +35,6 @@ class WorkerSettings:
         run_write,
         resume_transfer,
         resume_client_transfers,
-        probe_extension,
     )
     queue_name = settings.queue.default_queue_name
     max_jobs = settings.queue.max_jobs

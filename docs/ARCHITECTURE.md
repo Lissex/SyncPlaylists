@@ -1468,13 +1468,13 @@ dev, e2e и небольших переносов.
   путей `hello.token`, `platform_state.session`) + «канарейка» (страница отдаёт cookie/токен/
   заголовки — после прогона WS → роутер ни ключей, ни значения в кадрах нет; проверено
   мутацией: без проверки схемой тест падает).
-- **Тестовая операция `diagnostics.echo`** (сборка с `WXT_DIAGNOSTICS=true`, сервер с
+- **Тестовая операция `diagnostics.echo`** (удалена в 5-6, см. 11i; сборка с `WXT_DIAGNOSTICS=true`, сервер с
   `EXTENSION__DIAGNOSTICS_ENABLED`): `POST /extension/devices/{id}/probe` → задача
   `probe_extension` в очереди `client` → `RedisExtensionChannel.call_device` (без площадки;
   онлайн-метка `ext:online:<device>` от `DeviceSession`) → WS → вкладка
   `GET /extension/diagnostics/page` (origin API — под обязательным host permission) → MAIN world
   → схема → сервер сверяет `{nonce, page_title, path}` строго → `GET /extension/probes/{id}`.
-- **Подтверждение кода — dev-страница бэкенда** `GET /extension/pair` (+ `pair.js`, CSP
+- **Подтверждение кода — dev-страница бэкенда** (удалена в 5-6: теперь экран сайта «Подключения») `GET /extension/pair` (+ `pair.js`, CSP
   `script-src 'self'`), флаг `EXTENSION__DEV_PAGE_ENABLED`: вход/регистрация, ввод кода (не
   подставляется из URL — защита от фишинга device flow), список устройств, «Отозвать»,
   «Проверить связь». Почему не PowerShell: device flow по смыслу — подтверждение в браузере, где
@@ -2000,6 +2000,18 @@ VK — только транспорт EXTENSION, серверного пути 
 - Ссылки на созданные плейлисты не строятся (форматы id площадок разные) — только название.
 - Сквозной ручной прогон всего фронта с настоящим расширением — после 5-6.
 
+**5-6 (удаление dev-инструментов) — что сделано**
+- Бэкенд: удалены dev-страница `GET /extension/pair` (+ `static/pair.*`), тестовая операция
+  `diagnostics.echo` целиком (`POST /extension/devices/{id}/probe`, `GET /extension/probes/{id}`,
+  `GET /extension/diagnostics/page`, задача `probe_extension`, хранилище проб, use cases) и флаги
+  `EXTENSION__DEV_PAGE_ENABLED` / `EXTENSION__DIAGNOSTICS_ENABLED` с их fail-fast в проде.
+  Интеграционный тест закрепляет 404 на старых адресах.
+- Расширение: из реестра убрана `diagnostics.echo` и флаг `WXT_DIAGNOSTICS` — в реестре только
+  операции площадок. `WXT_PAIR_URL` по умолчанию — страница сайта «Подключения»
+  (`http://localhost:5173/connections`).
+- Проверка связи с расширением теперь — статус «онлайн» на «Подключениях» (`GET /extension/status`)
+  и `make e2e-extension` (фейковое расширение по WebSocket).
+
 **Долги 5-0**
 - Обложки трека источника нет (появится на этапе 7, enrichment) — сайт показывает заглушку.
 - Причина `not_found`/`failed` по треку не хранится — отчёт показывает только статус.
@@ -2150,6 +2162,7 @@ VK — только транспорт EXTENSION, серверного пути 
    **5-1 (сделано)** — каркас фронта, типы API из OpenAPI, FSD в ESLint, Docker-сервис `frontend` (11i).
    **5-2…5-5 (сделано)** — вход и оболочка; «Подключения»; новый перенос; прогресс, ревью,
    отчёт, история (11i).
+   **5-6 (сделано)** — удалены dev-страница `/extension/pair` и `diagnostics.echo` (11i).
 6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).
 8. **backups**: экспорт во все форматы, импорт из файла, расписания, S3 (SeaweedFS).

@@ -179,12 +179,6 @@ class ExtensionSettings(BaseModel):
     # Площадки, которые через расширение обслуживает общий шлюз (все операции — в
     # браузере). dev/тесты: сквозной тест с фейковым расширением.
     generic_platforms: list[Platform] = []
-    # Временная страница подтверждения кода привязки на бэкенде (/extension/pair) — пока
-    # нет фронта (этап 5). Только dev.
-    dev_page_enabled: bool = False
-    # Тестовая операция diagnostics.echo (проверка пути сервер → расширение → вкладка →
-    # сервер). Только dev.
-    diagnostics_enabled: bool = False
 
     @field_validator("allowed_extension_ids", mode="before")
     @classmethod
@@ -230,16 +224,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _prod_safety(self) -> Self:
         """В проде не запускаемся с dev-настройками расширения: пустой allowlist пустил
-        бы любое chrome-расширение, а dev-страница и диагностика не для публичного сервиса."""
+        бы любое chrome-расширение."""
         if self.env != "prod":
             return self
         problems: list[str] = []
         if not self.extension.allowed_extension_ids:
             problems.append("EXTENSION__ALLOWED_EXTENSION_IDS пуст")
-        if self.extension.dev_page_enabled:
-            problems.append("EXTENSION__DEV_PAGE_ENABLED=true")
-        if self.extension.diagnostics_enabled:
-            problems.append("EXTENSION__DIAGNOSTICS_ENABLED=true")
         if problems:
             raise ValueError("Небезопасные настройки для env=prod: " + "; ".join(problems))
         return self
