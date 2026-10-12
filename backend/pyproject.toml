@@ -25,6 +25,7 @@ dependencies = [
     "email-validator>=2.2",
     "yandex-music>=3.0.0",
     "httpx>=0.28.1",
+    "shazamio-core>=2.0.0",
 ]
 
 [dependency-groups]
