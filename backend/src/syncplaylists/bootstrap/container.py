@@ -34,12 +34,14 @@ from syncplaylists.integrations.platforms.fake.factory import (
     build_fake_gateway,
 )
 from syncplaylists.integrations.platforms.fake.oauth import FakeOAuthProvider
+from syncplaylists.integrations.platforms.media import MediaFetcher
 from syncplaylists.integrations.platforms.registry import (
     DictProfileRegistry,
     GatewayBuilder,
     PlatformGatewayFactory,
 )
 from syncplaylists.integrations.platforms.search_cache import CachedSearchGateway, TextCache
+from syncplaylists.integrations.platforms.soundcloud import audio as soundcloud_audio
 from syncplaylists.integrations.platforms.soundcloud.client_id import ClientIdProvider
 from syncplaylists.integrations.platforms.soundcloud.factory import (
     OfficialApp,
@@ -53,6 +55,7 @@ from syncplaylists.integrations.platforms.soundcloud.factory import (
 from syncplaylists.integrations.platforms.soundcloud.tokens import TokenEndpoint
 from syncplaylists.integrations.platforms.vk.factory import VkExtensionGatewayBuilder
 from syncplaylists.integrations.platforms.vk.gateway import VkLimits
+from syncplaylists.integrations.platforms.yandex import audio as yandex_audio
 from syncplaylists.integrations.platforms.yandex.factory import (
     YandexClientFactory,
     YandexExtensionGatewayBuilder,
@@ -160,6 +163,7 @@ from syncplaylists.modules.matching.infrastructure.repository import SqlTrackMat
 from syncplaylists.modules.recognition.application.eligibility import RecognitionEligibility
 from syncplaylists.modules.recognition.application.ports import (
     AudioRecognizer,
+    AudioSource,
     AudioSourceRegistry,
     AudioTrimmer,
     RecognitionLock,
@@ -204,6 +208,7 @@ from syncplaylists.modules.transfers.application.use_cases import (
 )
 from syncplaylists.modules.transfers.infrastructure.repository import SqlTransferRepository
 from syncplaylists.shared_kernel.application.ports import (
+    AccountAccess,
     AccountAccessProvider,
     CredentialsRefresher,
     EventPublisher,
@@ -648,9 +653,58 @@ class RecognitionProvider(Provider):
         )
 
     @provide(scope=Scope.APP)
-    def get_audio_sources(self) -> AudioSourceRegistry:
-        # Источники звука площадок появятся в 6-3 (SoundCloud анонимно, Яндекс по токену).
+    def get_audio_sources(
+        self,
+        http: httpx.AsyncClient,
+        soundcloud_apis: SoundCloudApiFactory,
+        yandex_clients: YandexClientFactory,
+        limiter: PlatformRateLimiter,
+        settings: Settings,
+    ) -> AudioSourceRegistry:
+        """Какие площадки отдают звук (ARCHITECTURE.md, 9 и 11j): SoundCloud — анонимно,
+        Яндекс — по токену аккаунта. VK (HLS частично зашифрован) и Spotify (DRM) — нет.
+        Площадки на фейке (platforms.fake) звука не отдают."""
+        recognition = settings.recognition
+        fake = set(settings.platforms.fake)
+
+        def media(hosts: tuple[str, ...], timeout: float) -> MediaFetcher:
+            return MediaFetcher(
+                http,
+                allowed_hosts=hosts,
+                timeout_seconds=timeout,
+                max_bytes=recognition.max_fragment_bytes,
+            )
+
+        soundcloud_media = media(
+            soundcloud_audio.ALLOWED_HOSTS, settings.platforms.soundcloud.request_timeout_seconds
+        )
+        yandex_media = media(
+            yandex_audio.ALLOWED_HOSTS, settings.platforms.yandex.request_timeout_seconds
+        )
+
+        def soundcloud(access: AccountAccess | None) -> AudioSource | None:
+            account_id = access.account_id if access is not None else None
+            return soundcloud_audio.SoundCloudAudioSource(
+                soundcloud_apis.anonymous_transport(account_id), soundcloud_media
+            )
+
+        def yandex(access: AccountAccess | None) -> AudioSource | None:
+            if access is None or access.credentials is None:
+                return None  # через расширение звук Яндекса пока не берём (долг 6-3)
+            token = access.credentials.access_token
+            return yandex_audio.YandexAudioSource(
+                yandex_clients.client(token, access.account_id),
+                token,
+                yandex_media,
+                limiter=limiter,
+                account_id=access.account_id,
+            )
+
         builders: dict[Platform, AudioSourceBuilder] = {}
+        if Platform.SOUNDCLOUD not in fake:
+            builders[Platform.SOUNDCLOUD] = soundcloud
+        if Platform.YANDEX not in fake:
+            builders[Platform.YANDEX] = yandex
         return PlatformAudioSources(builders)
 
     @provide(scope=Scope.APP)

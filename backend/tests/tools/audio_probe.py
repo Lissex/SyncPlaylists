@@ -230,7 +230,7 @@ async def probe_yandex(http: httpx.AsyncClient, track_ids: list[str], token: str
         _save(
             _YA_OUT,
             f"download_info_{track_id}.xml",
-            re.sub(r"<(s|ts|path)>[^<]*</>", r"<><redacted></>", xml.decode("utf-8")),
+            re.sub(r"<(s|ts|path)>[^<]*</\1>", r"<\1><redacted></\1>", xml.decode("utf-8")),
         )
         hosts = [n.firstChild.nodeValue for n in doc.getElementsByTagName("host") if n.firstChild]
         print(f"  хост файла {hosts}, выбран {chosen.codec} {chosen.bitrate_in_kbps}")
