@@ -68,7 +68,27 @@ describe("StartTransferForm", () => {
     expect(body).toEqual({
       source: { kind: "link", url: LINK },
       destination: { kind: "new", platform: "vk", title: "Летний вайб" },
+      recognize_audio: true,
     });
+  });
+
+  it("sends recognition by sound off when the switch is turned off", async () => {
+    let body: unknown;
+    mockApi((b) => (body = b));
+    renderWithClient(<StartTransferForm onStarted={vi.fn()} />);
+
+    fireEvent.change(await screen.findByLabelText("Ссылка на плейлист"), {
+      target: { value: LINK },
+    });
+    await screen.findByText("Летний вайб");
+    await userEvent.click(screen.getByRole("button", { name: "VK Музыка" }));
+    const toggle = screen.getByRole("switch", { name: "Распознавать по звуку" });
+    expect(toggle).toBeChecked();
+    expect(screen.getByText(/отправляется в Shazam и не хранится/)).toBeInTheDocument();
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: "Перенести" }));
+
+    await waitFor(() => expect(body).toMatchObject({ recognize_audio: false }));
   });
 
   it("keeps a title typed by hand", async () => {
@@ -107,6 +127,7 @@ describe("StartTransferForm", () => {
       expect(body).toEqual({
         source: { kind: "library", platform: "yandex", account_id: "acc-ya" },
         destination: { kind: "library", platform: "vk", account_id: "acc-vk" },
+        recognize_audio: true,
       }),
     );
   });

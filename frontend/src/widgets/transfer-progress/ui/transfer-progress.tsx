@@ -162,6 +162,7 @@ export function TransferProgressView({
               trailing={<span className="text-warning">{p.uncertain}</span>}
             />
           )}
+          {p.recognizing > 0 && <GroupedRow title="Распознаём по звуку" trailing={p.recognizing} />}
           {p.not_found > 0 && <GroupedRow title="Не найдено" trailing={p.not_found} />}
           {p.skipped > 0 && <GroupedRow title="Пропущено" trailing={p.skipped} />}
           {p.added > 0 && <GroupedRow title="Записано" trailing={p.added} />}

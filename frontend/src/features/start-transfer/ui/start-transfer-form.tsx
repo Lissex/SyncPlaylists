@@ -7,7 +7,9 @@ import { transferKeys, type Transfer } from "@/entities/transfer";
 import { api } from "@/shared/api";
 import { useIsTouchDevice } from "@/shared/lib/use-media-query";
 import { Button } from "@/shared/ui/button";
+import { GroupedList, GroupedRow } from "@/shared/ui/grouped-list";
 import { Spinner } from "@/shared/ui/spinner";
+import { Switch } from "@/shared/ui/switch";
 
 import { transferErrorMessage } from "../lib/errors";
 import { buildStartRequest, type DestinationChoice, type SourceChoice } from "../model/request";
@@ -26,6 +28,7 @@ export function StartTransferForm({ onStarted }: { onStarted: (transferId: strin
   const [library, setLibrary] = useState<Extract<SourceChoice, { kind: "library" }> | null>(null);
   const [destination, setDestination] = useState<DestinationChoice | null>(null);
   const [titleTouched, setTitleTouched] = useState(false);
+  const [recognizeAudio, setRecognizeAudio] = useState(true);
 
   const source = useResolvedLink(library ? "" : url);
   const existing = useResolvedLink(destination?.kind === "existing" ? destination.url : "");
@@ -48,7 +51,9 @@ export function StartTransferForm({ onStarted }: { onStarted: (transferId: strin
     effective !== null &&
     (effective.kind !== "existing" ||
       (existing.ready && !existingPlaylistProblem(existing.data, effective.platform)));
-  const request = destinationReady ? buildStartRequest(sourceChoice, effective) : null;
+  const request = destinationReady
+    ? buildStartRequest(sourceChoice, effective, recognizeAudio)
+    : null;
 
   const start = useMutation({
     mutationFn: () => api.post<Transfer>("/transfers", request),
@@ -92,6 +97,22 @@ export function StartTransferForm({ onStarted }: { onStarted: (transferId: strin
         }}
         existing={existing}
       />
+
+      <GroupedList
+        header="Поиск"
+        footer="Если трек не найдётся по названию, сервис узнает его по фрагменту 15–20 секунд. Фрагмент отправляется в Shazam и не хранится."
+      >
+        <GroupedRow
+          title="Распознавать по звуку"
+          trailing={
+            <Switch
+              label="Распознавать по звуку"
+              checked={recognizeAudio}
+              onChange={setRecognizeAudio}
+            />
+          }
+        />
+      </GroupedList>
 
       <div className="space-y-3">
         {start.isError && (

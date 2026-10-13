@@ -1,5 +1,8 @@
-import { formatDuration, type TransferItem } from "@/entities/transfer";
+import { AudioLines } from "lucide-react";
+
+import { formatDuration, heardText, recognitionNote, type TransferItem } from "@/entities/transfer";
 import { useResolveItem } from "@/features/resolve-item";
+import { useRetryRecognition } from "@/features/retry-recognition";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 
@@ -24,7 +27,11 @@ export function ReviewItem({
   view: ReviewView;
 }) {
   const resolve = useResolveItem(transferId);
+  const retry = useRetryRecognition(transferId);
   const decided = decision(item);
+  const heard = heardText(item.recognition);
+  const note = recognitionNote(item.recognition);
+  const recognizing = item.recognition != null && item.recognition.state !== "final";
   const sought = item.source_title
     ? `${item.source_artist ?? ""}${item.source_artist ? " — " : ""}${item.source_title}`
     : `Трек ${item.source_external_id}`;
@@ -44,6 +51,16 @@ export function ReviewItem({
           <div className="text-[17px] font-semibold">{sought}</div>
           {soughtDuration && (
             <div className="text-[13px] text-label-secondary">{soughtDuration}</div>
+          )}
+          {(heard || note) && (
+            <div className="mt-1 flex items-start gap-1.5 text-[13px] text-label-secondary">
+              <AudioLines className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                {heard}
+                {heard && note ? " · " : ""}
+                {note}
+              </span>
+            </div>
           )}
         </div>
         {decided === "chosen" ? (
@@ -93,14 +110,23 @@ export function ReviewItem({
       )}
 
       <footer className="flex items-center justify-between gap-3 border-t-[0.5px] border-separator px-4 py-2">
-        {resolve.isError ? (
+        {resolve.isError || retry.isError ? (
           <span role="alert" className="text-[13px] text-danger">
-            {resolve.error.message}
+            {(resolve.error ?? retry.error)?.message}
           </span>
+        ) : item.recognition?.can_retry ? (
+          <Button
+            variant="plain"
+            size="sm"
+            disabled={retry.isPending || resolve.isPending}
+            onClick={() => retry.mutate(item)}
+          >
+            Ещё раз по звуку
+          </Button>
         ) : (
           <span />
         )}
-        {decided !== "skipped" && (
+        {decided !== "skipped" && !recognizing && (
           <Button
             variant="plain"
             size="sm"

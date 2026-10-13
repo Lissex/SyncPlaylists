@@ -12,6 +12,7 @@ const transfer = (progress: Partial<NonNullable<Transfer["progress"]>>): Transfe
     items: [],
     resolved_targets: [],
     match_methods: {},
+    recognize_audio: true,
     progress: {
       status: "running",
       total: 10,
@@ -25,6 +26,7 @@ const transfer = (progress: Partial<NonNullable<Transfer["progress"]>>): Transfe
       eta_seconds: null,
       resume_at: null,
       pause_reason: null,
+      recognizing: 0,
       ...progress,
     },
   }) as Transfer;

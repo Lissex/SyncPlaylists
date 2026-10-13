@@ -291,6 +291,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/transfers/{transfer_id}/items/{position}/recognize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Item Recognition
+         * @description «Ещё раз по звуку» на ревью — для трека, который не удалось распознать (сбой,
+         *     потолок фазы). Итог придёт событием переноса.
+         */
+        post: operations["retry_item_recognition_transfers__transfer_id__items__position__recognize_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/transfers/{transfer_id}/events": {
         parameters: {
             query?: never;
@@ -638,6 +659,35 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * HeardTrackSchema
+         * @description Что распознаватель услышал во фрагменте трека источника.
+         */
+        HeardTrackSchema: {
+            /** Title */
+            title: string;
+            /** Artist */
+            artist: string;
+            /** Provider */
+            provider: string;
+            /** Isrc */
+            isrc?: string | null;
+            /** Exact */
+            exact: boolean;
+        };
+        /** ItemRecognitionSchema */
+        ItemRecognitionSchema: {
+            /** State */
+            state: string;
+            /** Note */
+            note?: string | null;
+            heard?: components["schemas"]["HeardTrackSchema"] | null;
+            /**
+             * Can Retry
+             * @default false
+             */
+            can_retry: boolean;
+        };
         /** LibraryDestinationSchema */
         LibraryDestinationSchema: {
             /**
@@ -801,6 +851,11 @@ export interface components {
             source: components["schemas"]["PlaylistSourceSchema"] | components["schemas"]["LibrarySourceSchema"] | components["schemas"]["LinkSchema"];
             /** Destination */
             destination: components["schemas"]["ExistingPlaylistSchema"] | components["schemas"]["NewPlaylistSchema"] | components["schemas"]["LibraryDestinationSchema"] | components["schemas"]["LinkSchema"];
+            /**
+             * Recognize Audio
+             * @default true
+             */
+            recognize_audio: boolean;
         };
         /** TrackCandidateSchema */
         TrackCandidateSchema: {
@@ -857,6 +912,7 @@ export interface components {
             match: components["schemas"]["MatchResultSchema"] | null;
             /** Candidates */
             candidates: components["schemas"]["TrackCandidateSchema"][];
+            recognition?: components["schemas"]["ItemRecognitionSchema"] | null;
         };
         /**
          * TransferItemStatus
@@ -899,6 +955,11 @@ export interface components {
             resume_at?: string | null;
             /** Pause Reason */
             pause_reason?: string | null;
+            /**
+             * Recognizing
+             * @default 0
+             */
+            recognizing: number;
         };
         /** TransferResponse */
         TransferResponse: {
@@ -937,6 +998,11 @@ export interface components {
             match_methods: {
                 [key: string]: number;
             };
+            /**
+             * Recognize Audio
+             * @default true
+             */
+            recognize_audio: boolean;
         };
         /** TransferSummaryResponse */
         TransferSummaryResponse: {
@@ -1524,6 +1590,38 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_item_recognition_transfers__transfer_id__items__position__recognize_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transfer_id: string;
+                position: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
             };
             /** @description Validation Error */
             422: {

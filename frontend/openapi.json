@@ -714,6 +714,57 @@
         }
       }
     },
+    "/transfers/{transfer_id}/items/{position}/recognize": {
+      "post": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "Retry Item Recognition",
+        "description": "«Ещё раз по звуку» на ревью — для трека, который не удалось распознать (сбой,\nпотолок фазы). Итог придёт событием переноса.",
+        "operationId": "retry_item_recognition_transfers__transfer_id__items__position__recognize_post",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Transfer Id"
+            }
+          },
+          {
+            "name": "position",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Position"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/transfers/{transfer_id}/events": {
       "get": {
         "tags": [
@@ -1493,6 +1544,85 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "HeardTrackSchema": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "artist": {
+            "type": "string",
+            "title": "Artist"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "isrc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isrc"
+          },
+          "exact": {
+            "type": "boolean",
+            "title": "Exact"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "artist",
+          "provider",
+          "exact"
+        ],
+        "title": "HeardTrackSchema",
+        "description": "Что распознаватель услышал во фрагменте трека источника."
+      },
+      "ItemRecognitionSchema": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "heard": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeardTrackSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "can_retry": {
+            "type": "boolean",
+            "title": "Can Retry",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "ItemRecognitionSchema"
+      },
       "LibraryDestinationSchema": {
         "properties": {
           "kind": {
@@ -1972,6 +2102,11 @@
                 "new": "#/components/schemas/NewPlaylistSchema"
               }
             }
+          },
+          "recognize_audio": {
+            "type": "boolean",
+            "title": "Recognize Audio",
+            "default": true
           }
         },
         "type": "object",
@@ -2170,6 +2305,16 @@
             },
             "type": "array",
             "title": "Candidates"
+          },
+          "recognition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ItemRecognitionSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -2296,6 +2441,11 @@
               }
             ],
             "title": "Pause Reason"
+          },
+          "recognizing": {
+            "type": "integer",
+            "title": "Recognizing",
+            "default": 0
           }
         },
         "type": "object",
@@ -2408,6 +2558,11 @@
             "type": "object",
             "title": "Match Methods",
             "default": {}
+          },
+          "recognize_audio": {
+            "type": "boolean",
+            "title": "Recognize Audio",
+            "default": true
           }
         },
         "type": "object",

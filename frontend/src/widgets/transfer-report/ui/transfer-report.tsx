@@ -2,7 +2,12 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { CircleCheck } from "lucide-react";
 
 import { platformInfo, type Platform } from "@/entities/platform";
-import { methodLabel, transferItemsQuery, type Transfer } from "@/entities/transfer";
+import {
+  methodLabel,
+  recognitionNote,
+  transferItemsQuery,
+  type Transfer,
+} from "@/entities/transfer";
 import { countOf, TRACKS } from "@/shared/lib/plural";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
@@ -83,7 +88,11 @@ export function TransferReport({ transfer }: { transfer: Transfer }) {
                 <GroupedRow
                   key={item.position}
                   title={item.source_title ?? `Трек ${item.source_external_id}`}
-                  subtitle={item.source_artist}
+                  subtitle={
+                    [item.source_artist, recognitionNote(item.recognition)]
+                      .filter(Boolean)
+                      .join(" · ") || undefined
+                  }
                   trailing={label && <Badge tone={label.tone}>{label.text}</Badge>}
                 />
               );
