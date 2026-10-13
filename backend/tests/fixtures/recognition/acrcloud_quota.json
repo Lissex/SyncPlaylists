@@ -1,0 +1,7 @@
+{
+  "status": {
+    "msg": "Limit exceeded, please upgrade your account",
+    "code": 3003,
+    "version": "1.0"
+  }
+}

@@ -44,6 +44,26 @@ class TrackCandidate(ValueObject):
     restriction: TrackRestriction | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RecognizedTrack(ValueObject):
+    """Что распознаватель услышал во фрагменте трека источника (этап 6). Лежит здесь, а не
+    в recognition: его читают и recognition (кэш распознаваний), и matching (поиск на
+    целевой площадке по распознанному)."""
+
+    title: str
+    artist: str
+    provider: str  # "shazam" | "acrcloud"
+    isrc: ISRC | None = None
+    provider_ref: str | None = None
+    # Та же запись, без изменения скорости и тона: у Shazam |timeskew| и |frequencyskew|
+    # лучшего совпадения < 1 %. False — звук изменён (slowed, sped up) или распознаватель
+    # не уверен: результат годится только как подсказка в ревью (ARCHITECTURE.md, 11j).
+    exact: bool = False
+    offset_ms: int | None = None
+    time_skew: float | None = None
+    frequency_skew: float | None = None
+
+
 class InsertOrder(StrEnum):
     """Порядок, в котором площадка кладёт новые треки в медиатеку/плейлист."""
 

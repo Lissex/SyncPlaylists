@@ -1,0 +1,220 @@
+{
+  "matches": [
+    {
+      "id": "513797998",
+      "offset": 114.11075,
+      "timeskew": 8.237362e-05,
+      "frequencyskew": 0.0
+    },
+    {
+      "id": "572149850",
+      "offset": 114.18975,
+      "timeskew": 0.00011587143,
+      "frequencyskew": 0.0
+    },
+    {
+      "id": "433129668",
+      "offset": 133.058359375,
+      "timeskew": 0.036511064,
+      "frequencyskew": 0.0018947124
+    }
+  ],
+  "location": {
+    "accuracy": 0.01
+  },
+  "timestamp": 1791831122200,
+  "timezone": "Europe/Moscow",
+  "track": {
+    "layout": "5",
+    "type": "MUSIC",
+    "key": "407592725",
+    "title": "Lucid Dreams",
+    "subtitle": "Juice WRLD",
+    "images": {
+      "background": "https://is1-ssl.mzstatic.com/image/thumb/Features115/v4/42/04/ae/4204ae87-e800-6b47-d95c-068e3bd52995/mzl.gwhtpegi.jpg/800x800cc.jpg",
+      "coverart": "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/e4/ca/3a/e4ca3a6c-b144-15db-5fdc-62ec22c9b813/18UMGIM30624.rgb.jpg/400x400cc.jpg",
+      "coverarthq": "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/e4/ca/3a/e4ca3a6c-b144-15db-5fdc-62ec22c9b813/18UMGIM30624.rgb.jpg/400x400cc.jpg",
+      "joecolor": "b:edeeedp:212023s:2b2a2ft:4a494cq:525155"
+    },
+    "display": {
+      "actions": [
+        {
+          "name": "display:updateshazam",
+          "type": "webview",
+          "uri": "https://www.shazam.com/inapp/updatenow/407592725"
+        }
+      ]
+    },
+    "share": {
+      "subject": "Lucid Dreams - Juice WRLD",
+      "text": "Lucid Dreams by Juice WRLD",
+      "href": "https://www.shazam.com/track/407592725/lucid-dreams",
+      "image": "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/e4/ca/3a/e4ca3a6c-b144-15db-5fdc-62ec22c9b813/18UMGIM30624.rgb.jpg/400x400cc.jpg",
+      "twitter": "I used @Shazam to discover Lucid Dreams by Juice WRLD.",
+      "html": "https://www.shazam.com/snippets/email-share/407592725?lang=en-US&country=GB",
+      "avatar": "https://is1-ssl.mzstatic.com/image/thumb/Features115/v4/42/04/ae/4204ae87-e800-6b47-d95c-068e3bd52995/mzl.gwhtpegi.jpg/800x800cc.jpg",
+      "snapchat": "https://www.shazam.com/partner/sc/track/407592725"
+    },
+    "hub": {
+      "type": "APPLEMUSIC",
+      "image": "https://images.shazam.com/static/icons/hub/ios/v5/applemusic_{scalefactor}.png",
+      "actions": [
+        {
+          "name": "apple",
+          "type": "applemusicplay",
+          "id": "1407165118"
+        },
+        {
+          "name": "apple",
+          "type": "uri",
+          "uri": "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/f4/c8/ab/f4c8abaf-c992-6b59-f0e9-eca53178c5d0/mzaf_10270745181819394659.plus.aac.ep.m4a"
+        }
+      ],
+      "providers": [
+        {
+          "caption": "Open in Spotify",
+          "images": {
+            "overflow": "https://images.shazam.com/static/icons/hub/ios/v5/spotify-overflow_{scalefactor}.png",
+            "default": "https://images.shazam.com/static/icons/hub/ios/v5/spotify_{scalefactor}.png"
+          },
+          "actions": [
+            {
+              "name": "hub:spotify:searchdeeplink",
+              "type": "uri",
+              "uri": "spotify:search:Lucid%20Dreams%20Juice%20WRLD"
+            }
+          ],
+          "type": "SPOTIFY"
+        },
+        {
+          "caption": "Open in Deezer",
+          "images": {
+            "overflow": "https://images.shazam.com/static/icons/hub/ios/v5/deezer-overflow_{scalefactor}.png",
+            "default": "https://images.shazam.com/static/icons/hub/ios/v5/deezer_{scalefactor}.png"
+          },
+          "actions": [
+            {
+              "name": "hub:deezer:searchdeeplink",
+              "type": "uri",
+              "uri": "deezer-query://www.deezer.com/play?query=%7Btrack%3A%27Lucid+Dreams%27%20artist%3A%27Juice+WRLD%27%7D"
+            }
+          ],
+          "type": "DEEZER"
+        }
+      ],
+      "explicit": true,
+      "displayname": "APPLE MUSIC",
+      "options": [
+        {
+          "caption": "OPEN IN",
+          "actions": [
+            {
+              "name": "hub:applemusic:deeplink",
+              "type": "applemusicopen",
+              "uri": "https://music.apple.com/gb/album/lucid-dreams/1407165109?i=1407165118&mttnagencyid=s2n&mttnsiteid=125115&mttn3pid=Apple-Shazam&mttnsub1=Shazam_ios&mttnsub2=5348615A-616D-3235-3830-44754D6D5973&itscg=30201&app=music&itsct=Shazam_ios"
+            },
+            {
+              "name": "hub:applemusic:deeplink",
+              "type": "uri",
+              "uri": "https://music.apple.com/gb/album/lucid-dreams/1407165109?i=1407165118&mttnagencyid=s2n&mttnsiteid=125115&mttn3pid=Apple-Shazam&mttnsub1=Shazam_ios&mttnsub2=5348615A-616D-3235-3830-44754D6D5973&itscg=30201&app=music&itsct=Shazam_ios"
+            }
+          ],
+          "beacondata": {
+            "type": "open",
+            "providername": "applemusic"
+          },
+          "image": "https://images.shazam.com/static/icons/hub/ios/v5/overflow-open-option_{scalefactor}.png",
+          "type": "open",
+          "listcaption": "Open in Apple Music",
+          "overflowimage": "https://images.shazam.com/static/icons/hub/ios/v5/applemusic-overflow_{scalefactor}.png",
+          "colouroverflowimage": false,
+          "providername": "applemusic"
+        },
+        {
+          "caption": "BUY",
+          "actions": [
+            {
+              "type": "uri",
+              "uri": "https://itunes.apple.com/gb/album/lucid-dreams/1407165109?i=1407165118&mttnagencyid=s2n&mttnsiteid=125115&mttn3pid=Apple-Shazam&mttnsub1=Shazam_ios&mttnsub2=5348615A-616D-3235-3830-44754D6D5973&itscg=30201&app=itunes&itsct=Shazam_ios"
+            }
+          ],
+          "beacondata": {
+            "type": "buy",
+            "providername": "itunes"
+          },
+          "image": "https://images.shazam.com/static/icons/hub/ios/v5/itunes-overflow-buy_{scalefactor}.png",
+          "type": "buy",
+          "listcaption": "Buy on iTunes",
+          "overflowimage": "https://images.shazam.com/static/icons/hub/ios/v5/itunes-overflow-buy_{scalefactor}.png",
+          "colouroverflowimage": false,
+          "providername": "itunes"
+        }
+      ]
+    },
+    "sections": [
+      {
+        "type": "SONG",
+        "metapages": [
+          {
+            "image": "https://is1-ssl.mzstatic.com/image/thumb/Features115/v4/42/04/ae/4204ae87-e800-6b47-d95c-068e3bd52995/mzl.gwhtpegi.jpg/800x800cc.jpg",
+            "caption": "Juice WRLD"
+          },
+          {
+            "image": "https://is1-ssl.mzstatic.com/image/thumb/Music122/v4/e4/ca/3a/e4ca3a6c-b144-15db-5fdc-62ec22c9b813/18UMGIM30624.rgb.jpg/400x400cc.jpg",
+            "caption": "Lucid Dreams"
+          }
+        ],
+        "tabname": "Song",
+        "metadata": [
+          {
+            "title": "Album",
+            "text": "Goodbye & Good Riddance"
+          },
+          {
+            "title": "Label",
+            "text": "Juice WRLD Mixtape / ISR P&D"
+          },
+          {
+            "title": "Released",
+            "text": "2018"
+          }
+        ]
+      },
+      {
+        "type": "RELATED",
+        "url": "https://cdn.shazam.com/shazam/v3/en-US/GB/iphone/-/tracks/track-similarities-id-407592725?startFrom=0&pageSize=20&connected=",
+        "tabname": "Related"
+      }
+    ],
+    "url": "https://www.shazam.com/track/407592725/lucid-dreams",
+    "artists": [
+      {
+        "id": "42",
+        "adamid": "1368733420"
+      }
+    ],
+    "genres": {
+      "primary": "Hip-Hop/Rap"
+    },
+    "urlparams": {
+      "{tracktitle}": "Lucid+Dreams",
+      "{trackartist}": "Juice+WRLD"
+    },
+    "myshazam": {
+      "apple": {
+        "actions": [
+          {
+            "name": "myshazam:apple",
+            "type": "uri",
+            "uri": "https://music.apple.com/gb/album/lucid-dreams/1407165109?i=1407165118&mttnagencyid=s2n&mttnsiteid=125115&mttn3pid=Apple-Shazam&mttnsub1=Shazam_ios&mttnsub2=5348615A-616D-3235-3830-44754D6D5973&itscg=30201&app=music&itsct=Shazam_ios"
+          }
+        ]
+      }
+    },
+    "highlightsurls": {},
+    "relatedtracksurl": "https://cdn.shazam.com/shazam/v3/en-US/GB/iphone/-/tracks/track-similarities-id-407592725?startFrom=0&pageSize=20&connected=",
+    "albumadamid": "1407165109",
+    "isrc": "USUG11800685"
+  },
+  "tagid": "C382AB2B-CDAB-4C0D-BC40-63343380D205"
+}

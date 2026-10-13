@@ -16,7 +16,7 @@ EMAIL ?=
 MAX ?= 10
 LIBRARY ?= 0
 
-.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud e2e-yandex e2e-vk test test-integration test-live lint check ext-install ext-build ext-build-firefox ext-test fe-install fe-dev fe-build fe-test fe-gen-api
+.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud e2e-yandex e2e-vk test test-integration test-audio test-live lint check ext-install ext-build ext-build-firefox ext-test fe-install fe-dev fe-build fe-test fe-gen-api
 
 help: ## Список команд
 	@[Console]::OutputEncoding = [Text.Encoding]::UTF8; Select-String -Path Makefile -Pattern '^([a-z0-9-]+):.*## (.*)$$' | ForEach-Object { '  make {0,-18} {1}' -f $$_.Matches[0].Groups[1].Value, $$_.Matches[0].Groups[2].Value }
@@ -52,10 +52,13 @@ e2e-vk: ## Ручной e2e 4c-5 (плейлист → VK через расши�
 	./scripts/e2e-vk-extension.ps1 -Email '$(EMAIL)' -Link '$(LINK)' -Title '$(TITLE)' -MaxTracks $(MAX) $(if $(filter 1,$(LIBRARY)),-ToLibrary,) $(if $(filter 1,$(ACCEPT)),-AcceptUncertain,)
 
 test: ## Unit-тесты и тесты адаптеров без Docker
-	Set-Location backend; uv run pytest tests/unit tests/integration/platforms
+	Set-Location backend; uv run pytest tests/unit tests/integration/platforms tests/integration/recognizers
 
 test-integration: ## Интеграционные тесты (testcontainers, нужен Docker)
 	Set-Location backend; uv run pytest tests/integration
+
+test-audio: ## Аудио-тесты (ffmpeg) — только в контейнере
+	docker compose run --rm --no-deps -v "$${PWD}/backend/tests:/app/tests" api pytest -m audio -p no:cacheprovider
 
 test-live: ## Live-тесты на токене из .env (меняют аккаунт — см. tests/live)
 	Set-Location backend; uv run pytest -m live -v -s

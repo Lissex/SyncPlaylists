@@ -152,7 +152,11 @@ def _dj_version(text: str) -> tuple[str, VersionInfo] | None:
 
 _LIVE_PATTERNS = (_bracket("live"), _trailing("live"))
 _ACOUSTIC_PATTERNS = (_bracket(r"acoustic(?:\s+version)?"), _trailing(r"acoustic(?:\s+version)?"))
-_SPED_UP_PATTERNS = (_bracket(r"sped[\s-]?up"), _trailing(r"sped[\s-]?up"))
+# Nightcore — тоже ускоренная (и с поднятым тоном) версия.
+_SPED_UP_PATTERNS = (
+    _bracket(r"(?:sped[\s-]?up|nightcore)"),
+    _trailing(r"(?:sped[\s-]?up|nightcore)"),
+)
 _SLOWED_PATTERNS = (
     _bracket(r"slowed(?:\s+down)?(?:\s*\+?\s*reverb)?"),
     _trailing(r"slowed(?:\s+down)?(?:\s*\+?\s*reverb)?"),

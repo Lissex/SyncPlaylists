@@ -284,12 +284,18 @@ class PlatformsSettings(BaseModel):      # этап 4b
     soundcloud: SoundCloudSettings = SoundCloudSettings()   # 4b-2
     link_expander_timeout_seconds: float = 5.0
 
-class RecognitionSettings(BaseModel):
-    shazam_enabled: bool = True
-    acrcloud_host: str | None = None
-    acrcloud_key: SecretStr | None = None
-    acrcloud_secret: SecretStr | None = None
-    fragment_seconds: int = 18
+class RecognitionSettings(BaseModel):     # этап 6-1 (11j)
+    enabled: bool = True
+    fragment_seconds: int = 18           # 15–20 (валидатор), окно из середины
+    min_track_seconds: int = 20
+    max_fragment_bytes: int = 1_500_000
+    temp_dir: str | None = "/tmp/recognize"   # в compose — tmpfs
+    no_match_ttl_days: int = 30          # отрицательный кэш; распознанное — без срока
+    no_audio_ttl_days: int = 7
+    transfer_phase_limit_minutes: int = 15
+    shazam: ShazamSettings = ShazamSettings()   # enabled, rate_limit 1/5 с на сервер,
+                                         # cooldown_seconds 600 после 429, timeout
+    acrcloud: AcrCloudSettings | None = None    # host, access_key, access_secret: SecretStr
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -398,10 +404,19 @@ Transfer (root)
 - `MatchingPipeline` — цепочка стратегий (паттерн Chain of Responsibility):
 
 ```
-SamePlatformStrategy → CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrategy → FingerprintVerification
-      ↓ нет               ↓ нет             ↓ <0.70                    ↓ нет                    ↓
-                                                                                    UNCERTAIN / NOT_FOUND → ручной выбор
+SamePlatformStrategy → CacheStrategy → IsrcStrategy → FuzzySearchStrategy
+      ↓ нет               ↓ нет             ↓ <0.70
+                                     UNCERTAIN / NOT_FOUND ─(годится для звука)→ распознавание
+                                                           (worker-recognize, асинхронно)
+                                                           → AudioMatcher на цели → итог / ручной выбор
 ```
+
+**Звуковая фаза (этап 6-2, 11j)** — не стратегия в цепочке, а отдельная асинхронная фаза:
+ffmpeg и Shazam не должны держать слоты `worker`/`worker-extension`, а темп Shazam — общий на
+сервер. Текст не нашёл трек уверенно и трек годится (`RecognitionEligibility`) → item остаётся
+PENDING и ждёт распознавания; итог распознавания снова ставит `run_match`, и он ищет на цели
+по услышанному (`matching.domain.AudioMatcher`: ISRC в приоритете, затем поиск; версия и
+длительность — от источника). FingerprintVerification (chromaprint) — не на этапе 6.
 
 `TrackNormalizer` дополнительно извлекает `VersionTag` трека (`original | live | remix(remixer) |
 acoustic | sped_up | slowed | cover | instrumental | karaoke | extended | radio_edit`) из названия;
@@ -465,9 +480,10 @@ MATCHED; иначе лучший — оригинал под потолком с
 use case, а не вызывают из домена напрямую), можно оставлять в `application/ports.py` того же модуля.
 
 Так, с этапа 2: `MusicPlatformGateway` и его DTO `TrackQuery`/`TrackCandidate` лежат в
-`shared_kernel/domain`; `TrackMatchRepository`, а также заглушки `AudioRecognizer`/
-`FingerprintComparer` (ещё не подключены к пайплайну, задел под этап 6) — в
-`modules/matching/domain/ports.py`. С этапа 3 `MusicPlatformGateway` дополнен методами
+`shared_kernel/domain`; `TrackMatchRepository` — в `modules/matching/domain/ports.py`.
+Порты распознавания (этап 6-1) — в `modules/recognition/application/ports.py` (ими
+пользуется только use case), `RecognizedTrack` — в `shared_kernel/domain/search.py` (его
+читают recognition и matching). С этапа 3 `MusicPlatformGateway` дополнен методами
 `get_playlist`/`create_playlist`/`add_tracks`/`get_library`/`add_to_library`/
 `library_insert_order` (раздел ниже — актуальные сигнатуры, реализованные в коде).
 
@@ -592,14 +608,30 @@ class SessionTokenService(Protocol): # реализация — RedisSessionStor
     async def revoke(self, token: str) -> None: ...
     async def revoke_all(self, user_id: UUID) -> None: ...
 
-class AudioSource(Protocol):
-    async def fetch_fragment(self, ref: ExternalTrackRef, seconds: int) -> AudioFragment: ...
-
-class AudioRecognizer(Protocol):
-    async def recognize(self, fragment: AudioFragment) -> RecognitionResult | None: ...
-
-class FingerprintComparer(Protocol):
-    async def similarity(self, a: AudioFragment, b: AudioFragment) -> float: ...
+# recognition/application/ports.py (этап 6-1). Ошибки — recognition/domain/errors.py:
+# AudioUnavailableError(NoAudioReason: encrypted | no_stream | too_large) — в кэш как NO_AUDIO;
+# AudioTemporarilyUnavailableError — не кэшируется; RecognizerBusyError(retry_after),
+# RecognizerUnavailableError.
+class AudioSource(Protocol):          # качает только окно (Range, сегменты окна)
+    platform: Platform
+    async def fetch(self, ref: ExternalTrackRef, length_ms: int,
+                    duration_ms: int | None) -> SourceAudio: ...   # data, window, lead_ms, preview
+class AudioSourceRegistry(Protocol):  # integrations/platforms/audio.py: PlatformAudioSources
+    def for_track(self, ref, access: AccountAccess | None) -> AudioSource | None: ...
+class AudioTrimmer(Protocol):         # FfmpegTrimmer: окно → wav 16 кГц mono, temp — в вызове
+    async def to_wav(self, audio: SourceAudio) -> bytes: ...
+class AudioRecognizer(Protocol):      # ShazamRecognizer, AcrCloudRecognizer (integrations/recognizers)
+    provider: str
+    async def recognize(self, wav: bytes) -> RecognizedTrack | None: ...
+class RecognizerThrottle(Protocol):   # RedisServiceThrottle: token bucket ratelimit:tb:svc:<имя>
+    async def acquire(self, provider: str) -> float | None: ...   # число — ждать дольше допустимого
+    async def penalize(self, provider: str, seconds: float) -> None: ...   # 429 → пауза всем
+class RecognitionRepository(Protocol):   # одна запись на трек источника, upsert
+    async def find(self, source_ref) -> Recognition | None: ...
+    async def save(self, recognition: Recognition) -> None: ...
+class RecognitionLock(Protocol):      # RedisRecognitionLock: SET NX + TTL, снятие только своего
+    def hold(self, source_ref) -> AbstractAsyncContextManager[bool]: ...
+# FingerprintComparer (chromaprint, сверка звука цели) — не на этапе 6: нужен звук цели.
 
 # TaskQueue/EventPublisher/UnitOfWork — реализованы с этапа 3 в
 # shared_kernel/application/ports.py (нужны нескольким контекстам, вызываются из
@@ -628,9 +660,9 @@ class UnitOfWork(Protocol):
 | Площадка | Чтение | Запись | Аудио для распознавания |
 |---|---|---|---|
 | Spotify | Client Credentials (официально) | расширение / «свой Client ID» / OAuth dev-mode (≤5 польз.) | нет (DRM) — не нужно, есть ISRC |
-| Яндекс | `yandex-music` | `yandex-music` → расширение | да |
-| VK | только расширение (4c-5): веб-API страницы `vk.ru`; серверного пути и токенов нет | только расширение | да (через браузер — позже) |
-| SoundCloud | api-v2 по токену из cookie сайта (UNOFFICIAL, по умолчанию); официальный API — если в Settings есть приложение (Artist Pro) | расширение (4c; v2 с сервера закрыт DataDome) или официальный API | да |
+| Яндекс | `yandex-music` | `yandex-music` → расширение | да — по токену, `download-info` (6-3); через расширение — долг |
+| VK | только расширение (4c-5): веб-API страницы `vk.ru`; серверного пути и токенов нет | только расширение | **нет** — HLS частично зашифрован (AES-128), не используем (6-0) |
+| SoundCloud | api-v2 по токену из cookie сайта (UNOFFICIAL, по умолчанию); официальный API — если в Settings есть приложение (Artist Pro) | расширение (4c; v2 с сервера закрыт DataDome) или официальный API | да — анонимно, незашифрованные транскодинги пользовательских заливок; у лейблов только шифрованное (6-0) |
 | YouTube Music | `ytmusicapi` | `ytmusicapi` | да (`yt-dlp`) |
 
 **Браузерное расширение** — отдельный транспорт: бэкенд кладёт задачу
@@ -656,7 +688,10 @@ platform_tracks     id, platform, external_id, canonical_id, raw_title, raw_arti
                     raw jsonb, UNIQUE(platform, external_id)
 track_matches       id, source_pt_id, target_platform, target_pt_id, method, score, confirmations,
                     restriction (4b-2: preview_only), UNIQUE(source_pt_id, target_platform)
-recognitions        id, platform_track_id, provider, result jsonb, created_at
+recognitions        id, source_pt_id UNIQUE → platform_tracks, outcome (recognized|no_match|no_audio),
+                    no_audio_reason, provider, title, artist, isrc, provider_ref, exact,
+                    offset_ms, time_skew, frequency_skew, window_start_ms, window_length_ms,
+                    created_at, expires_at (NULL — без срока)              -- 6-1, звук не хранится
 transfers           id, user_id,
                     source_kind (playlist|library), source_platform, source_playlist_id,
                     destination_kind (existing|new|library), target_platform, target_playlist_id,
@@ -665,9 +700,12 @@ transfers           id, user_id,
                     cursor jsonb (для возобновления),
                     status, resume_at, paused_from, pause_reason (4c),
                     total, pending, matched, uncertain, not_found, added, failed
-                    (счётчики — 11c; recognized — этап 6), created_at, updated_at (NOT NULL)
+                    (счётчики — 11c), recognize_audio, recognition_deadline_at (6-2),
+                    created_at, updated_at (NOT NULL)
 transfer_items      id, transfer_id, position, source_pt_id, match_id, status, candidates jsonb,
-                    match_restriction (4b-2), processed_at
+                    match_restriction (4b-2), processed_at,
+                    recognition_state (queued|ready|final), recognition jsonb (6-2: текстовый
+                    итог, причина, снимок услышанного)
 artworks            canonical_id, provider, url, width, height, dominant_color, fetched_at
 extension_devices   id, user_id → users ON DELETE CASCADE, name, browser, version,
                     token_hash UNIQUE (sha256 токена устройства), created_at,
@@ -691,7 +729,7 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 |---|---|---|
 | `transfer` | оркестрация: читаем плейлист, создаём items, раздаём задачи | средняя |
 | `match` | поиск + скоринг одного трека | высокая, ограничена rate limiter-ом площадки |
-| `recognize` | ffmpeg + распознавание (5–15% треков) | низкая |
+| `recognize` | ffmpeg + распознавание (5–15% треков): `recognize_track` (6-2) | низкая (`QUEUE__RECOGNIZE_MAX_JOBS`, 2) |
 | `write` | создание плейлиста, добавление пачками | 1 на аккаунт |
 | `ru` | всё, что требует РФ-IP (VK, Яндекс) — отдельный воркер | по площадке |
 
@@ -2019,6 +2057,299 @@ VK — только транспорт EXTENSION, серверного пути 
   привязанным устройствам. `externally_connectable` для origin сайта — отдельное решение
   (меняет manifest и обоснование в `EXTENSION_STORE.md`).
 
+### 11j. Этап 6 — распознавание по звуку: спайк 6-0 и решения (2026-10-12)
+
+**Решения владельца (до спайка):**
+- **Зашифрованное никогда не расшифровываем, даже если ключ доступен.** Сюда относятся
+  `#EXT-X-KEY` с `METHOD` ≠ `NONE`, `encrypted-hls` / `cbc` / `ctr` у SoundCloud и любой DRM.
+  Итог для таких потоков — `NO_AUDIO`. Сегменты и ключи шифрованных потоков даже не
+  запрашиваются (на это есть тесты).
+- Сначала серверный путь:
+  - SoundCloud — анонимно, только публичные треки;
+  - Яндекс — по токену, через `download-info`;
+  - VK — новая операция расширения.
+
+  Яндекс через расширение и приватные треки SoundCloud — долг.
+- Фрагменты 15–20 с уходят в Shazam / ACRCloud. Об этом сказано в политике
+  (`EXTENSION_PRIVACY.md`), а в «Новом переносе» есть переключатель «Распознавать по звуку»
+  (по умолчанию вкл., `transfers.recognize_audio`).
+- Потолок фазы распознавания на перенос — 15 минут. Дальше трек получает `unavailable`
+  и попадает в ревью с текстовым результатом; там есть кнопка «Ещё раз по звуку».
+
+**Спайк: зонды** `tests/tools/audio_probe.py` (SoundCloud и Яндекс, с хоста; без скачивания
+треков — только Range по 1 КБ и m3u8) и `tests/tools/shazam_probe.py` (в контейнере:
+окно 18 с → ffmpeg → Shazam).
+
+*SoundCloud анонимно* (домашний IP, client_id веб-клиента):
+- **Официальные заливки лейблов** (`policy=MONETIZE`, «Lucid Dreams» Juice WRLD) отдают только
+  `cbc-/ctr-encrypted-hls`. Незашифрованный `hls audio/mpeg` у них отвечает 404, так что итог —
+  `NO_AUDIO`. У таких заливок обычно есть ISRC (`publisher_metadata`), и распознавание им не нужно.
+- **Пользовательские заливки** (ремиксы, slowed, перезаливы — именно «грязные» треки) отдают
+  незашифрованное:
+  - `hls audio/mpeg` (mp3) и `hls audio/mp4` (aac): сегменты по 9–10 с, `#EXT-X-KEY` нет;
+  - иногда `progressive` mp3.
+- `abr_sq` (`audio/mpegurl`) анонимно отвечает 404. Это не mp3: тип сравнивается точно.
+- Range работает (206) и у progressive, и у сегментов.
+- Хосты: `cf-media.sndcdn.com`, `cf-hls-media.sndcdn.com`,
+  `playback.media-streaming.soundcloud.cloud` — allowlist по суффиксам `.sndcdn.com` и
+  `.soundcloud.cloud`.
+- `transcoding.url` + `client_id` + `track_authorization` → `{url}` потока.
+
+*Яндекс по токену* (`yandex-music` 3.0.0):
+- `tracks/{id}/download-info` отдаёт вариант mp3 192 кбит/с; у аккаунта с подпиской
+  `preview=false`.
+- XML по `downloadInfoUrl` отдаётся **только с `Authorization`**: без неё Яндекс рвёт соединение
+  (`RemoteProtocolError`). `retrieve()` библиотеки этот заголовок не ставит.
+- Хост в XML — `api.music.yandex.net`. Ссылка `get-mp3/<подпись>/…` отвечает 308 на
+  `strm-*.strm.yandex.net`, дальше Range 206, файл ~4,9 МБ.
+- **Подписанная ссылка одноразовая**: повторный запрос по ней сервер обрывает. Окно берётся
+  одним Range-запросом.
+
+*Shazam* (`shazamio-core` 2.0 — только подпись в Rust; запрос — свой httpx):
+
+| Источник | Ответ | `timeskew` / `frequencyskew` лучшего совпадения |
+|---|---|---|
+| «Lucid Dreams (Remix) ft. Lil Uzi Vert» (HLS mp3) | Juice WRLD — Lucid Dreams, ISRC `USUG11800685` | ~0,0001 / 0 |
+| «Juice WRLD - Lucid Dreams (Slowed + Reverb)» (progressive) | **Slater — Forget Me** (ложное), без ISRC | −0,044 / −0,044 |
+
+- Окно 18 с — это ~320–350 КБ. Скачивание вместе с ffmpeg занимает ~4 с. Временный каталог
+  удаляется.
+- **Shazam уверенно ошибается на изменённой скорости и тоне.** Сдвиг `timeskew` /
+  `frequencyskew` у лучшего совпадения — надёжный признак: около 0 значит та же запись, единицы
+  процентов — другая скорость или тон.
+- Ремикс он узнаёт как оригинал, если звук в окне совпадает с оригиналом. Это верно по звуку,
+  но не по версии.
+- **Почему не `shazamio`.** По умолчанию библиотека повторяет запрос до 20 раз на
+  429/5xx (`ExponentialRetry`) и подставляет случайные `User-Agent` и устройство в каждый
+  запрос. Это расходится с правилом 11g: никакой имитации и ротации. Берём только
+  `shazamio-core` (подпись), тело запроса из 4 полей и httpx с постоянными заголовками,
+  без повторов на 429. Заодно не нужны aiohttp, numpy и pydub.
+
+*VK из страницы* (сниппет `scripts/spike-vk-audio.js`; 5 треков «Моей музыки» — официальные
+и пользовательские):
+- `audio.get` отдаёт `url` — m3u8 на `*.vkuseraudio.ru`.
+- **Все потоки смешанные**: `#EXT-X-KEY` чередует `AES-128` и `NONE`, зашифрована примерно
+  треть сегментов (3 из 9, 6 из 16, …). Сегменты по 15–17 с, `#EXT-X-MAP` нет.
+- **Решение владельца: VK — `NO_AUDIO`.** Поток с любым `METHOD` ≠ `NONE` целиком не
+  используется. Брать одни незашифрованные сегменты значило бы обойти смысл частичного
+  шифрования. Операции `vk.audio_fragment` нет, VK-источник сопоставляется только по тексту.
+  Правило «`url` трека не покидает страницу» (4c-5) остаётся в силе.
+
+*ACRCloud* — ключа нет. Адаптер пишется по документации, тесты — на ответах формы из
+документации. Включается только при заданных `RECOGNITION__ACRCLOUD__*`.
+
+**Правила звуковой фазы (по итогам спайка):**
+- **AUTO «по звуку»** — только при всех условиях сразу:
+  - |`timeskew`| и |`frequencyskew`| < 1 %;
+  - версия источника (из его названия) совпадает с версией кандидата;
+  - длительность близка;
+  - распознанные артист или название хоть немного похожи на источник. Исключение —
+    источник без внятного названия.
+- Иначе результат — подсказка в ревью: кандидаты не выше UNCERTAIN, с причиной («звук изменён»,
+  «не совпадает с названием»).
+- Источники с тегом `sped_up` / `slowed` (и nightcore) на распознавание не отправляются.
+- `recognitions` хранит `offset_ms`, `time_skew`, `frequency_skew`.
+
+**6-1 (контекст recognition) — что сделано (2026-10-12)**
+- **Домен** `modules/recognition/domain`:
+  - `Recognition` — кэш на трек источника, исходы `RECOGNIZED | NO_MATCH | NO_AUDIO`;
+    отрицательные со сроком (`expires_at`);
+  - `FragmentWindow.middle` — окно из середины; для превью — из середины превью;
+    короткий трек — с начала;
+  - `SourceAudio` — байты окна с запасом и `lead_ms`;
+  - `RecognitionPolicy.check` — кого не распознаём: перенос без опции, площадка без звука,
+    есть ISRC, sped up / slowed, короче 20 с;
+  - ошибки (`NoAudioReason`).
+- **`RecognizeSourceTrackUseCase`**:
+  - свежий кэш → лок `recognition:lock:<трек>` → кэш ещё раз → окно → wav →
+    распознаватели по очереди;
+  - кэшируется только окончательное: `NO_MATCH`, если все ответили «не знаю», и `NO_AUDIO`;
+  - «занят» хоть один → `RecognitionDeferred(retry_after)`;
+  - сбой → `RecognitionUnavailable` без записи.
+- **`ShazamRecognizer`** — подпись shazamio-core, свой httpx:
+  - User-Agent httpx как есть, без повторов;
+  - `exact` — |skew| < 1 %;
+  - 429 → `penalize` общего bucket на `max(cooldown 600 с, Retry-After)`.
+- **`AcrCloudRecognizer`** — HMAC-SHA1 по документации:
+  - `exact` при score ≥ 90;
+  - 3003 / 3015 → пауза;
+  - регистрируется, только если задан `RECOGNITION__ACRCLOUD__*`.
+- **`FfmpegTrimmer`** — `-ss` после `-i` (точная вырезка склеенных сегментов),
+  `TemporaryDirectory` вызова в `temp_dir`, удаляется и при ошибке.
+- **`RedisServiceThrottle`** — те же Lua-скрипты token bucket, ключи `ratelimit:tb:svc:<имя>`;
+  у площадок поведение не менялось.
+- **Обвязка:**
+  - миграция `d4f1a8c3e6b2` (`recognitions`);
+  - `TaskLane.RECOGNIZE`, `QueueSettings.recognize_*`;
+  - `RecognizeWorkerSettings` (пока только `ping`; задача трека — 6-2);
+  - сервис `worker-recognize` с tmpfs;
+  - `RecognitionProvider` в `container.py` (реестр источников звука пока пуст — 6-3);
+  - `shazamio_core` запрещён доменам и application (import-linter).
+- **Тесты:**
+  - unit: домен, use case на фейках, настройки;
+  - respx: Shazam на ответах спайка (ремикс — exact; slowed — не exact), ACRCloud на ответах
+    формы из документации;
+  - testcontainers: репозиторий (round trip, замена строки), лок (исключительность, не
+    снимает чужой, снимается при ошибке), темп (общий на процессы, `penalize`);
+  - `audio` (только в контейнере, `make test-audio`): ffmpeg вырезает 18 с wav 16 кГц mono
+    из синуса, мусор → NO_AUDIO, временный каталог пуст.
+
+**6-2 (распознавание в переносах) — что сделано (2026-10-13)**
+- **Состояние трека** — `TransferItem.recognition: ItemRecognition`:
+  - `state`: `queued` — ждёт worker-recognize; `ready` — распознано, ждёт поиска на цели;
+    `final` — итог применён;
+  - `text_status` — итог текста (UNCERTAIN | NOT_FOUND), к нему трек возвращается, если звук
+    не помог;
+  - `note` — причина итога: `exact`, `altered`, `text_mismatch`, `not_on_target`,
+    `no_match`, `no_audio`, `unavailable`, `timeout`;
+  - `heard` — снимок распознанного: transfers не читает recognition.domain.
+
+  В БД — `transfer_items.recognition_state` (для условных UPDATE) и `recognition` (jsonb).
+- **`run_match`, две фазы** (фаза — по состоянию item, не по аргументу задачи):
+  - текст не нашёл уверенно и трек годится → item PENDING + `queued`, текстовые кандидаты
+    сохранены, счётчики не трогаются (перенос не уходит в ревью раньше времени);
+  - задача `recognize_track` уходит в полосу `TaskLane.RECOGNIZE`;
+  - первый такой трек ставит потолок фазы (`transfers.recognition_deadline_at`, 15 мин) и
+    отложенную задачу `expire_recognition` (один ключ на перенос);
+  - `ready` → `ResolveAudioMatchUseCase`: найденное по звуку (method=audio) — в общий кэш
+    `track_matches`; звук не ухудшает итог текста (UNCERTAIN текста остаётся UNCERTAIN).
+- **Кто годится** — `recognition.application.RecognitionEligibility`:
+  - распознавание включено и есть распознаватели;
+  - площадка источника отдаёт звук;
+  - нет ISRC;
+  - трек не короче 20 с;
+  - версия не sped up / slowed / nightcore (`matching.application.is_speed_altered`;
+    nightcore добавлен к sped up);
+  - у переноса «Распознавать по звуку» (`transfers.recognize_audio`, по умолчанию да,
+    `POST /transfers {recognize_audio}`).
+- **`recognize_track`** (`RecognizeTransferItemUseCase`, worker-recognize):
+  - `RecognizeSourceTrackUseCase` → `queued` → `ready` (условно: только если ещё ждёт);
+  - кэш распознаваний коммитится в любом случае;
+  - «подождите» от Shazam → `Retry(defer)`; если срок перевалит за потолок фазы — сразу
+    `timeout`; последняя попытка (`RECOGNIZE_MAX_TRIES` 20) — `unavailable`;
+  - дальше `run_match` (PENDING) или `rematch_by_audio` (повтор с ревью) в полосе переноса.
+- **Потолок фазы** — `expire_recognition`: ждущие PENDING → `ready` + `timeout` → `run_match`
+  (итог текста). Поздний результат распознавания трек уже не меняет, но кэшируется.
+- **«Ещё раз по звуку»** — `POST /transfers/{id}/items/{position}/recognize` (202, 409
+  `recognition_not_retryable`):
+  - только на ревью и только после `unavailable` / `timeout` (`ItemRecognition` →
+    `can_retry` в API);
+  - `recognize_track` → `rematch_by_audio` (`RematchByAudioUseCase`): под локом переноса
+    статус трека меняется между UNCERTAIN/NOT_FOUND/MATCHED, счётчики пересчитывает полное
+    сохранение; запись — по-прежнему только по кнопке.
+- **Sweeper:** PENDING в `queued` → снова `recognize_track` (не `run_match`); потолок фазы
+  просрочен (задача потерялась) → `expire_recognition`.
+- **API:**
+  - у трека `recognition {state, note, heard {title, artist, provider, isrc, exact}, can_retry}`;
+  - в прогрессе (и SSE) `recognizing`;
+  - у переноса `recognize_audio`;
+  - «найдено по звуку» в отчёте — `match_methods.audio`.
+- **Миграция** `e8a2c5f1b7d4`.
+- **Тесты:**
+  - unit: `AudioMatcher` на случаях спайка (ремикс не берёт оригинал по ISRC, slowed —
+    подсказка, название «track 07» — верим звуку, длительность), домен `ItemRecognition`,
+    сквозной сценарий на фейках (ожидание вместо ревью, найдено по звуку и в кэше, не узнан
+    → текст, «подождите», потолок, поздний результат, повтор с ревью, sweeper);
+  - integration: условные UPDATE и пересчёт счётчиков на Postgres, 401/404 эндпоинта повтора.
+
+
+**6-3 (источники звука) — что сделано (2026-10-13)**
+- **`integrations/platforms/media.py`** — общее скачивание окна:
+  - Range с ручными редиректами только на хосты площадки (allowlist суффиксов, https);
+  - лимит `RECOGNITION__MAX_FRAGMENT_BYTES`;
+  - разбор m3u8: сегменты, `EXT-X-MAP`, любой `EXT-X-KEY` с `METHOD` ≠ `NONE` →
+    `NO_AUDIO(encrypted)`, ни сегменты, ни ключ не запрашиваются;
+  - `byte_range_for` — байты окна с запасом 2 с по средней скорости потока.
+- **`SoundCloudAudioSource`** — анонимный транспорт v2 (`SoundCloudApiFactory.anonymous_transport`:
+  client_id, token bucket аккаунта источника, разбор ошибок):
+  - выбор транскодинга: progressive mp3 → HLS mp3 → HLS aac;
+  - `audio/mpegurl` (abr) и `*-encrypted-hls` не берутся; варианты, ответившие 404,
+    пропускаются;
+  - progressive — `Range: bytes=0-0` (размер) и один Range окна; HLS — только сегменты окна;
+  - SNIP (Go+) — окно из середины 30-секундного превью;
+  - хосты `.sndcdn.com`, `.soundcloud.cloud`;
+  - 401/403/404 трека (приватный, удалён, гео) → `NO_AUDIO`; 429/5xx/сеть — временно.
+- **`YandexAudioSource`** — по токену аккаунта (`ClientAsync` с httpx-транспортом):
+  - `tracks/{id}/download-info` → самый лёгкий вариант (mp3, затем aac, наименьший битрейт);
+  - XML с `Authorization` → ссылка с подписью, как у `DownloadInfo` yandex-music
+    (`direct_link`);
+  - **один** Range окна по оценке битрейта: ссылка одноразовая; 308 → `*.strm.yandex.net`,
+    токен туда не уходит;
+  - все запросы — через token bucket Яндекса (аккаунт + сервер);
+  - превью без подписки — окно из середины 30 с;
+  - капча / 429 → временно.
+
+  Аккаунт через расширение (без токена) звук не отдаёт — `unavailable`.
+- **Реестр** `PlatformAudioSources` в `container.py`: SoundCloud и Яндекс; площадки на фейке
+  (`PLATFORMS__FAKE`) звука не отдают. `RecognitionEligibility` берёт площадки из реестра.
+- **Тесты:**
+  - respx на ответах формы спайка (`test_audio_sources.py`): окно — только нужные сегменты
+    и один Range, abr ниже mp3, `track_authorization` и `client_id` в запросе потока,
+    только-шифрованное → `ENCRYPTED`, шифрованный m3u8 — ни сегментов, ни ключа, чужой хост
+    не запрашивается, SNIP, лимит байтов, 404/503 трека; Яндекс — подпись ссылки как у
+    библиотеки, один Range через редирект без токена, превью, нет вариантов, капча;
+  - live `tests/live/recognition` (только контейнер): трек владельца
+    (`RECOGNITION_LIVE_TRACK_URL` / `RECOGNITION_LIVE_EXPECT`) → SoundCloud → ffmpeg →
+    Shazam, временный каталог пуст.
+- **Попутно:** зонд `audio_probe.py` не вычищал `path`/`ts`/`s` из XML Яндекса (сломанные
+  обратные ссылки в regex) — исправлено, записанные XML удалены (они были только в
+  `recorded/` вне git, подпись одноразовая).
+
+**Live 6-3 (2026-10-13, контейнер, домашний IP):** «Lucid Dreams (Remix) ft. Lil Uzi Vert»
+(SoundCloud, HLS mp3) → окно 111,2–129,2 с, 319 КБ, wav 576 КБ → Shazam: Juice WRLD — Lucid
+Dreams, ISRC `USUG11800685`, `exact` (timeskew 0,0001, frequencyskew 0), временный каталог
+пуст. По правилам 11j такой результат для ремикса — только подсказка (версия источника —
+remix). Попутно: PowerShell теряет «—» в аргументе `docker compose run -e` — сравнение в
+live-тесте только по буквам и цифрам.
+
+**6-5 (фронтенд) — что сделано (2026-10-13)**
+- «Новый перенос»: группа «Поиск» с переключателем «Распознавать по звуку» (по умолчанию вкл.,
+  `shared/ui/switch.tsx` — нативный checkbox с `role="switch"`) и сноской, что фрагмент
+  уходит в Shazam и не хранится; в запросе — `recognize_audio`.
+- Ревью (`widgets/review-panel`): под «Искали» — «По звуку: Артист — Название» и причина
+  (`entities/transfer/lib/recognition.ts`: звук изменён, не похоже на название, не узнан, нет
+  звука, не успели…); пока трек распознаётся — «Распознаём по звуку…» и без «Пропустить»;
+  кнопка «Ещё раз по звуку» при `can_retry` (`features/retry-recognition`, кэш списка
+  обновляется сразу, итог — событием).
+- SSE: на ревью события трека (`TrackMatched`/`TrackNeedsReview`/`TrackNotFound`) перечитывают
+  список треков и шапку — так приходит итог повтора.
+- Прогресс: строка «Распознаём по звуку: N» (`progress.recognizing`). Отчёт: «по звуку» в
+  «Как нашли» (было), у не перенесённых — причина распознавания.
+- `docs/EXTENSION_PRIVACY.md`: раздел о распознавании на сервере (Shazam/ACRCloud, что
+  уходит и что хранится, сроки) и исключение в «Зачем».
+- Тесты vitest: тексты причин, переключатель → `recognize_audio: false`, ревью с услышанным,
+  причиной и повтором.
+
+**6-6 (ручная проверка) — 2026-10-13.** Владелец прогнал приложение целиком
+(`--profile app`, `worker-recognize`) через сайт: переключатель в «Новом переносе», прогресс
+с распознаванием, ревью с услышанным, отчёт — работает. Подробных логов прогона в разбор не
+попало. Владелец отметил, что распознавание нужно будет улучшать — пункты ниже.
+
+**Долги и улучшения этапа 6**
+- Яндекс через расширение и приватные треки SoundCloud — звук через операцию расширения
+  (после отдельного спайка веб-подписи Яндекса).
+- С IP датацентра анонимный SoundCloud может упереться в DataDome (как 11e) — тогда звук
+  через расширение.
+- Shazam — неофициальный API: для публичного сервиса — юридическое решение (как тексты
+  Genius); флаг `RECOGNITION__SHAZAM__ENABLED`.
+- FingerprintVerification (chromaprint, сверка звука цели) — нужен звук цели; позже.
+- Оценка байтов по битрейту для VBR неточна: запас ±2 с; если окно окажется короче — ffmpeg
+  вырежет сколько есть, Shazam подписывает 12 с.
+
+Кандидаты в улучшения (обсудить с владельцем, по итогам реальных переносов):
+- **Второе окно.** Сейчас одно окно из середины; если «не узнан», можно попробовать второе
+  (например, 1/3 трека) — ценой второго запроса к Shazam.
+- **Скорость.** Темп Shazam — 1 запрос в 5 с на сервер: 100 ждущих треков ≈ 8–9 минут, близко
+  к потолку фазы 15 минут. Подбирать темп и потолок по логам 429; ACRCloud как параллельный
+  канал, если будет ключ.
+- **Порядок.** Сначала треки, где звук вероятнее поможет (NOT_FOUND без кандидатов,
+  «грязные» заливки), потом UNCERTAIN с хорошим кандидатом.
+- **Подсказки.** Показывать на ревью кандидатов «по звуку» отдельно от текстовых; учитывать
+  `UploadTrust` (официальная заливка) в `AudioMatcher`.
+- **Наблюдаемость.** Счётчики: распознано/не узнано/нет звука/429 Shazam — в логах и отчёте.
+- **Ошибки распознавателя.** Набирать корпус «источник → что сказал Shazam → верно ли»
+  (как `dirty_titles`), чтобы подбирать пороги `exact` и сходства с названием.
+
 ---
 
 ## 12. Фронтенд и расширение
@@ -2094,7 +2425,7 @@ VK — только транспорт EXTENSION, серверного пути 
 | `api` | `backend/Dockerfile` → uvicorn | `app` |
 | `worker` | тот же образ → `arq ...WorkerSettings` (очереди transfer/match/write) | `app` |
 | `worker-extension` | тот же образ → `arq ...ExtensionWorkerSettings` (очередь `client`: переносы через расширение) | `app` |
-| `worker-recognize` | тот же образ, очередь `recognize`; ffmpeg + chromaprint внутри | `app` |
+| `worker-recognize` | тот же образ → `arq ...RecognizeWorkerSettings` (очередь `arq:recognize`, `TaskLane.RECOGNIZE`); ffmpeg + chromaprint внутри; **tmpfs `/tmp/recognize`** — фрагменты не попадают на диск | `app` |
 | `frontend` | `frontend/Dockerfile` → nginx | `app` |
 | `caddy` | `caddy:2` (только прод) | `prod` |
 
@@ -2163,7 +2494,14 @@ VK — только транспорт EXTENSION, серверного пути 
    **5-2…5-5 (сделано)** — вход и оболочка; «Подключения»; новый перенос; прогресс, ревью,
    отчёт, история (11i).
    **5-6 (сделано)** — удалены dev-страница `/extension/pair` и `diagnostics.echo` (11i).
-6. **recognition**: ffmpeg, shazamio, ACRCloud, chromaprint.
+6. **recognition**: ffmpeg, Shazam (shazamio-core), ACRCloud (план, правки владельца и
+   итоги — 11j). **6-0 (сделано)** — спайк: что реально отдают площадки и Shazam (11j).
+   **6-1 (сделано)** — контекст recognition, Shazam/ACRCloud/ffmpeg, кэш `recognitions`,
+   `worker-recognize` (11j). **6-2 (сделано)** — звуковая фаза переноса: ожидание
+   распознавания, поиск по услышанному, потолок фазы, «Ещё раз по звуку» (11j).
+   **6-3 (сделано)** — источники звука: SoundCloud анонимно, Яндекс по токену; live-тест (11j).
+   **6-5 (сделано)** — фронтенд: переключатель, ревью «по звуку», «Ещё раз по звуку», прогресс, отчёт (11j).
+   **6-6 (сделано)** — ручная проверка владельцем, документы. **Этап 6 закрыт**; улучшения — 11j, «Долги и улучшения».
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).
 8. **backups**: экспорт во все форматы, импорт из файла, расписания, S3 (SeaweedFS).
 9. **library_tools**: дубли, слияние, сравнение площадок, недоступные треки.

@@ -55,7 +55,8 @@
 - Миграции в контейнере: `docker compose run --rm api alembic upgrade head`
 - Интеграционные тесты (testcontainers) — только с хоста: `make test-integration`
   (из контейнера `api` они не работают — см. `docker-compose.override.yml`)
-- Тесты в контейнере — только аудио (ffmpeg, chromaprint): `docker compose run --rm api pytest`
+- Тесты в контейнере — только аудио (ffmpeg, chromaprint), маркер `audio`: `make test-audio`
+- Live распознавания (контейнер, трек SoundCloud): `docker compose run --rm --no-deps -v "${PWD}/backend/tests:/app/tests" -e RECOGNITION_LIVE_TRACK_URL="..." -e RECOGNITION_LIVE_EXPECT="Артист - Название" api pytest -m live -s -p no:cacheprovider tests/live/recognition`
 - Сквозной тест расширения (фейковое расширение по WebSocket): `make e2e-extension`
 - Ручной e2e SoundCloud через настоящее расширение: `make e2e-soundcloud EMAIL=... LINK="..."`
 - Ручной e2e Яндекса через настоящее расширение (лайки SoundCloud → Яндекс): `make e2e-yandex EMAIL=...`

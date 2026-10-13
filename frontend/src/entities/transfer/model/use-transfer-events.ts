@@ -19,6 +19,8 @@ const HEADER_EVENTS = new Set([
   "CaptchaRequired",
 ]);
 
+const TRACK_EVENTS = new Set(["TrackMatched", "TrackNeedsReview", "TrackNotFound"]);
+
 export type TransferStream = {
   /** Соединение открыто (иначе — переподключаемся, данные могут отставать). */
   live: boolean;
@@ -64,6 +66,13 @@ export function useTransferEvents(transferId: string, status: string | undefined
       if (payload.type === "TransferFailed") setFailureReason(payload.reason ?? null);
       if (payload.type && HEADER_EVENTS.has(payload.type)) {
         void queryClient.invalidateQueries({ queryKey: key });
+      }
+      // На ревью решение по треку меняется только повтором распознавания («Ещё раз по
+      // звуку») — его итог приходит событием трека: перечитываем список и счётчики.
+      const current = queryClient.getQueryData<Transfer>(key);
+      if (current?.status === "review" && payload.type && TRACK_EVENTS.has(payload.type)) {
+        void queryClient.invalidateQueries({ queryKey: [...key, "items"] });
+        void queryClient.invalidateQueries({ queryKey: key, exact: true });
       }
     });
 

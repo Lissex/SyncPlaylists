@@ -15,6 +15,7 @@ from syncplaylists.modules.transfers.application.ports import (
 )
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
+    RecognitionState,
     TransferItemStatus,
     TransferProgress,
     TransferStatus,
@@ -22,6 +23,7 @@ from syncplaylists.modules.transfers.domain.value_objects import (
 from syncplaylists.modules.transfers.infrastructure.mappers import (
     item_result_columns,
     item_to_domain,
+    recognition_columns,
     transfer_header_to_domain,
     transfer_summary_from_orm,
     transfer_to_domain,
@@ -98,6 +100,12 @@ class SqlTransferRepository:
         ).one_or_none()
         if header is None:
             return None
+        recognizing = await self._session.scalar(
+            select(func.count()).where(
+                TransferItemOrm.transfer_id == transfer_id,
+                TransferItemOrm.recognition_state == RecognitionState.QUEUED.value,
+            )
+        )
         processed = (
             await self._session.scalars(
                 select(TransferItemOrm.processed_at)
@@ -125,6 +133,7 @@ class SqlTransferRepository:
             recent_processed_at=tuple(at for at in processed if at is not None),
             resume_at=header.resume_at,
             pause_reason=header.pause_reason,
+            recognizing=int(recognizing or 0),
         )
 
     async def get_header(self, transfer_id: UUID) -> Transfer | None:
@@ -325,6 +334,89 @@ class SqlTransferRepository:
             .order_by(TransferItemOrm.position)
         )
         return list(rows)
+
+    async def save_item_awaiting_recognition(self, item: TransferItem) -> bool:
+        columns = item_result_columns(item)
+        updated = await self._session.execute(
+            update(TransferItemOrm)
+            .where(
+                TransferItemOrm.transfer_id == item.transfer_id,
+                TransferItemOrm.position == item.position,
+                TransferItemOrm.status == TransferItemStatus.PENDING.value,
+                TransferItemOrm.recognition_state.is_(None),
+            )
+            .values(
+                candidates=columns["candidates"],
+                recognition_state=columns["recognition_state"],
+                recognition=columns["recognition"],
+            )
+            .returning(TransferItemOrm.id)
+        )
+        return updated.first() is not None
+
+    async def save_recognition_ready(self, item: TransferItem) -> bool:
+        updated = await self._session.execute(
+            update(TransferItemOrm)
+            .where(
+                TransferItemOrm.transfer_id == item.transfer_id,
+                TransferItemOrm.position == item.position,
+                TransferItemOrm.recognition_state == RecognitionState.QUEUED.value,
+            )
+            .values(**recognition_columns(item.recognition))
+            .returning(TransferItemOrm.id)
+        )
+        return updated.first() is not None
+
+    async def start_recognition_phase(
+        self, transfer_id: UUID, deadline: datetime
+    ) -> tuple[datetime, bool]:
+        # Ставит срок только если его ещё нет: UPDATE ... WHERE deadline IS NULL.
+        updated = await self._session.execute(
+            update(TransferOrm)
+            .where(
+                TransferOrm.id == transfer_id,
+                TransferOrm.recognition_deadline_at.is_(None),
+            )
+            .values(recognition_deadline_at=deadline)
+            .returning(TransferOrm.recognition_deadline_at)
+        )
+        row = updated.first()
+        if row is not None:
+            return deadline, True
+        current = await self._session.scalar(
+            select(TransferOrm.recognition_deadline_at).where(TransferOrm.id == transfer_id)
+        )
+        assert current is not None
+        return current, False
+
+    async def expire_recognition(self, transfer_id: UUID, note: str) -> list[int]:
+        rows = (
+            await self._session.execute(
+                select(TransferItemOrm.position, TransferItemOrm.recognition)
+                .where(
+                    TransferItemOrm.transfer_id == transfer_id,
+                    TransferItemOrm.status == TransferItemStatus.PENDING.value,
+                    TransferItemOrm.recognition_state == RecognitionState.QUEUED.value,
+                )
+                .with_for_update()
+            )
+        ).all()
+        positions: list[int] = []
+        for position, payload in rows:
+            await self._session.execute(
+                update(TransferItemOrm)
+                .where(
+                    TransferItemOrm.transfer_id == transfer_id,
+                    TransferItemOrm.position == position,
+                    TransferItemOrm.recognition_state == RecognitionState.QUEUED.value,
+                )
+                .values(
+                    recognition_state=RecognitionState.READY.value,
+                    recognition={**(payload or {}), "note": note, "heard": None},
+                )
+            )
+            positions.append(position)
+        return positions
 
     async def list_summaries(
         self, user_id: UUID, before: TransferCursor | None, limit: int

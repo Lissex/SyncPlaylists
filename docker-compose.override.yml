@@ -15,3 +15,7 @@ services:
   worker:
     build:
       target: dev
+
+  worker-recognize:
+    build:
+      target: dev

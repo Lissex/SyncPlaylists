@@ -13,7 +13,16 @@ def load_orm_models() -> MetaData:
     from syncplaylists.modules.extension.infrastructure import orm as extension_orm
     from syncplaylists.modules.identity.infrastructure import orm as identity_orm
     from syncplaylists.modules.matching.infrastructure import orm as matching_orm
+    from syncplaylists.modules.recognition.infrastructure import orm as recognition_orm
     from syncplaylists.modules.transfers.infrastructure import orm as transfers_orm
 
-    del accounts_orm, catalog_orm, extension_orm, identity_orm, matching_orm, transfers_orm
+    del (
+        accounts_orm,
+        catalog_orm,
+        extension_orm,
+        identity_orm,
+        matching_orm,
+        recognition_orm,
+        transfers_orm,
+    )
     return Base.metadata

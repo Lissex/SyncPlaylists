@@ -9,6 +9,10 @@ from syncplaylists.bootstrap.container import make_container
 from syncplaylists.infrastructure.config.settings import Settings
 from syncplaylists.modules.transfers.presentation.tasks import (
     RATE_LIMITED_MAX_TRIES,
+    RECOGNIZE_MAX_TRIES,
+    expire_recognition,
+    recognize_track,
+    rematch_by_audio,
     resume_client_transfers,
     resume_transfer,
     run_match,
@@ -35,6 +39,8 @@ class WorkerSettings:
         run_write,
         resume_transfer,
         resume_client_transfers,
+        expire_recognition,
+        rematch_by_audio,
     )
     queue_name = settings.queue.default_queue_name
     max_jobs = settings.queue.max_jobs
@@ -62,6 +68,20 @@ class ExtensionWorkerSettings:
     redis_settings = ArqRedisSettings.from_dsn(str(settings.redis.dsn))
 
 
+class RecognizeWorkerSettings:
+    """Воркер распознавания по звуку (TaskLane.RECOGNIZE, сервис `worker-recognize`):
+    ffmpeg и Shazam не занимают слоты переносов. Слотов мало — темп Shazam всё равно
+    общий на сервер (RecognitionSettings.shazam.rate_limit)."""
+
+    functions = (ping, recognize_track)
+    queue_name = settings.queue.recognize_queue_name
+    max_jobs = settings.queue.recognize_max_jobs
+    job_timeout = settings.queue.recognize_job_timeout_seconds
+    max_tries = RECOGNIZE_MAX_TRIES
+    redis_settings = ArqRedisSettings.from_dsn(str(settings.redis.dsn))
+
+
 container = make_container(settings)
 setup_dishka(container, WorkerSettings)
 setup_dishka(container, ExtensionWorkerSettings)
+setup_dishka(container, RecognizeWorkerSettings)

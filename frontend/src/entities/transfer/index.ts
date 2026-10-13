@@ -20,4 +20,5 @@ export {
   type Step,
   type TransferStatus,
 } from "./lib/status";
+export { heardText, recognitionNote, type ItemRecognition } from "./lib/recognition";
 export { useTransferEvents, type TransferStream } from "./model/use-transfer-events";

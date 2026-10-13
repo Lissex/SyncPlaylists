@@ -5,6 +5,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from syncplaylists.shared_kernel.domain.base import ValueObject
+from syncplaylists.shared_kernel.domain.search import RecognizedTrack
 from syncplaylists.shared_kernel.domain.value_objects import (
     ExternalTrackRef,
     MatchScore,
@@ -118,6 +119,38 @@ class MatchResult(ValueObject):
     score: MatchScore
     # TrackRestriction.value найденного трека ("preview_only") — пометка для отчёта.
     restriction: str | None = None
+
+
+class RecognitionState(StrEnum):
+    """Где трек в распознавании по звуку (этап 6, ARCHITECTURE.md 11j)."""
+
+    QUEUED = "queued"  # ждёт worker-recognize
+    READY = "ready"  # распознавание закончено — ждёт поиска на цели
+    FINAL = "final"  # итог применён к треку
+
+
+# Причины итога распознавания (ItemRecognition.note). Кроме этих — вердикты поиска по
+# звуку из matching (exact, altered, text_mismatch, not_on_target), строкой.
+NOTE_NO_MATCH = "no_match"  # распознаватели не узнали
+NOTE_NO_AUDIO = "no_audio"  # у площадки нет звука трека (шифрование, нет потока)
+NOTE_UNAVAILABLE = "unavailable"  # сейчас не получилось (сеть, нет доступа, сбой)
+NOTE_TIMEOUT = "timeout"  # не уложились в потолок фазы распознавания переноса
+# «Ещё раз по звуку» имеет смысл только после временной неудачи.
+RETRYABLE_NOTES = frozenset({NOTE_UNAVAILABLE, NOTE_TIMEOUT})
+
+
+@dataclass(frozen=True, slots=True)
+class ItemRecognition(ValueObject):
+    state: RecognitionState
+    # Итог текстового поиска (UNCERTAIN | NOT_FOUND) — остаётся, если звук не поможет.
+    text_status: "TransferItemStatus"
+    note: str | None = None
+    # Снимок распознанного (для поиска на цели и для подсказки в ревью).
+    heard: RecognizedTrack | None = None
+
+    def __post_init__(self) -> None:
+        if self.text_status not in (TransferItemStatus.UNCERTAIN, TransferItemStatus.NOT_FOUND):
+            raise ValueError(f"Распознавание после текстового итога {self.text_status}")
 
 
 @dataclass(frozen=True, slots=True)

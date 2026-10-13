@@ -1711,6 +1711,22 @@ wheels = [
 ]
 
 [[package]]
+name = "shazamio-core"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/6a/32ee3fd095df7bb03419657b064d50e9053b95dc05cf04ca64dcdef5e27c/shazamio_core-2.0.0.tar.gz", hash = "sha256:9849276a3a4795683e29218cd8aac14acdcc8bae66df13304b8ce5d7b9077a12", size = 1517584, upload-time = "2026-10-11T15:00:14.434Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/67/f9256e37808e6ae61fa8f037bef97464ec4188f7be888527fb6e482d3177/shazamio_core-2.0.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:dd20b534563a12fc3f6e1f38fd91b2edc3941f583295c60f806fb0ff26ba55cb", size = 1759831, upload-time = "2026-10-11T15:00:00.942Z" },
+    { url = "https://files.pythonhosted.org/packages/92/34/9728e3df03d7eeedd049af88244a05a9c6fc96b726ca5fb270d226c1e034/shazamio_core-2.0.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:024a3d63cae76757c6d52bd9b25e6fc81a1cdbbf9cad53c2a8d7e5c3c913e93d", size = 1606083, upload-time = "2026-10-11T15:00:02.61Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/f3/5f3474e9218d98bbb152aa1742de877e16dea404387a09e8bf211ec91c15/shazamio_core-2.0.0-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:b5fab1063d47bd13048aa316728e593ec2bb074a0ec2c05a56473556ddf9a962", size = 1687582, upload-time = "2026-10-11T15:00:04.133Z" },
+    { url = "https://files.pythonhosted.org/packages/13/a1/9b4fe5c0a7a03565b4dcc9a7659c7877786ab395010342ff89671693ed60/shazamio_core-2.0.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:66b4897a58c0c82b087acc7c8117f3ce8a30a89c8e17103f8ff35c45af11bb48", size = 1890604, upload-time = "2026-10-11T15:00:05.542Z" },
+    { url = "https://files.pythonhosted.org/packages/af/74/7ea1cbe7226f06cbd25f9f00c0e5b4b82705f8f6a542cf8a8eca08993321/shazamio_core-2.0.0-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:d622afea5231e692f1bf12ef5839791c46970222b792a617660e0505e3763fac", size = 1755430, upload-time = "2026-10-11T15:00:06.83Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/c6/e75651fd454eb8b62d69801134f52d224dc40a52faf406a66b9243655c9f/shazamio_core-2.0.0-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:da6f9780115718baa3d57ea59279237976e73fa60cd0857f0a83bab9e56cf8aa", size = 1966574, upload-time = "2026-10-11T15:00:08.193Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/dd/747e92783181bcf229f79243069466d8e3e6f4927d794aa55bdfc61d0309/shazamio_core-2.0.0-cp310-abi3-win32.whl", hash = "sha256:2ec2f5b1a00c5aac824c36a531e48f8df6bb684462c60414825eb9a06fbee9ee", size = 1489816, upload-time = "2026-10-11T15:00:09.494Z" },
+    { url = "https://files.pythonhosted.org/packages/68/f2/8549445ad5dd1523643f9e26bccfb83408466912889e946641b9b0bce7d9/shazamio_core-2.0.0-cp310-abi3-win_amd64.whl", hash = "sha256:bd1ace4ac7409465eb028e67160d09cf77d49de8f64b70b9aa408c0842dc9eb9", size = 1766719, upload-time = "2026-10-11T15:00:10.799Z" },
+]
+
+[[package]]
 name = "sqlalchemy"
 version = "2.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1831,6 +1847,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "rapidfuzz" },
     { name = "redis" },
+    { name = "shazamio-core" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sse-starlette" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1864,6 +1881,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "rapidfuzz", specifier = ">=3.10" },
     { name = "redis", specifier = ">=5.0" },
+    { name = "shazamio-core", specifier = ">=2.0.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "sse-starlette", specifier = ">=2.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },

@@ -90,6 +90,10 @@ class SoundCloudApiFactory:
         только для token bucket: запросы идут от имени переноса этого аккаунта."""
         return V2Api(self._transport(V2_BASE_URL, self._client_ids, None, account_id))
 
+    def anonymous_transport(self, account_id: UUID | None = None) -> SoundCloudTransport:
+        """Транспорт api-v2 без токена — для звука публичных треков (распознавание, 6-3)."""
+        return self._transport(V2_BASE_URL, self._client_ids, None, account_id)
+
     def for_token(self, token: str, transport: Transport = Transport.UNOFFICIAL) -> SoundCloudApi:
         """Без аккаунта и продления — проверка профиля при подключении."""
         if transport is Transport.OFFICIAL:

@@ -16,7 +16,14 @@ describe("buildStartRequest", () => {
     ).toEqual({
       source: { kind: "link", url: "https://music.yandex.ru/x" },
       destination: { kind: "new", platform: "vk", title: "Летний вайб" },
+      recognize_audio: true,
     });
+  });
+
+  it("recognition by sound can be turned off", () => {
+    expect(
+      buildStartRequest({ kind: "link", url: "https://a" }, destination(), false)?.recognize_audio,
+    ).toBe(false);
   });
 
   it("library source → library destination", () => {
@@ -28,6 +35,7 @@ describe("buildStartRequest", () => {
     ).toEqual({
       source: { kind: "library", platform: "yandex", account_id: "acc-ya" },
       destination: { kind: "library", platform: "vk", account_id: "acc-vk" },
+      recognize_audio: true,
     });
   });
 

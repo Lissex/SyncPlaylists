@@ -24,6 +24,10 @@ class LiveSettings(BaseSettings):
     # docs/SOUNDCLOUD_TOKEN.md. Лучше от отдельного тестового аккаунта.
     soundcloud_live_token: SecretStr | None = None
     soundcloud_live_refresh_token: SecretStr | None = None
+    # Распознавание по звуку (этап 6): публичный трек SoundCloud и что на нём ожидается —
+    # «Артист — Название» (сравнение без регистра). Только в контейнере (ffmpeg).
+    recognition_live_track_url: str | None = None
+    recognition_live_expect: str | None = None
 
 
 @pytest.fixture(scope="session")

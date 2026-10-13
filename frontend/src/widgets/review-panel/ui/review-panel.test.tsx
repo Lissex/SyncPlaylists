@@ -121,6 +121,57 @@ describe("ReviewPanel", () => {
   });
 });
 
+describe("ReviewPanel — распознавание по звуку", () => {
+  it("shows what was heard and retries recognition", async () => {
+    const heard: TransferItem = {
+      ...items[0]!,
+      recognition: {
+        state: "final",
+        note: "altered",
+        heard: {
+          title: "Группа крови",
+          artist: "Кино",
+          provider: "shazam",
+          isrc: null,
+          exact: false,
+        },
+        can_retry: false,
+      },
+    };
+    const timedOut: TransferItem = {
+      ...items[1]!,
+      recognition: { state: "final", note: "timeout", heard: null, can_retry: true },
+    };
+    const retried: string[] = [];
+    server.use(
+      http.get(apiUrl("/transfers/t-1/items"), () =>
+        HttpResponse.json({ items: [heard, timedOut], next_after: null }),
+      ),
+      http.post(apiUrl("/transfers/t-1/items/:position/recognize"), ({ params }) => {
+        retried.push(String(params.position));
+        return new HttpResponse(null, { status: 202 });
+      }),
+    );
+    renderWithClient(<ReviewPanel transfer={transfer} />);
+
+    const first = await screen.findByRole("article", { name: "Кино — Группа крови" });
+    expect(within(first).getByText(/По звуку: Кино — Группа крови/)).toBeInTheDocument();
+    expect(within(first).getByText(/звук изменён/)).toBeInTheDocument();
+    expect(within(first).queryByRole("button", { name: "Ещё раз по звуку" })).toBeNull();
+
+    const second = screen.getByRole("article", { name: "Неизвестный — Редкий трек" });
+    expect(within(second).getByText(/не успели распознать/)).toBeInTheDocument();
+    await userEvent.click(within(second).getByRole("button", { name: "Ещё раз по звуку" }));
+
+    await waitFor(() =>
+      expect(within(second).getByText("Распознаём по звуку…")).toBeInTheDocument(),
+    );
+    expect(retried).toEqual(["1"]);
+    // Пока трек распознаётся, решать по нему нечего.
+    expect(within(second).queryByRole("button", { name: "Пропустить" })).toBeNull();
+  });
+});
+
 describe("durationDelta", () => {
   it("formats and flags large differences", () => {
     expect(durationDelta(287_000, 285_000)).toEqual({ text: "+0:02", large: false });

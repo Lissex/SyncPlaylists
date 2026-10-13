@@ -10,12 +10,15 @@ from dishka import FromDishka
 from dishka.integrations.arq import inject
 
 from syncplaylists.modules.transfers.application.use_cases import (
+    ExpireRecognitionUseCase,
     FailTransferItemUseCase,
     FailTransferUseCase,
     MatchTransferItemUseCase,
     PauseTransferForClientUseCase,
     PauseTransferForQuotaUseCase,
     ProcessTransferUseCase,
+    RecognizeTransferItemUseCase,
+    RematchByAudioUseCase,
     ResumeClientPausedTransfersUseCase,
     ResumeTransferUseCase,
     SweepStaleTransfersUseCase,
@@ -252,6 +255,57 @@ async def resume_client_transfers(
     переносы, ждущие браузер. Ставит контекст extension (по имени задачи из
     shared_kernel.application.tasks)."""
     await use_case.execute(user_id, Platform(platform))
+
+
+# Распознавание (worker-recognize): «подождите» от Shazam — повтор задачи на срок, не сбой.
+# Сколько раз откладывать, прежде чем считать «не получилось»; потолок фазы переноса
+# (RecognitionSettings.transfer_phase_limit_minutes) обычно наступает раньше.
+RECOGNIZE_MAX_TRIES: Final = 20
+
+
+@inject
+async def recognize_track(
+    ctx: dict[str, Any],
+    transfer_id: UUID,
+    position: int,
+    use_case: FromDishka[RecognizeTransferItemUseCase],
+) -> None:
+    job_try = int(ctx.get("job_try", 1))
+    retry_after = await use_case.execute(
+        transfer_id, position, final_try=job_try >= RECOGNIZE_MAX_TRIES
+    )
+    if retry_after is not None:
+        # Разброс — чтобы отложенные треки не проснулись в одну секунду.
+        delay = timedelta(seconds=max(retry_after, 1.0) * random.uniform(1.0, 1.2))
+        raise Retry(defer=delay)
+
+
+@inject
+async def expire_recognition(
+    ctx: dict[str, Any], transfer_id: UUID, use_case: FromDishka[ExpireRecognitionUseCase]
+) -> None:
+    await use_case.execute(transfer_id)
+
+
+@inject
+async def rematch_by_audio(
+    ctx: dict[str, Any],
+    transfer_id: UUID,
+    position: int,
+    use_case: FromDishka[RematchByAudioUseCase],
+) -> None:
+    """Повтор распознавания с ревью: поиск на цели по услышанному. Временная ошибка
+    площадки — повтор; повторы кончились — остаётся текстовый итог."""
+    job_try = int(ctx.get("job_try", 1))
+    try:
+        await use_case.execute(transfer_id, position)
+    except PlatformError as exc:
+        if job_try < _max_tries(exc, MATCH_MAX_TRIES):
+            raise Retry(defer=_retry_delay(job_try, exc)) from exc
+        logger.warning(
+            "rematch_by_audio %s/%s: площадка не ответила (%s)", transfer_id, position, exc
+        )
+        await use_case.execute(transfer_id, position, give_up=True)
 
 
 @inject

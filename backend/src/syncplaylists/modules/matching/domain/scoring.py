@@ -75,6 +75,21 @@ class MatchScorer:
             key=lambda score: score.value,
         )
 
+    def agreement(self, a: NormalizedTrack, b: NormalizedTrack) -> float:
+        """Похожи ли две записи хоть чем-то — названием или артистом (0..1). Для проверки
+        «распознанное не противоречит названию источника» (этап 6, 11j): Shazam уверенно
+        ошибается на изменённом звуке, и это видно по полному несовпадению текста."""
+        a_lat, b_lat = self._normalizer.latinize(a), self._normalizer.latinize(b)
+        return max(
+            self._text_similarity(a_lat.title, b_lat.title),
+            self._artist_similarity(a_lat.artist, b_lat.artist),
+        )
+
+    def cap_below_auto(self, score: MatchScore) -> MatchScore:
+        """Потолок «не выше UNCERTAIN» — для совпадений, которым нельзя верить без
+        человека (звук изменён, распознанное противоречит названию)."""
+        return MatchScore(min(score.value, self._VERSION_MISMATCH_CAP))
+
     def cap_version_mismatch(
         self, score: MatchScore, source: VersionInfo, candidate: VersionInfo
     ) -> MatchScore:

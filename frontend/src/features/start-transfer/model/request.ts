@@ -24,8 +24,10 @@ export const MAX_TITLE_LENGTH = 100;
 export function buildStartRequest(
   source: SourceChoice | null,
   destination: DestinationChoice | null,
+  recognizeAudio = true,
 ): StartTransferRequest | null {
   if (!source || !destination) return null;
+  const options = { recognize_audio: recognizeAudio };
   const sourcePart: StartTransferRequest["source"] =
     source.kind === "link"
       ? { kind: "link", url: source.url.trim() }
@@ -38,12 +40,13 @@ export function buildStartRequest(
       return {
         source: sourcePart,
         destination: { kind: "new", platform: destination.platform, title },
+        ...options,
       };
     }
     case "existing": {
       const url = destination.url.trim();
       if (!url) return null;
-      return { source: sourcePart, destination: { kind: "link", url } };
+      return { source: sourcePart, destination: { kind: "link", url }, ...options };
     }
     case "library":
       return {
@@ -53,6 +56,7 @@ export function buildStartRequest(
           platform: destination.platform,
           account_id: destination.accountId,
         },
+        ...options,
       };
   }
 }

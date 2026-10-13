@@ -202,6 +202,50 @@ class RedisTokenBucketLimiter:
             )
 
 
+class RedisServiceThrottle:
+    """Реализация recognition.RecognizerThrottle: общий на сервер token bucket на внешний
+    сервис (Shazam, ACRCloud) — те же Lua-скрипты, что у площадок, свои ключи
+    ratelimit:tb:svc:<имя>. Сервисы без лимитов не ограничиваются."""
+
+    def __init__(
+        self,
+        redis: Redis,
+        limits: Mapping[str, TokenBucketLimits],
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._script = redis.register_script(_LUA)
+        self._penalize_script = redis.register_script(_PENALIZE_LUA)
+        self._limits = dict(limits)
+        self._sleep = sleep
+
+    async def acquire(self, provider: str) -> float | None:
+        limits = self._limits.get(provider)
+        if limits is None:
+            return None
+        granted, wait_ms = await self._script(
+            keys=[f"ratelimit:tb:svc:{provider}", f"ratelimit:cnt:svc:{provider}"],
+            args=[
+                limits.capacity,
+                limits.refill_per_second / 1000,
+                int(limits.max_wait_seconds * 1000),
+            ],
+        )
+        if not int(granted):
+            return int(wait_ms) / 1000
+        if int(wait_ms) > 0:
+            await self._sleep(int(wait_ms) / 1000)
+        return None
+
+    async def penalize(self, provider: str, seconds: float) -> None:
+        limits = self._limits.get(provider)
+        if limits is None:
+            return
+        await self._penalize_script(
+            keys=[f"ratelimit:tb:svc:{provider}"],
+            args=[limits.capacity, limits.refill_per_second / 1000, int(seconds * 1000)],
+        )
+
+
 def _key(platform: Platform, account_id: UUID) -> str:
     return f"ratelimit:tb:{platform.value}:{account_id}"
 

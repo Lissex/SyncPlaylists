@@ -1,0 +1,9 @@
+{
+  "status": {
+    "msg": "No result",
+    "code": 1001,
+    "version": "1.0"
+  },
+  "cost_time": 0.4,
+  "result_type": 0
+}

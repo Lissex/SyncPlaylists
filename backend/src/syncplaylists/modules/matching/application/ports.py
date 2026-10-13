@@ -1,5 +1,6 @@
 from typing import Protocol
 
+from syncplaylists.modules.matching.domain.audio import AudioMatcher
 from syncplaylists.modules.matching.domain.pipeline import MatchingPipeline
 from syncplaylists.shared_kernel.application.ports import AccountAccess
 
@@ -9,3 +10,6 @@ class MatchingPipelineFactory(Protocol):
     # (например, transfers.MatchTransferItemUseCase) не нужно знать, из каких
     # стратегий/гейтвея/нормализатора/скорера он строится.
     def create(self, target: AccountAccess) -> MatchingPipeline: ...
+
+    # Поиск на той же целевой площадке по распознанному звуку (этап 6).
+    def create_audio(self, target: AccountAccess) -> AudioMatcher: ...
