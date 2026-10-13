@@ -21,6 +21,7 @@ from syncplaylists.modules.transfers.application.use_cases import (
     ListTransferItemsUseCase,
     ListTransfersUseCase,
     ResolveUncertainItemUseCase,
+    RetryItemRecognitionUseCase,
     StartTransferUseCase,
     StartWritingUseCase,
     TransferNotFoundError,
@@ -152,7 +153,9 @@ async def start_transfer(
 ) -> TransferResponse:
     try:
         source, destination, source_title = await _resolve_request(request, user_id, resolve_link)
-        dto = await use_case.execute(user_id, source, destination, source_title)
+        dto = await use_case.execute(
+            user_id, source, destination, source_title, recognize_audio=request.recognize_audio
+        )
     except _HANDLED_ERRORS as exc:
         raise _link_or_platform_error(exc) from exc
     return TransferResponse.from_dto(dto)
@@ -276,6 +279,27 @@ async def resolve_item(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             {"code": "item_not_resolvable", "message": "Этот трек сейчас нельзя изменить"},
+        ) from exc
+
+
+@router.post("/{transfer_id}/items/{position}/recognize", status_code=202)
+@inject
+async def retry_item_recognition(
+    transfer_id: UUID,
+    position: int,
+    user_id: CurrentUserId,
+    use_case: FromDishka[RetryItemRecognitionUseCase],
+) -> None:
+    """«Ещё раз по звуку» на ревью — для трека, который не удалось распознать (сбой,
+    потолок фазы). Итог придёт событием переноса."""
+    try:
+        await use_case.execute(user_id, transfer_id, position)
+    except TransferNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Transfer не найден") from exc
+    except InvalidTransferTransitionError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "recognition_not_retryable", "message": "Повтор распознавания недоступен"},
         ) from exc
 
 

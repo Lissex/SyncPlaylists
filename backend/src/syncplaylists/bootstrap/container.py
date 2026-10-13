@@ -157,6 +157,7 @@ from syncplaylists.modules.matching.domain.normalization import TrackNormalizer
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
 from syncplaylists.modules.matching.domain.scoring import MatchScorer
 from syncplaylists.modules.matching.infrastructure.repository import SqlTrackMatchRepository
+from syncplaylists.modules.recognition.application.eligibility import RecognitionEligibility
 from syncplaylists.modules.recognition.application.ports import (
     AudioRecognizer,
     AudioSourceRegistry,
@@ -170,6 +171,7 @@ from syncplaylists.modules.recognition.application.use_cases import (
     RecognitionLimits,
     RecognizeSourceTrackUseCase,
 )
+from syncplaylists.modules.recognition.domain.policy import RecognitionPolicy
 from syncplaylists.modules.recognition.infrastructure.lock import RedisRecognitionLock
 from syncplaylists.modules.recognition.infrastructure.repository import (
     SqlRecognitionRepository,
@@ -178,6 +180,7 @@ from syncplaylists.modules.transfers.application.links import ResolvePlaylistLin
 from syncplaylists.modules.transfers.application.ports import TransferRepository
 from syncplaylists.modules.transfers.application.use_cases import (
     ClientPausedPlatformsUseCase,
+    ExpireRecognitionUseCase,
     FailTransferItemUseCase,
     FailTransferUseCase,
     GetTransferProgressUseCase,
@@ -188,9 +191,12 @@ from syncplaylists.modules.transfers.application.use_cases import (
     PauseTransferForClientUseCase,
     PauseTransferForQuotaUseCase,
     ProcessTransferUseCase,
+    RecognizeTransferItemUseCase,
+    RematchByAudioUseCase,
     ResolveUncertainItemUseCase,
     ResumeClientPausedTransfersUseCase,
     ResumeTransferUseCase,
+    RetryItemRecognitionUseCase,
     StartTransferUseCase,
     StartWritingUseCase,
     SweepStaleTransfersUseCase,
@@ -688,6 +694,21 @@ class RecognitionProvider(Provider):
     def get_recognition_query(self, repository: RecognitionRepository) -> GetRecognitionQuery:
         return GetRecognitionQuery(repository, clock=_now)
 
+    @provide(scope=Scope.APP)
+    def get_eligibility(
+        self,
+        sources: AudioSourceRegistry,
+        recognizers: Sequence[AudioRecognizer],
+        settings: Settings,
+    ) -> RecognitionEligibility:
+        recognition = settings.recognition
+        policy = RecognitionPolicy(
+            audio_platforms=frozenset(p for p in Platform if sources.supports(p)),
+            min_track_ms=recognition.min_track_seconds * 1000,
+        )
+        # Распознавать нечем — не держим треки в ожидании.
+        return RecognitionEligibility(policy, enabled=recognition.enabled and bool(recognizers))
+
 
 class SecurityProvider(Provider):
     scope = Scope.APP
@@ -1006,6 +1027,8 @@ class TransfersProvider(Provider):
         pipeline_factory: MatchingPipelineFactory,
         task_queue: TaskQueue,
         accounts: AccountAccessProvider,
+        eligibility: RecognitionEligibility,
+        settings: Settings,
     ) -> MatchTransferItemUseCase:
         return MatchTransferItemUseCase(
             uow,
@@ -1015,6 +1038,55 @@ class TransfersProvider(Provider):
             ensure_platform_track,
             pipeline_factory,
             task_queue,
+            accounts,
+            eligibility,
+            timedelta(minutes=settings.recognition.transfer_phase_limit_minutes),
+        )
+
+    @provide
+    def get_recognize_transfer_item(
+        self,
+        uow: UnitOfWork,
+        transfers: TransferRepository,
+        platform_tracks: PlatformTrackRepository,
+        accounts: AccountAccessProvider,
+        recognize: RecognizeSourceTrackUseCase,
+        task_queue: TaskQueue,
+    ) -> RecognizeTransferItemUseCase:
+        return RecognizeTransferItemUseCase(
+            uow, transfers, platform_tracks, accounts, recognize, task_queue
+        )
+
+    @provide
+    def get_expire_recognition(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> ExpireRecognitionUseCase:
+        return ExpireRecognitionUseCase(uow, transfers, task_queue)
+
+    @provide
+    def get_retry_item_recognition(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> RetryItemRecognitionUseCase:
+        return RetryItemRecognitionUseCase(uow, transfers, task_queue)
+
+    @provide
+    def get_rematch_by_audio(
+        self,
+        uow: UnitOfWork,
+        transfers: TransferRepository,
+        platform_tracks: PlatformTrackRepository,
+        track_matches: TrackMatchRepository,
+        ensure_platform_track: EnsurePlatformTrackUseCase,
+        pipeline_factory: MatchingPipelineFactory,
+        accounts: AccountAccessProvider,
+    ) -> RematchByAudioUseCase:
+        return RematchByAudioUseCase(
+            uow,
+            transfers,
+            platform_tracks,
+            track_matches,
+            ensure_platform_track,
+            pipeline_factory,
             accounts,
         )
 

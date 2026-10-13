@@ -35,6 +35,15 @@ class RecognitionDone:
     recognition: Recognition
     cached: bool
 
+    @property
+    def heard(self) -> RecognizedTrack | None:
+        return self.recognition.track
+
+    @property
+    def outcome(self) -> str:
+        """recognized | no_match | no_audio — для других контекстов без recognition.domain."""
+        return self.recognition.outcome.value
+
 
 @dataclass(frozen=True, slots=True)
 class RecognitionDeferred:

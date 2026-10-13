@@ -404,10 +404,19 @@ Transfer (root)
 - `MatchingPipeline` — цепочка стратегий (паттерн Chain of Responsibility):
 
 ```
-SamePlatformStrategy → CacheStrategy → IsrcStrategy → FuzzySearchStrategy → AudioRecognitionStrategy → FingerprintVerification
-      ↓ нет               ↓ нет             ↓ <0.70                    ↓ нет                    ↓
-                                                                                    UNCERTAIN / NOT_FOUND → ручной выбор
+SamePlatformStrategy → CacheStrategy → IsrcStrategy → FuzzySearchStrategy
+      ↓ нет               ↓ нет             ↓ <0.70
+                                     UNCERTAIN / NOT_FOUND ─(годится для звука)→ распознавание
+                                                           (worker-recognize, асинхронно)
+                                                           → AudioMatcher на цели → итог / ручной выбор
 ```
+
+**Звуковая фаза (этап 6-2, 11j)** — не стратегия в цепочке, а отдельная асинхронная фаза:
+ffmpeg и Shazam не должны держать слоты `worker`/`worker-extension`, а темп Shazam — общий на
+сервер. Текст не нашёл трек уверенно и трек годится (`RecognitionEligibility`) → item остаётся
+PENDING и ждёт распознавания; итог распознавания снова ставит `run_match`, и он ищет на цели
+по услышанному (`matching.domain.AudioMatcher`: ISRC в приоритете, затем поиск; версия и
+длительность — от источника). FingerprintVerification (chromaprint) — не на этапе 6.
 
 `TrackNormalizer` дополнительно извлекает `VersionTag` трека (`original | live | remix(remixer) |
 acoustic | sped_up | slowed | cover | instrumental | karaoke | extended | radio_edit`) из названия;
@@ -691,9 +700,12 @@ transfers           id, user_id,
                     cursor jsonb (для возобновления),
                     status, resume_at, paused_from, pause_reason (4c),
                     total, pending, matched, uncertain, not_found, added, failed
-                    (счётчики — 11c; recognized — этап 6), created_at, updated_at (NOT NULL)
+                    (счётчики — 11c), recognize_audio, recognition_deadline_at (6-2),
+                    created_at, updated_at (NOT NULL)
 transfer_items      id, transfer_id, position, source_pt_id, match_id, status, candidates jsonb,
-                    match_restriction (4b-2), processed_at
+                    match_restriction (4b-2), processed_at,
+                    recognition_state (queued|ready|final), recognition jsonb (6-2: текстовый
+                    итог, причина, снимок услышанного)
 artworks            canonical_id, provider, url, width, height, dominant_color, fetched_at
 extension_devices   id, user_id → users ON DELETE CASCADE, name, browser, version,
                     token_hash UNIQUE (sha256 токена устройства), created_at,
@@ -717,7 +729,7 @@ backup_schedules    id, user_id, source, platform, formats text[], cron, enabled
 |---|---|---|
 | `transfer` | оркестрация: читаем плейлист, создаём items, раздаём задачи | средняя |
 | `match` | поиск + скоринг одного трека | высокая, ограничена rate limiter-ом площадки |
-| `recognize` | ffmpeg + распознавание (5–15% треков) | низкая |
+| `recognize` | ffmpeg + распознавание (5–15% треков): `recognize_track` (6-2) | низкая (`QUEUE__RECOGNIZE_MAX_JOBS`, 2) |
 | `write` | создание плейлиста, добавление пачками | 1 на аккаунт |
 | `ru` | всё, что требует РФ-IP (VK, Яндекс) — отдельный воркер | по площадке |
 
@@ -2182,6 +2194,64 @@ VK — только транспорт EXTENSION, серверного пути 
   - `audio` (только в контейнере, `make test-audio`): ffmpeg вырезает 18 с wav 16 кГц mono
     из синуса, мусор → NO_AUDIO, временный каталог пуст.
 
+**6-2 (распознавание в переносах) — что сделано (2026-10-13)**
+- **Состояние трека** — `TransferItem.recognition: ItemRecognition`:
+  - `state`: `queued` — ждёт worker-recognize; `ready` — распознано, ждёт поиска на цели;
+    `final` — итог применён;
+  - `text_status` — итог текста (UNCERTAIN | NOT_FOUND), к нему трек возвращается, если звук
+    не помог;
+  - `note` — причина итога: `exact`, `altered`, `text_mismatch`, `not_on_target`,
+    `no_match`, `no_audio`, `unavailable`, `timeout`;
+  - `heard` — снимок распознанного: transfers не читает recognition.domain.
+
+  В БД — `transfer_items.recognition_state` (для условных UPDATE) и `recognition` (jsonb).
+- **`run_match`, две фазы** (фаза — по состоянию item, не по аргументу задачи):
+  - текст не нашёл уверенно и трек годится → item PENDING + `queued`, текстовые кандидаты
+    сохранены, счётчики не трогаются (перенос не уходит в ревью раньше времени);
+  - задача `recognize_track` уходит в полосу `TaskLane.RECOGNIZE`;
+  - первый такой трек ставит потолок фазы (`transfers.recognition_deadline_at`, 15 мин) и
+    отложенную задачу `expire_recognition` (один ключ на перенос);
+  - `ready` → `ResolveAudioMatchUseCase`: найденное по звуку (method=audio) — в общий кэш
+    `track_matches`; звук не ухудшает итог текста (UNCERTAIN текста остаётся UNCERTAIN).
+- **Кто годится** — `recognition.application.RecognitionEligibility`:
+  - распознавание включено и есть распознаватели;
+  - площадка источника отдаёт звук;
+  - нет ISRC;
+  - трек не короче 20 с;
+  - версия не sped up / slowed / nightcore (`matching.application.is_speed_altered`;
+    nightcore добавлен к sped up);
+  - у переноса «Распознавать по звуку» (`transfers.recognize_audio`, по умолчанию да,
+    `POST /transfers {recognize_audio}`).
+- **`recognize_track`** (`RecognizeTransferItemUseCase`, worker-recognize):
+  - `RecognizeSourceTrackUseCase` → `queued` → `ready` (условно: только если ещё ждёт);
+  - кэш распознаваний коммитится в любом случае;
+  - «подождите» от Shazam → `Retry(defer)`; если срок перевалит за потолок фазы — сразу
+    `timeout`; последняя попытка (`RECOGNIZE_MAX_TRIES` 20) — `unavailable`;
+  - дальше `run_match` (PENDING) или `rematch_by_audio` (повтор с ревью) в полосе переноса.
+- **Потолок фазы** — `expire_recognition`: ждущие PENDING → `ready` + `timeout` → `run_match`
+  (итог текста). Поздний результат распознавания трек уже не меняет, но кэшируется.
+- **«Ещё раз по звуку»** — `POST /transfers/{id}/items/{position}/recognize` (202, 409
+  `recognition_not_retryable`):
+  - только на ревью и только после `unavailable` / `timeout` (`ItemRecognition` →
+    `can_retry` в API);
+  - `recognize_track` → `rematch_by_audio` (`RematchByAudioUseCase`): под локом переноса
+    статус трека меняется между UNCERTAIN/NOT_FOUND/MATCHED, счётчики пересчитывает полное
+    сохранение; запись — по-прежнему только по кнопке.
+- **Sweeper:** PENDING в `queued` → снова `recognize_track` (не `run_match`); потолок фазы
+  просрочен (задача потерялась) → `expire_recognition`.
+- **API:**
+  - у трека `recognition {state, note, heard {title, artist, provider, isrc, exact}, can_retry}`;
+  - в прогрессе (и SSE) `recognizing`;
+  - у переноса `recognize_audio`;
+  - «найдено по звуку» в отчёте — `match_methods.audio`.
+- **Миграция** `e8a2c5f1b7d4`.
+- **Тесты:**
+  - unit: `AudioMatcher` на случаях спайка (ремикс не берёт оригинал по ISRC, slowed —
+    подсказка, название «track 07» — верим звуку, длительность), домен `ItemRecognition`,
+    сквозной сценарий на фейках (ожидание вместо ревью, найдено по звуку и в кэше, не узнан
+    → текст, «подождите», потолок, поздний результат, повтор с ревью, sweeper);
+  - integration: условные UPDATE и пересчёт счётчиков на Postgres, 401/404 эндпоинта повтора.
+
 ---
 
 ## 12. Фронтенд и расширение
@@ -2329,7 +2399,8 @@ VK — только транспорт EXTENSION, серверного пути 
 6. **recognition**: ffmpeg, Shazam (shazamio-core), ACRCloud (план, правки владельца и
    итоги — 11j). **6-0 (сделано)** — спайк: что реально отдают площадки и Shazam (11j).
    **6-1 (сделано)** — контекст recognition, Shazam/ACRCloud/ffmpeg, кэш `recognitions`,
-   `worker-recognize` (11j).
+   `worker-recognize` (11j). **6-2 (сделано)** — звуковая фаза переноса: ожидание
+   распознавания, поиск по услышанному, потолок фазы, «Ещё раз по звуку» (11j).
 7. **enrichment**: обложки (Deezer → iTunes → CAA → Genius), ISRC-мост, тексты (Genius API + LRCLIB).
 8. **backups**: экспорт во все форматы, импорт из файла, расписания, S3 (SeaweedFS).
 9. **library_tools**: дубли, слияние, сравнение площадок, недоступные треки.

@@ -13,6 +13,8 @@ from syncplaylists.modules.transfers.application.ports import (
 )
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
+    ItemRecognition,
+    RecognitionState,
     TransferItemStatus,
     TransferProgress,
     TransferStatus,
@@ -99,6 +101,11 @@ class FakeTransferRepository:
             recent_processed_at=tuple(times),
             resume_at=stored.resume_at,
             pause_reason=stored.pause_reason,
+            recognizing=sum(
+                1
+                for i in stored.items
+                if i.recognition is not None and i.recognition.state is RecognitionState.QUEUED
+            ),
         )
 
     async def get_for_update(self, transfer_id: UUID) -> Transfer | None:
@@ -132,6 +139,7 @@ class FakeTransferRepository:
         target.status = item.status
         target.match = item.match
         target.candidates = item.candidates
+        target.recognition = item.recognition
         self.processed_at.setdefault(item.transfer_id, []).append(datetime.now(UTC))
         self.item_outcome_calls += 1
         return TransferProgress.from_statuses(i.status for i in stored.items)
@@ -223,6 +231,49 @@ class FakeTransferRepository:
     async def pending_positions(self, transfer_id: UUID) -> list[int]:
         stored = self._storage[transfer_id]
         return [i.position for i in stored.items if i.status is TransferItemStatus.PENDING]
+
+    async def save_item_awaiting_recognition(self, item: TransferItem) -> bool:
+        target = self._stored_item(item)
+        if target.status is not TransferItemStatus.PENDING or target.recognition is not None:
+            return False
+        target.candidates = item.candidates
+        target.recognition = item.recognition
+        return True
+
+    async def save_recognition_ready(self, item: TransferItem) -> bool:
+        target = self._stored_item(item)
+        if target.recognition is None or target.recognition.state is not RecognitionState.QUEUED:
+            return False
+        target.recognition = item.recognition
+        return True
+
+    async def start_recognition_phase(
+        self, transfer_id: UUID, deadline: datetime
+    ) -> tuple[datetime, bool]:
+        stored = self._storage[transfer_id]
+        if stored.recognition_deadline_at is not None:
+            return stored.recognition_deadline_at, False
+        stored.recognition_deadline_at = deadline
+        return deadline, True
+
+    async def expire_recognition(self, transfer_id: UUID, note: str) -> list[int]:
+        positions = []
+        for item in self._storage[transfer_id].items:
+            recognition = item.recognition
+            if (
+                item.status is TransferItemStatus.PENDING
+                and recognition is not None
+                and recognition.state is RecognitionState.QUEUED
+            ):
+                item.recognition = ItemRecognition(
+                    RecognitionState.READY, recognition.text_status, note, None
+                )
+                positions.append(item.position)
+        return positions
+
+    def _stored_item(self, item: TransferItem) -> TransferItem:
+        stored = self._storage[item.transfer_id]
+        return next(i for i in stored.items if i.position == item.position)
 
     async def list_summaries(
         self, user_id: UUID, before: TransferCursor | None, limit: int

@@ -7,6 +7,7 @@ from syncplaylists.modules.transfers.application.ports import ProgressSample
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.progress import estimate_remaining
 from syncplaylists.modules.transfers.domain.value_objects import (
+    ItemRecognition,
     MatchResult,
     TrackDestination,
     TrackSource,
@@ -33,6 +34,7 @@ class TransferItemDto:
     match: MatchResult | None
     candidates: tuple[TrackCandidate, ...]
     source_meta: SourceTrackMeta | None = None
+    recognition: ItemRecognition | None = None
 
     @classmethod
     def from_domain(
@@ -45,6 +47,7 @@ class TransferItemDto:
             match=item.match,
             candidates=item.candidates,
             source_meta=source_meta,
+            recognition=item.recognition,
         )
 
 
@@ -68,6 +71,8 @@ class TransferProgressDto:
     # PAUSED_QUOTA: почему площадка просит подождать, если известно
     # (vk_library_daily_limit, vk_flood_control).
     pause_reason: str | None = None
+    # Треков, ждущих распознавания по звуку.
+    recognizing: int = 0
 
     @classmethod
     def from_sample(cls, sample: ProgressSample, now: datetime) -> "TransferProgressDto":
@@ -93,6 +98,7 @@ class TransferProgressDto:
                 if sample.status in (TransferStatus.PAUSED_CLIENT, TransferStatus.PAUSED_QUOTA)
                 else None
             ),
+            recognizing=sample.recognizing,
         )
 
 
@@ -110,6 +116,7 @@ class TransferDto:
     created_at: datetime | None = None
     # Сколько найдено каждым методом сопоставления (isrc, fuzzy, audio, manual, ...).
     match_methods: Mapping[str, int] = field(default_factory=dict)
+    recognize_audio: bool = True
 
     @classmethod
     def from_domain(
@@ -136,4 +143,5 @@ class TransferDto:
             source_title=transfer.source_title,
             created_at=transfer.created_at,
             match_methods=dict(match_methods or {}),
+            recognize_audio=transfer.recognize_audio,
         )

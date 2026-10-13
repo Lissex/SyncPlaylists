@@ -61,3 +61,15 @@ async def test_empty_history_and_unknown_transfer(make_client: ClientFactory) ->
         assert bad_cursor.json()["detail"]["code"] == "bad_cursor"
         bad_status = await site.get(f"/transfers/{transfer_id}/items?status=whatever")
         assert bad_status.status_code == 422
+
+
+async def test_recognition_retry_endpoint(make_client: ClientFactory) -> None:
+    """«Ещё раз по звуку» (этап 6-2): вход обязателен, чужой/несуществующий перенос — 404."""
+    transfer_id = uuid4()
+    async with make_client() as anonymous:
+        response = await anonymous.post(f"/transfers/{transfer_id}/items/0/recognize")
+        assert response.status_code == 401
+    async with make_client() as site:
+        await _logged_in(site)
+        response = await site.post(f"/transfers/{transfer_id}/items/0/recognize")
+        assert response.status_code == 404

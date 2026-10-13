@@ -26,6 +26,8 @@ class ProgressSample:
     recent_processed_at: tuple[datetime, ...]
     resume_at: datetime | None = None  # PAUSED_QUOTA: когда продолжим
     pause_reason: str | None = None  # PAUSED_CLIENT: почему ждём расширение
+    # Треков, ждущих распознавания по звуку (этап 6).
+    recognizing: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +133,27 @@ class TransferRepository(Protocol):
     async def client_paused_platforms(self, user_id: UUID) -> set[Platform]: ...
 
     async def pending_positions(self, transfer_id: UUID) -> list[int]: ...
+
+    # --- распознавание по звуку (этап 6) — условными UPDATE, как run_match ---
+
+    # PENDING item уходит ждать распознавания (recognition QUEUED, текстовые кандидаты).
+    # Счётчики не меняются: трек ещё не решён. False — item уже не PENDING или уже
+    # распознавался (повторная доставка), ничего не изменено.
+    async def save_item_awaiting_recognition(self, item: TransferItem) -> bool: ...
+
+    # Итог распознавания (QUEUED → READY со снимком услышанного) — только если item всё
+    # ещё ждёт распознавания. False — потолок фазы успел раньше.
+    async def save_recognition_ready(self, item: TransferItem) -> bool: ...
+
+    # Потолок фазы распознавания: ставится один раз на перенос. Возвращает действующий
+    # срок и True, если он поставлен этим вызовом (нужна задача на срок).
+    async def start_recognition_phase(
+        self, transfer_id: UUID, deadline: datetime
+    ) -> tuple[datetime, bool]: ...
+
+    # Потолок наступил: PENDING items, ждущие распознавания, → READY с причиной `note`.
+    # Возвращает их позиции (им нужен run_match).
+    async def expire_recognition(self, transfer_id: UUID, note: str) -> list[int]: ...
 
     # --- чтение для сайта (история, ревью, отчёт) ---
 

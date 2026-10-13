@@ -1,15 +1,26 @@
 import contextlib
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from syncplaylists.modules.catalog.application.ports import PlatformTrackRepository
 from syncplaylists.modules.catalog.application.use_cases import EnsurePlatformTrackUseCase
 from syncplaylists.modules.matching.application.ports import MatchingPipelineFactory
-from syncplaylists.modules.matching.application.use_cases import ResolveTrackMatchUseCase
+from syncplaylists.modules.matching.application.use_cases import (
+    ResolveAudioMatchUseCase,
+    ResolveTrackMatchUseCase,
+)
+from syncplaylists.modules.matching.application.versions import is_speed_altered
 from syncplaylists.modules.matching.domain.pipeline import MatchStatus
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
+from syncplaylists.modules.recognition.application.eligibility import RecognitionEligibility
+from syncplaylists.modules.recognition.application.use_cases import (
+    RecognitionDeferred,
+    RecognitionUnavailable,
+    RecognizeSourceTrackUseCase,
+)
 from syncplaylists.modules.transfers.application.dto import (
     SourceTrackMeta,
     TransferDto,
@@ -25,12 +36,15 @@ from syncplaylists.modules.transfers.domain.entities import Transfer, TransferIt
 from syncplaylists.modules.transfers.domain.errors import InvalidTransferTransitionError
 from syncplaylists.modules.transfers.domain.progress import ETA_WINDOW
 from syncplaylists.modules.transfers.domain.value_objects import (
+    NOTE_TIMEOUT,
+    NOTE_UNAVAILABLE,
     ExistingPlaylist,
     LibraryDestination,
     LibrarySource,
     MatchResult,
     NewPlaylist,
     PlaylistSource,
+    RecognitionState,
     TrackDestination,
     TrackSource,
     TransferItemStatus,
@@ -71,6 +85,10 @@ _RUN_TRANSFER = "run_transfer"
 _RUN_MATCH = "run_match"
 _RUN_WRITE = "run_write"
 _RESUME_TRANSFER = "resume_transfer"
+# Распознавание по звуку (этап 6).
+_RECOGNIZE_TRACK = "recognize_track"
+_EXPIRE_RECOGNITION = "expire_recognition"
+_REMATCH_BY_AUDIO = "rematch_by_audio"
 _STALE_AFTER = timedelta(minutes=10)
 _RESUME_GRACE = timedelta(minutes=5)
 _ACCOUNT_UNAVAILABLE = "account_unavailable"
@@ -187,6 +205,7 @@ class StartTransferUseCase:
         source: TrackSource,
         destination: TrackDestination,
         source_title: str | None = None,
+        recognize_audio: bool = True,
     ) -> TransferDto:
         """Бросает AccountNotAvailableError, PlatformNotSupportedError,
         WriteRequiresExtensionError (назначение подключено транспортом только для чтения),
@@ -199,6 +218,7 @@ class StartTransferUseCase:
             destination=destination,
             source_title=source_title,
             created_at=datetime.now(UTC),
+            recognize_audio=recognize_audio,
         )
         for platform in (source_platform(source), destination_platform(destination)):
             if platform is not None and not self._gateway_factory.supports(platform):
@@ -328,6 +348,12 @@ class MatchTransferItemUseCase:
     счётчики transfers — атомарным `SET x = x + 1` (TransferRepository.save_item_outcome).
     Переход RUNNING → REVIEW/WRITING делает ровно та джоба, чей декремент дал pending == 0.
 
+    Две фазы (этап 6, ARCHITECTURE.md 11j). Текст не нашёл трек уверенно, а трек годится
+    для распознавания — item остаётся PENDING и уходит в worker-recognize
+    (`recognize_track`); его итог (READY) снова ставит run_match, и тот ищет на цели по
+    услышанному. Фаза выбирается по состоянию item, а не по аргументу задачи: повторы,
+    resume и sweeper работают как раньше.
+
     Пайплайн запрашивается у MatchingPipelineFactory на каждый вызов: целевая площадка
     и аккаунт — runtime-данные конкретного Transfer.
     """
@@ -342,6 +368,9 @@ class MatchTransferItemUseCase:
         pipeline_factory: MatchingPipelineFactory,
         task_queue: TaskQueue,
         accounts: AccountAccessProvider,
+        # None — распознавание по звуку выключено (трек сразу получает итог текста).
+        eligibility: RecognitionEligibility | None = None,
+        recognition_phase_limit: timedelta = timedelta(minutes=15),
     ) -> None:
         self._uow = uow
         self._transfers = transfers
@@ -351,14 +380,18 @@ class MatchTransferItemUseCase:
         self._pipeline_factory = pipeline_factory
         self._task_queue = task_queue
         self._accounts = accounts
+        self._eligibility = eligibility
+        self._phase_limit = recognition_phase_limit
 
     async def execute(self, transfer_id: UUID, position: int) -> None:
-        next_step: str | None = None
+        after: list[Callable[[], Awaitable[None]]] = []
         async with self._uow as uow:
             loaded = await _load_pending_item(self._transfers, transfer_id, position)
             if loaded is None:
                 return  # повторная доставка / перенос уже не RUNNING
             transfer, item = loaded
+            if item.recognition is not None and item.recognition.state is RecognitionState.QUEUED:
+                return  # ждёт worker-recognize — его итог поставит run_match заново
 
             try:
                 target_access = await _destination_access(self._accounts, transfer)
@@ -366,23 +399,16 @@ class MatchTransferItemUseCase:
                 await _fail_running_transfer(uow, self._transfers, transfer, _ACCOUNT_UNAVAILABLE)
                 return
 
-            platform_track = await self._platform_tracks.find_by_ref(item.source_track)
-            assert platform_track is not None, f"platform_track для {item.source_track} не найден"
-            source_candidate = TrackCandidate(
-                ref=item.source_track,
-                title=platform_track.raw_title,
-                artist=platform_track.raw_artist,
-                duration=platform_track.duration,
-                isrc=platform_track.isrc,
-            )
-
+            source = await _source_candidate(self._platform_tracks, item)
             target_platform = destination_platform(transfer.destination)
             try:
-                pipeline = self._pipeline_factory.create(target_access)
-                resolve_track_match = ResolveTrackMatchUseCase(
-                    pipeline, self._track_matches, self._ensure_platform_track
-                )
-                attempt = await resolve_track_match.execute(source_candidate, target_platform)
+                if item.recognition is None:
+                    to_recognize = await self._match_by_text(
+                        transfer, item, source, target_access, target_platform
+                    )
+                else:
+                    to_recognize = False
+                    await self._match_by_audio(item, source, target_access, target_platform)
             except PlatformNotSupportedError:
                 await _fail_running_transfer(
                     uow, self._transfers, transfer, _PLATFORM_NOT_SUPPORTED
@@ -395,26 +421,387 @@ class MatchTransferItemUseCase:
                 await _fail_running_transfer(uow, self._transfers, transfer, reason)
                 return
 
-            if attempt.status is MatchStatus.MATCHED and attempt.match is not None:
-                item.apply_match(
-                    MatchResult(
-                        target_ref=attempt.match.target_ref,
-                        method=attempt.match.method.value,
-                        score=attempt.match.score,
-                        restriction=(
-                            attempt.match.restriction.value if attempt.match.restriction else None
-                        ),
-                    )
-                )
-            elif attempt.status is MatchStatus.UNCERTAIN:
-                item.apply_uncertain(attempt.candidates)
+            if to_recognize:
+                after = await self._send_to_recognition(uow, transfer, item)
             else:
-                item.apply_not_found(attempt.candidates)
+                next_step = await _commit_item_outcome(uow, self._transfers, transfer, item)
+                if next_step is not None:
+                    lane = _lane(transfer)
+                    after = [lambda: self._task_queue.enqueue(next_step, transfer_id, lane=lane)]
 
-            next_step = await _commit_item_outcome(uow, self._transfers, transfer, item)
+        for enqueue in after:
+            await enqueue()
 
-        if next_step is not None:
-            await self._task_queue.enqueue(next_step, transfer_id, lane=_lane(transfer))
+    async def _match_by_text(
+        self,
+        transfer: Transfer,
+        item: TransferItem,
+        source: TrackCandidate,
+        target_access: AccountAccess,
+        target_platform: Platform,
+    ) -> bool:
+        """True — текст не нашёл уверенно, трек уходит на распознавание."""
+        pipeline = self._pipeline_factory.create(target_access)
+        resolve_track_match = ResolveTrackMatchUseCase(
+            pipeline, self._track_matches, self._ensure_platform_track
+        )
+        attempt = await resolve_track_match.execute(source, target_platform)
+        if attempt.status is MatchStatus.MATCHED and attempt.match is not None:
+            item.apply_match(
+                MatchResult(
+                    target_ref=attempt.match.target_ref,
+                    method=attempt.match.method.value,
+                    score=attempt.match.score,
+                    restriction=(
+                        attempt.match.restriction.value if attempt.match.restriction else None
+                    ),
+                )
+            )
+            return False
+        text_status = (
+            TransferItemStatus.UNCERTAIN
+            if attempt.status is MatchStatus.UNCERTAIN
+            else TransferItemStatus.NOT_FOUND
+        )
+        skip = (
+            "disabled"
+            if self._eligibility is None
+            else self._eligibility.reason_to_skip(
+                source,
+                opted_in=transfer.recognize_audio,
+                speed_altered=is_speed_altered(source.title, source.artist),
+            )
+        )
+        if skip is None:
+            item.await_recognition(text_status, attempt.candidates)
+            return True
+        if text_status is TransferItemStatus.UNCERTAIN:
+            item.apply_uncertain(attempt.candidates)
+        else:
+            item.apply_not_found(attempt.candidates)
+        return False
+
+    async def _match_by_audio(
+        self,
+        item: TransferItem,
+        source: TrackCandidate,
+        target_access: AccountAccess,
+        target_platform: Platform,
+    ) -> None:
+        result = await _audio_result(
+            self._pipeline_factory,
+            self._track_matches,
+            self._ensure_platform_track,
+            item,
+            source,
+            target_access,
+            target_platform,
+        )
+        if result is None:
+            item.apply_text_result()
+        else:
+            item.apply_audio_outcome(result.status, result.match, result.candidates, result.note)
+
+    async def _send_to_recognition(
+        self, uow: UnitOfWork, transfer: Transfer, item: TransferItem
+    ) -> list[Callable[[], Awaitable[None]]]:
+        if not await self._transfers.save_item_awaiting_recognition(item):
+            await uow.rollback()  # параллельная доставка успела раньше
+            return []
+        deadline, started = await self._transfers.start_recognition_phase(
+            transfer.id, datetime.now(UTC) + self._phase_limit
+        )
+        await uow.commit()
+        transfer_id, position = transfer.id, item.position
+        after: list[Callable[[], Awaitable[None]]] = [
+            lambda: self._task_queue.enqueue(
+                _RECOGNIZE_TRACK, transfer_id, position, lane=TaskLane.RECOGNIZE
+            )
+        ]
+        if started:
+            after.append(
+                lambda: self._task_queue.enqueue_at(
+                    _EXPIRE_RECOGNITION,
+                    deadline,
+                    transfer_id,
+                    dedupe_key=f"{_EXPIRE_RECOGNITION}:{transfer_id}",
+                )
+            )
+        return after
+
+
+@dataclass(frozen=True, slots=True)
+class _AudioResult:
+    status: TransferItemStatus
+    match: MatchResult | None
+    candidates: tuple[TrackCandidate, ...]
+    note: str
+
+
+async def _audio_result(
+    pipeline_factory: MatchingPipelineFactory,
+    track_matches: TrackMatchRepository,
+    ensure_platform_track: EnsurePlatformTrackUseCase,
+    item: TransferItem,
+    source: TrackCandidate,
+    target_access: AccountAccess,
+    target_platform: Platform,
+) -> _AudioResult | None:
+    """Поиск на цели по услышанному. None — распознать не удалось (не узнан, нет звука,
+    сбой): остаётся итог текста."""
+    assert item.recognition is not None
+    heard = item.recognition.heard
+    if heard is None:
+        return None
+    resolve = ResolveAudioMatchUseCase(
+        pipeline_factory.create_audio(target_access), track_matches, ensure_platform_track
+    )
+    outcome = await resolve.execute(source, heard, target_platform)
+    attempt = outcome.attempt
+    if attempt.status is MatchStatus.MATCHED and attempt.match is not None:
+        match = MatchResult(
+            target_ref=attempt.match.target_ref,
+            method=attempt.match.method.value,
+            score=attempt.match.score,
+            restriction=attempt.match.restriction.value if attempt.match.restriction else None,
+        )
+        return _AudioResult(
+            TransferItemStatus.MATCHED, match, attempt.candidates, outcome.verdict.value
+        )
+    status = (
+        TransferItemStatus.UNCERTAIN
+        if attempt.status is MatchStatus.UNCERTAIN
+        else TransferItemStatus.NOT_FOUND
+    )
+    return _AudioResult(status, None, attempt.candidates, outcome.verdict.value)
+
+
+async def _source_candidate(
+    platform_tracks: PlatformTrackRepository, item: TransferItem
+) -> TrackCandidate:
+    platform_track = await platform_tracks.find_by_ref(item.source_track)
+    assert platform_track is not None, f"platform_track для {item.source_track} не найден"
+    return TrackCandidate(
+        ref=item.source_track,
+        title=platform_track.raw_title,
+        artist=platform_track.raw_artist,
+        duration=platform_track.duration,
+        isrc=platform_track.isrc,
+    )
+
+
+class RecognizeTransferItemUseCase:
+    """Таск `recognize_track` (worker-recognize): распознать трек item и записать итог
+    (QUEUED → READY). Дальше — run_match (трек ещё PENDING) или rematch_by_audio (повтор
+    с ревью). Кэш распознаваний коммитится в любом случае: даже если потолок фазы успел
+    раньше, следующий перенос того же трека возьмёт результат из кэша."""
+
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        transfers: TransferRepository,
+        platform_tracks: PlatformTrackRepository,
+        accounts: AccountAccessProvider,
+        recognize: RecognizeSourceTrackUseCase,
+        task_queue: TaskQueue,
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._platform_tracks = platform_tracks
+        self._accounts = accounts
+        self._recognize = recognize
+        self._task_queue = task_queue
+
+    async def execute(
+        self, transfer_id: UUID, position: int, *, final_try: bool = False
+    ) -> float | None:
+        """None — готово; число — распознаватели просят подождать: повторить задачу через
+        столько секунд. final_try — повторов больше не будет: «подождать» = не получилось."""
+        now = datetime.now(UTC)
+        async with self._uow as uow:
+            header = await self._transfers.get_header(transfer_id)
+            if header is None or header.status in (
+                TransferStatus.DONE,
+                TransferStatus.FAILED,
+                TransferStatus.WRITING,
+            ):
+                return None
+            item = await self._transfers.get_item(transfer_id, position)
+            if (
+                item is None
+                or item.recognition is None
+                or item.recognition.state is not RecognitionState.QUEUED
+            ):
+                return None  # повторная доставка или потолок фазы успел раньше
+            source = await _source_candidate(self._platform_tracks, item)
+            try:
+                access: AccountAccess | None = await _source_access(self._accounts, header)
+            except AccountNotAvailableError:
+                access = None  # SoundCloud распознаётся и без аккаунта
+            report = await self._recognize.execute(source, access)
+
+            heard = None
+            if isinstance(report, RecognitionDeferred):
+                deadline = (
+                    header.recognition_deadline_at
+                    if item.status is TransferItemStatus.PENDING
+                    else None
+                )
+                late = (
+                    deadline is not None
+                    and now + timedelta(seconds=report.retry_after_seconds) >= deadline
+                )
+                if not (final_try or late):
+                    await uow.commit()
+                    return report.retry_after_seconds
+                note: str | None = NOTE_TIMEOUT if late else NOTE_UNAVAILABLE
+            elif isinstance(report, RecognitionUnavailable):
+                logger.info(
+                    "Распознавание %s/%s не удалось: %s", transfer_id, position, report.detail
+                )
+                note = NOTE_UNAVAILABLE
+            else:
+                heard = report.heard
+                note = None if heard is not None else report.outcome
+
+            item.recognition_ready(note, heard)
+            ready = await self._transfers.save_recognition_ready(item)
+            await uow.commit()
+
+        if ready:
+            task = _RUN_MATCH if item.status is TransferItemStatus.PENDING else _REMATCH_BY_AUDIO
+            await self._task_queue.enqueue(task, transfer_id, position, lane=_lane(header))
+        return None
+
+
+class ExpireRecognitionUseCase:
+    """Таск `expire_recognition`: потолок фазы распознавания переноса наступил. Треки, всё
+    ещё ждущие распознавания, получают текстовый итог (NOTE_TIMEOUT) — на ревью для них
+    есть «Ещё раз по звуку»."""
+
+    def __init__(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._task_queue = task_queue
+
+    async def execute(self, transfer_id: UUID) -> None:
+        async with self._uow as uow:
+            header = await self._transfers.get_header(transfer_id)
+            if header is None:
+                return
+            positions = await self._transfers.expire_recognition(transfer_id, NOTE_TIMEOUT)
+            await uow.commit()
+        if positions:
+            logger.info(
+                "Перенос %s: потолок распознавания, %s трек(ов) — по тексту",
+                transfer_id,
+                len(positions),
+            )
+        for position in positions:
+            await self._task_queue.enqueue(_RUN_MATCH, transfer_id, position, lane=_lane(header))
+
+
+class RetryItemRecognitionUseCase:
+    """«Ещё раз по звуку» на ревью (после временной неудачи или потолка фазы)."""
+
+    def __init__(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._task_queue = task_queue
+
+    async def execute(self, user_id: UUID, transfer_id: UUID, position: int) -> None:
+        """Бросает TransferNotFoundError и InvalidTransferTransitionError (перенос не на
+        ревью, трек не распознавался или повтор не поможет)."""
+        async with self._uow as uow:
+            transfer = await self._transfers.get_for_update(transfer_id)
+            if transfer is None or transfer.user_id != user_id:
+                raise TransferNotFoundError(str(transfer_id))
+            transfer.request_recognition_retry(position)
+            uow.track(transfer)
+            await self._transfers.save(transfer)
+            await uow.commit()
+        await self._task_queue.enqueue(
+            _RECOGNIZE_TRACK, transfer_id, position, lane=TaskLane.RECOGNIZE
+        )
+
+
+class RematchByAudioUseCase:
+    """Таск `rematch_by_audio`: итог повторного распознавания трека на ревью — поиск на
+    цели по услышанному, статус трека меняется под локом переноса (на ревью параллельных
+    run_match нет)."""
+
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        transfers: TransferRepository,
+        platform_tracks: PlatformTrackRepository,
+        track_matches: TrackMatchRepository,
+        ensure_platform_track: EnsurePlatformTrackUseCase,
+        pipeline_factory: MatchingPipelineFactory,
+        accounts: AccountAccessProvider,
+    ) -> None:
+        self._uow = uow
+        self._transfers = transfers
+        self._platform_tracks = platform_tracks
+        self._track_matches = track_matches
+        self._ensure_platform_track = ensure_platform_track
+        self._pipeline_factory = pipeline_factory
+        self._accounts = accounts
+
+    async def execute(self, transfer_id: UUID, position: int, *, give_up: bool = False) -> None:
+        """give_up — площадка так и не ответила: оставить итог текста (NOTE_UNAVAILABLE).
+        Временная ошибка площадки пробрасывается — повтор задачи."""
+        now = datetime.now(UTC)
+        async with self._uow as uow:
+            transfer = await self._transfers.get_for_update(transfer_id)
+            if transfer is None or transfer.status is not TransferStatus.REVIEW:
+                return  # запись уже началась — трек остаётся с текстовым итогом
+            item = next((i for i in transfer.items if i.position == position), None)
+            if (
+                item is None
+                or item.recognition is None
+                or item.recognition.state is not RecognitionState.READY
+            ):
+                return
+            result: _AudioResult | None = None
+            note: str | None = NOTE_UNAVAILABLE if give_up else None
+            if not give_up:
+                try:
+                    target_access = await _destination_access(self._accounts, transfer)
+                except AccountNotAvailableError:
+                    note = NOTE_UNAVAILABLE
+                else:
+                    source = await _source_candidate(self._platform_tracks, item)
+                    try:
+                        result = await _audio_result(
+                            self._pipeline_factory,
+                            self._track_matches,
+                            self._ensure_platform_track,
+                            item,
+                            source,
+                            target_access,
+                            destination_platform(transfer.destination),
+                        )
+                    except PlatformError as exc:
+                        if (
+                            await _terminal_failure_reason(self._accounts, target_access, exc)
+                            is None
+                        ):
+                            raise
+                        note = NOTE_UNAVAILABLE
+            if result is None:
+                transfer.apply_retried_text_result(position, note, now)
+            else:
+                transfer.apply_retried_recognition(
+                    position, result.status, result.match, result.candidates, result.note, now
+                )
+            uow.track(transfer)
+            await self._transfers.save(transfer)
+            await uow.commit()
 
 
 class FailTransferItemUseCase:
@@ -1078,8 +1465,22 @@ class SweepStaleTransfersUseCase:
             if transfer.status is TransferStatus.QUEUED:
                 await self._task_queue.enqueue(_RUN_TRANSFER, transfer_id, lane=_lane(transfer))
             elif transfer.status is TransferStatus.RUNNING:
+                deadline = transfer.recognition_deadline_at
+                if deadline is not None and deadline < now - _RESUME_GRACE:
+                    # Задача expire_recognition потерялась.
+                    await self._task_queue.enqueue(_EXPIRE_RECOGNITION, transfer_id)
                 for item in transfer.items:
-                    if item.status is TransferItemStatus.PENDING:
+                    if item.status is not TransferItemStatus.PENDING:
+                        continue
+                    if (
+                        item.recognition is not None
+                        and item.recognition.state is RecognitionState.QUEUED
+                    ):
+                        # Ждёт распознавания — задача recognize_track могла потеряться.
+                        await self._task_queue.enqueue(
+                            _RECOGNIZE_TRACK, transfer_id, item.position, lane=TaskLane.RECOGNIZE
+                        )
+                    else:
                         await self._task_queue.enqueue(
                             _RUN_MATCH, transfer_id, item.position, lane=_lane(transfer)
                         )

@@ -76,6 +76,13 @@ class TransferOrm(Base):
     via_client: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # Распознавание по звуку (этап 6): выбор пользователя и потолок фазы распознавания.
+    recognize_audio: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    recognition_deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Счётчики items (TransferProgress). run_match меняет их атомарно
     # (`SET matched = matched + 1`), полное сохранение агрегата — пересчитывает из items.
@@ -138,5 +145,10 @@ class TransferItemOrm(Base):
     # Когда item вышел из PENDING (результат run_match) — по последним таким отметкам
     # оценивается оставшееся время переноса. Ставит БД в save_item_outcome.
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Распознавание по звуку (этап 6): queued | ready | final (NULL — не распознавался) —
+    # отдельной колонкой для условных UPDATE; подробности (текстовый итог, причина,
+    # снимок услышанного) — в recognition (jsonb).
+    recognition_state: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    recognition: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
 
     transfer: Mapped[TransferOrm] = relationship(back_populates="items")
