@@ -10,6 +10,7 @@ from syncplaylists.modules.extension.application.use_cases import (
     AuthenticateDeviceUseCase,
     ClaimPairingUseCase,
     ConfirmPairingUseCase,
+    GetExtensionStatusUseCase,
     ListDevicesUseCase,
     RevokeDeviceUseCase,
     StartPairingUseCase,
@@ -21,6 +22,7 @@ from syncplaylists.modules.extension.presentation.schemas import (
     ConfirmPairingRequest,
     DeviceMeResponse,
     DeviceSchema,
+    ExtensionStatusResponse,
     StartPairingRequest,
     StartPairingResponse,
 )
@@ -163,6 +165,15 @@ async def list_devices(
     user_id: CurrentUserId, use_case: FromDishka[ListDevicesUseCase]
 ) -> list[DeviceSchema]:
     return [DeviceSchema.from_dto(dto) for dto in await use_case.execute(user_id)]
+
+
+@router.get("/status")
+@inject
+async def extension_status(
+    user_id: CurrentUserId, use_case: FromDishka[GetExtensionStatusUseCase]
+) -> ExtensionStatusResponse:
+    """Для сайта: какие расширения привязаны и на связи, в каком состоянии площадки."""
+    return ExtensionStatusResponse.from_dto(await use_case.execute(user_id))
 
 
 @router.delete("/devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)

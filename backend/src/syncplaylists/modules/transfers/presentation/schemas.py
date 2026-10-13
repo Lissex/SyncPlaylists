@@ -10,14 +10,18 @@ from syncplaylists.modules.transfers.application.dto import (
     TransferProgressDto,
 )
 from syncplaylists.modules.transfers.application.links import LinkKind, ResolvedLinkDto
+from syncplaylists.modules.transfers.application.ports import TransferSummary
 from syncplaylists.modules.transfers.domain.value_objects import (
+    RETRYABLE_NOTES,
     ExistingPlaylist,
     LibraryDestination,
     LibrarySource,
     NewPlaylist,
     PlaylistSource,
+    RecognitionState,
     TrackDestination,
     TrackSource,
+    TransferItemStatus,
 )
 from syncplaylists.shared_kernel.domain.links import MAX_LINK_LENGTH
 from syncplaylists.shared_kernel.domain.value_objects import ExternalTrackRef, Platform, PlaylistRef
@@ -122,6 +126,9 @@ class StartTransferRequest(BaseModel):
     # user_id не принимаем от клиента — он берётся из сессии (cookie).
     source: TrackSourceSchema
     destination: TrackDestinationSchema
+    # «Распознавать по звуку»: треки, не найденные уверенно по тексту, распознаются по
+    # фрагменту 15–20 с (фрагмент уходит в Shazam/ACRCloud и не хранится).
+    recognize_audio: bool = True
 
 
 class TrackCandidateSchema(BaseModel):
@@ -149,13 +156,43 @@ class MatchResultSchema(BaseModel):
     restriction: str | None = None
 
 
+class HeardTrackSchema(BaseModel):
+    """Что распознаватель услышал во фрагменте трека источника."""
+
+    title: str
+    artist: str
+    provider: str
+    isrc: str | None = None
+    # Та же запись без изменения скорости и тона (иначе — только подсказка).
+    exact: bool
+
+
+class ItemRecognitionSchema(BaseModel):
+    # queued — ждёт распознавания; ready — распознано, ищем на цели; final — итог.
+    state: str
+    # Причина итога: exact (найдено по звуку), altered (звук изменён), text_mismatch
+    # (распознанное не похоже на название), not_on_target (на цели не нашлось),
+    # no_match (не узнан), no_audio (у площадки нет звука), unavailable (не получилось),
+    # timeout (не уложились в потолок фазы).
+    note: str | None = None
+    heard: HeardTrackSchema | None = None
+    # На ревью можно нажать «Ещё раз по звуку».
+    can_retry: bool = False
+
+
 class TransferItemResponse(BaseModel):
     position: int
     status: str
     source_platform: Platform
     source_external_id: str
+    # Что искали — название трека источника (null, если его нет в каталоге).
+    source_title: str | None = None
+    source_artist: str | None = None
+    source_duration_ms: int | None = None
     match: MatchResultSchema | None
     candidates: list[TrackCandidateSchema]
+    # Распознавание по звуку; null — трек не распознавался.
+    recognition: ItemRecognitionSchema | None = None
 
     @classmethod
     def from_dto(cls, dto: TransferItemDto) -> "TransferItemResponse":
@@ -175,6 +212,9 @@ class TransferItemResponse(BaseModel):
             status=dto.status,
             source_platform=dto.source_track.platform,
             source_external_id=dto.source_track.external_id,
+            source_title=dto.source_meta.title if dto.source_meta else None,
+            source_artist=dto.source_meta.artist if dto.source_meta else None,
+            source_duration_ms=dto.source_meta.duration_ms if dto.source_meta else None,
             match=match,
             candidates=[
                 TrackCandidateSchema(
@@ -192,7 +232,36 @@ class TransferItemResponse(BaseModel):
                 )
                 for c in dto.candidates
             ],
+            recognition=_recognition_schema(dto),
         )
+
+
+def _recognition_schema(dto: TransferItemDto) -> ItemRecognitionSchema | None:
+    recognition = dto.recognition
+    if recognition is None:
+        return None
+    heard = recognition.heard
+    return ItemRecognitionSchema(
+        state=recognition.state.value,
+        note=recognition.note,
+        heard=(
+            HeardTrackSchema(
+                title=heard.title,
+                artist=heard.artist,
+                provider=heard.provider,
+                isrc=heard.isrc.value if heard.isrc else None,
+                exact=heard.exact,
+            )
+            if heard is not None
+            else None
+        ),
+        can_retry=(
+            recognition.state is RecognitionState.FINAL
+            and recognition.note in RETRYABLE_NOTES
+            and dto.status
+            in (TransferItemStatus.UNCERTAIN.value, TransferItemStatus.NOT_FOUND.value)
+        ),
+    )
 
 
 class TransferProgressSchema(BaseModel):
@@ -204,6 +273,8 @@ class TransferProgressSchema(BaseModel):
     not_found: int
     added: int
     failed: int
+    # Пропущены пользователем на ревью (в т.ч. не решённые сомнительные при «Записать»).
+    skipped: int = 0
     # Оценка оставшегося времени матчинга по скорости последних треков, секунды.
     # Только для status=running; null — данных пока мало или фаза не матчинг.
     eta_seconds: int | None
@@ -214,6 +285,8 @@ class TransferProgressSchema(BaseModel):
     # timeout, no_permission, logged_out, session_mismatch, captcha. Продолжится сам,
     # когда расширение будет готово.
     pause_reason: str | None = None
+    # Треков, ждущих распознавания по звуку.
+    recognizing: int = 0
 
     @classmethod
     def from_dto(cls, dto: TransferProgressDto) -> "TransferProgressSchema":
@@ -226,9 +299,11 @@ class TransferProgressSchema(BaseModel):
             not_found=dto.not_found,
             added=dto.added,
             failed=dto.failed,
+            skipped=dto.skipped,
             eta_seconds=dto.eta_seconds,
             resume_at=dto.resume_at,
             pause_reason=dto.pause_reason,
+            recognizing=dto.recognizing,
         )
 
 
@@ -243,6 +318,11 @@ class TransferResponse(BaseModel):
     # Созданные под NewPlaylist плейлисты: обычно один, несколько — если треков больше,
     # чем вмещает плейлист площадки («<название> (1/N)», ...).
     resolved_targets: list[str] = []
+    source_title: str | None = None
+    created_at: datetime | None = None
+    # Сколько треков найдено каждым методом: isrc, fuzzy, audio, manual, ...
+    match_methods: dict[str, int] = {}
+    recognize_audio: bool = True
 
     @classmethod
     def from_dto(cls, dto: TransferDto) -> "TransferResponse":
@@ -255,7 +335,66 @@ class TransferResponse(BaseModel):
             items=[TransferItemResponse.from_dto(item) for item in dto.items],
             progress=TransferProgressSchema.from_dto(dto.progress) if dto.progress else None,
             resolved_targets=[ref.external_id for ref in dto.resolved_targets],
+            source_title=dto.source_title,
+            created_at=dto.created_at,
+            match_methods=dict(dto.match_methods),
+            recognize_audio=dto.recognize_audio,
         )
+
+
+class TransferItemsPage(BaseModel):
+    items: list[TransferItemResponse]
+    # Передать как `after` за следующей страницей; null — страниц больше нет.
+    next_after: int | None
+
+
+class TransferSummaryResponse(BaseModel):
+    id: UUID
+    status: str
+    source: PlaylistSourceSchema | LibrarySourceSchema
+    destination: ExistingPlaylistSchema | NewPlaylistSchema | LibraryDestinationSchema
+    source_title: str | None
+    total: int
+    matched: int
+    uncertain: int
+    not_found: int
+    added: int
+    failed: int
+    skipped: int
+    resolved_targets: list[str]
+    resume_at: datetime | None
+    pause_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_summary(cls, summary: TransferSummary) -> "TransferSummaryResponse":
+        progress = summary.progress
+        return cls(
+            id=summary.id,
+            status=summary.status.value,
+            source=source_to_schema(summary.source),
+            destination=destination_to_schema(summary.destination),
+            source_title=summary.source_title,
+            total=progress.total,
+            matched=progress.matched,
+            uncertain=progress.uncertain,
+            not_found=progress.not_found,
+            added=progress.added,
+            failed=progress.failed,
+            skipped=progress.skipped,
+            resolved_targets=[ref.external_id for ref in summary.resolved_targets],
+            resume_at=summary.resume_at,
+            pause_reason=summary.pause_reason,
+            created_at=summary.created_at,
+            updated_at=summary.updated_at,
+        )
+
+
+class TransferHistoryPage(BaseModel):
+    items: list[TransferSummaryResponse]
+    # Передать как `cursor` за следующей страницей; null — это последняя.
+    next_cursor: str | None
 
 
 class ResolveItemRequest(BaseModel):

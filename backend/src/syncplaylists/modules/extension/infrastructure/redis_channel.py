@@ -28,10 +28,10 @@ from syncplaylists.modules.extension.application.operations import (
 )
 from syncplaylists.modules.extension.application.ports import (
     DeliveredTask,
+    DevicePlatformState,
     ExtensionCall,
     PlatformPresence,
 )
-from syncplaylists.modules.extension.domain.errors import DeviceUnavailableError
 from syncplaylists.modules.extension.domain.value_objects import SessionState
 from syncplaylists.shared_kernel.domain.errors import (
     ExtensionUnavailableError,
@@ -159,39 +159,6 @@ class RedisExtensionChannel:
                 raise ExtensionUnavailableError(call.platform, reason)
         raise ExtensionUnavailableError(call.platform, ExtensionUnavailableReason.OFFLINE)
 
-    async def call_device(
-        self,
-        user_id: UUID,
-        device_id: UUID,
-        operation: str,
-        args: Mapping[str, Any],
-        timeout_seconds: float,
-    ) -> Mapping[str, Any]:
-        """Операция на конкретном устройстве, без площадки (диагностика). Возвращает
-        исход как прислало расширение ({ok, data} или {ok: false, error}); бросает
-        DeviceUnavailableError — устройство не на связи или не ответило вовремя."""
-        if not await self._is_online(device_id):
-            raise DeviceUnavailableError("offline")
-        task_id = await self._enqueue(
-            device_id,
-            user_id,
-            operation,
-            args,
-            timeout=timeout_seconds,
-            extend=timeout_seconds,
-            idempotency_key=None,
-        )
-
-        async def still_there() -> bool:
-            return await self._is_online(device_id)
-
-        outcome = await self._wait(device_id, task_id, still_there)
-        if outcome == "timeout":
-            raise DeviceUnavailableError("timeout")
-        if outcome == "gone":
-            raise DeviceUnavailableError("offline")
-        return outcome
-
     async def _enqueue(
         self,
         device_id: UUID,
@@ -254,8 +221,41 @@ class RedisExtensionChannel:
         entry = json.loads(value)
         return float(entry.get("seen", 0)) >= time.time() - self._presence_ttl
 
-    async def _is_online(self, device_id: UUID) -> bool:
-        return bool(await self._redis.exists(_online_key(device_id)))
+    # ------------------------------------------------------------------ сайт
+
+    async def online(self, device_ids: Sequence[UUID]) -> set[UUID]:
+        if not device_ids:
+            return set()
+        async with self._redis.pipeline(transaction=False) as pipe:
+            for device_id in device_ids:
+                pipe.exists(_online_key(device_id))
+            flags = await pipe.execute()
+        return {device_id for device_id, flag in zip(device_ids, flags, strict=True) if flag}
+
+    async def presence(self, user_id: UUID) -> list[DevicePlatformState]:
+        platforms = list(Platform)
+        async with self._redis.pipeline(transaction=False) as pipe:
+            for platform in platforms:
+                pipe.hgetall(_presence_key(user_id, platform))
+            raws = await pipe.execute()
+        fresh_after = time.time() - self._presence_ttl
+        states: list[DevicePlatformState] = []
+        for platform, raw in zip(platforms, raws, strict=True):
+            for device, value in _fields(raw).items():
+                entry = json.loads(value)
+                if float(entry.get("seen", 0)) < fresh_after:
+                    continue
+                states.append(
+                    DevicePlatformState(
+                        device_id=UUID(device),
+                        presence=PlatformPresence(
+                            platform=platform,
+                            session=SessionState(entry["session"]),
+                            external_user_id=entry.get("external_user_id"),
+                        ),
+                    )
+                )
+        return states
 
     # ------------------------------------------------------------------ WebSocket
 

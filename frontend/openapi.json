@@ -1,0 +1,2794 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SyncPlaylists",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/db": {
+      "get": {
+        "summary": "Health Db",
+        "operationId": "health_db_health_db_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Db Health Db Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Register",
+        "operationId": "register_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login",
+        "operationId": "login_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Logout",
+        "operationId": "logout_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/auth/logout-all": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Logout All",
+        "operationId": "logout_all_auth_logout_all_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Me",
+        "operationId": "me_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/accounts": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "List Accounts",
+        "operationId": "list_accounts_accounts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AccountResponse"
+                  },
+                  "type": "array",
+                  "title": "Response List Accounts Accounts Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Connect Account",
+        "operationId": "connect_account_accounts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/accounts/{account_id}": {
+      "delete": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Disconnect Account",
+        "operationId": "disconnect_account_accounts__account_id__delete",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Account Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/accounts/{platform}/oauth/start": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Oauth Start",
+        "operationId": "oauth_start_accounts__platform__oauth_start_get",
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Platform"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/accounts/{platform}/oauth/callback": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "Oauth Callback",
+        "operationId": "oauth_callback_accounts__platform__oauth_callback_get",
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Platform"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Code"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "State"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers": {
+      "post": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "Start Transfer",
+        "operationId": "start_transfer_transfers_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartTransferRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "List Transfers",
+        "description": "История переносов пользователя, новые первыми.",
+        "operationId": "list_transfers_transfers_get",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferHistoryPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers/{transfer_id}": {
+      "get": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "Get Transfer",
+        "description": "include_items=false — только шапка со счётчиками (экран переноса берёт треки\nпостранично через /items).",
+        "operationId": "get_transfer_transfers__transfer_id__get",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Transfer Id"
+            }
+          },
+          {
+            "name": "include_items",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Items"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers/{transfer_id}/items": {
+      "get": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "List Transfer Items",
+        "description": "Треки переноса постранично: ревью (`status=uncertain&status=not_found`) и отчёт.",
+        "operationId": "list_transfer_items_transfers__transfer_id__items_get",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Transfer Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransferItemStatus"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferItemsPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers/{transfer_id}/write": {
+      "post": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "Start Writing",
+        "description": "«Записать в <площадку>» после ревью. Не решённые сомнительные треки пропускаются.",
+        "operationId": "start_writing_transfers__transfer_id__write_post",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Transfer Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers/{transfer_id}/items/{position}/resolve": {
+      "post": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "Resolve Item",
+        "operationId": "resolve_item_transfers__transfer_id__items__position__resolve_post",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Transfer Id"
+            }
+          },
+          {
+            "name": "position",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Position"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveItemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers/{transfer_id}/items/{position}/recognize": {
+      "post": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "Retry Item Recognition",
+        "description": "«Ещё раз по звуку» на ревью — для трека, который не удалось распознать (сбой,\nпотолок фазы). Итог придёт событием переноса.",
+        "operationId": "retry_item_recognition_transfers__transfer_id__items__position__recognize_post",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Transfer Id"
+            }
+          },
+          {
+            "name": "position",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Position"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers/{transfer_id}/events": {
+      "get": {
+        "tags": [
+          "transfers"
+        ],
+        "summary": "Transfer Events",
+        "operationId": "transfer_events_transfers__transfer_id__events_get",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Transfer Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/links/resolve": {
+      "post": {
+        "tags": [
+          "links"
+        ],
+        "summary": "Resolve Link",
+        "description": "Предпросмотр ссылки для фронта: площадка, плейлист или медиатека, название.",
+        "operationId": "resolve_link_links_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedLinkResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/extension/pairings": {
+      "post": {
+        "tags": [
+          "extension"
+        ],
+        "summary": "Start Pairing",
+        "description": "Шаг 1 (зовёт расширение, без входа): код для человека + секретный pairing_id.",
+        "operationId": "start_pairing_extension_pairings_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartPairingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartPairingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/extension/pairings/confirm": {
+      "post": {
+        "tags": [
+          "extension"
+        ],
+        "summary": "Confirm Pairing",
+        "description": "Шаг 2 (зовёт сайт, пользователь вошёл): ввод кода, который показало расширение.",
+        "operationId": "confirm_pairing_extension_pairings_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmPairingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/extension/pairings/token": {
+      "post": {
+        "tags": [
+          "extension"
+        ],
+        "summary": "Claim Pairing",
+        "description": "Шаг 3 (опрашивает расширение раз в interval): 202 — код ещё не введён; 200 —\nтокен устройства (выдаётся один раз). pairing_id — в теле, а не в URL: это секрет,\nв логах прокси ему не место.",
+        "operationId": "claim_pairing_extension_pairings_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimPairingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimPairingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/extension/me": {
+      "get": {
+        "tags": [
+          "extension"
+        ],
+        "summary": "Device Me",
+        "description": "Для расширения: к какому аккаунту SyncPlaylists оно привязано.",
+        "operationId": "device_me_extension_me_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceMeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "extension"
+        ],
+        "summary": "Unpair Self",
+        "description": "Расширение отвязывает себя само (кнопка «Отвязать» в popup) — то же, что отзыв с\nсайта: токен устройства больше не принимается, WebSocket закроется на следующем ping.",
+        "operationId": "unpair_self_extension_me_delete",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/extension/devices": {
+      "get": {
+        "tags": [
+          "extension"
+        ],
+        "summary": "List Devices",
+        "operationId": "list_devices_extension_devices_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceSchema"
+                  },
+                  "type": "array",
+                  "title": "Response List Devices Extension Devices Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/extension/status": {
+      "get": {
+        "tags": [
+          "extension"
+        ],
+        "summary": "Extension Status",
+        "description": "Для сайта: какие расширения привязаны и на связи, в каком состоянии площадки.",
+        "operationId": "extension_status_extension_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtensionStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/extension/devices/{device_id}": {
+      "delete": {
+        "tags": [
+          "extension"
+        ],
+        "summary": "Revoke Device",
+        "operationId": "revoke_device_extension_devices__device_id__delete",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Device Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AccountResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/Transport"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "external_user_id": {
+            "type": "string",
+            "title": "External User Id"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "connected_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Connected At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "platform",
+          "transport",
+          "status",
+          "external_user_id",
+          "display_name",
+          "expires_at",
+          "connected_at"
+        ],
+        "title": "AccountResponse"
+      },
+      "ClaimPairingRequest": {
+        "properties": {
+          "pairing_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 10,
+            "title": "Pairing Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pairing_id"
+        ],
+        "title": "ClaimPairingRequest"
+      },
+      "ClaimPairingResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "paired"
+            ],
+            "title": "Status"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "device_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "ClaimPairingResponse"
+      },
+      "ConfirmPairingRequest": {
+        "properties": {
+          "user_code": {
+            "type": "string",
+            "maxLength": 20,
+            "minLength": 4,
+            "title": "User Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user_code"
+        ],
+        "title": "ConfirmPairingRequest"
+      },
+      "ConnectAccountRequest": {
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/Transport",
+            "default": "unofficial"
+          },
+          "access_token": {
+            "type": "string",
+            "minLength": 1,
+            "format": "password",
+            "title": "Access Token",
+            "writeOnly": true
+          },
+          "refresh_token": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refresh Token"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "access_token"
+        ],
+        "title": "ConnectAccountRequest",
+        "description": "Ручное подключение по токену (VK/Яндекс и т.п., где нет публичного OAuth).\nПароль площадки не принимаем никогда — только уже выданный токен. external_user_id и\nимя не принимаются: сервер берёт их из профиля площадки, проверяя этим токен."
+      },
+      "CredentialsRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 8,
+            "format": "password",
+            "title": "Password",
+            "writeOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "CredentialsRequest"
+      },
+      "DeviceMeResponse": {
+        "properties": {
+          "device_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Device Id"
+          },
+          "user_email": {
+            "type": "string",
+            "title": "User Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "device_id",
+          "user_email"
+        ],
+        "title": "DeviceMeResponse",
+        "description": "Расширение показывает, к какому аккаунту SyncPlaylists оно привязано."
+      },
+      "DeviceSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "browser": {
+            "type": "string",
+            "title": "Browser"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          },
+          "revoked": {
+            "type": "boolean",
+            "title": "Revoked"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "browser",
+          "version",
+          "created_at",
+          "last_seen_at",
+          "revoked"
+        ],
+        "title": "DeviceSchema"
+      },
+      "DeviceStatusSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "browser": {
+            "type": "string",
+            "title": "Browser"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          },
+          "revoked": {
+            "type": "boolean",
+            "title": "Revoked"
+          },
+          "online": {
+            "type": "boolean",
+            "title": "Online"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "browser",
+          "version",
+          "created_at",
+          "last_seen_at",
+          "revoked",
+          "online"
+        ],
+        "title": "DeviceStatusSchema"
+      },
+      "ExistingPlaylistSchema": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "existing",
+            "title": "Kind",
+            "default": "existing"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "external_id": {
+            "type": "string",
+            "title": "External Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "external_id"
+        ],
+        "title": "ExistingPlaylistSchema"
+      },
+      "ExtensionStatusResponse": {
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceStatusSchema"
+            },
+            "type": "array",
+            "title": "Devices"
+          },
+          "platforms": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformStatusSchema"
+            },
+            "type": "array",
+            "title": "Platforms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "devices",
+          "platforms"
+        ],
+        "title": "ExtensionStatusResponse",
+        "description": "Для сайта: расширения пользователя и площадки в его браузере."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HeardTrackSchema": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "artist": {
+            "type": "string",
+            "title": "Artist"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "isrc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isrc"
+          },
+          "exact": {
+            "type": "boolean",
+            "title": "Exact"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "artist",
+          "provider",
+          "exact"
+        ],
+        "title": "HeardTrackSchema",
+        "description": "Что распознаватель услышал во фрагменте трека источника."
+      },
+      "ItemRecognitionSchema": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "heard": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeardTrackSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "can_retry": {
+            "type": "boolean",
+            "title": "Can Retry",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "ItemRecognitionSchema"
+      },
+      "LibraryDestinationSchema": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "library",
+            "title": "Kind",
+            "default": "library"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Account Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "account_id"
+        ],
+        "title": "LibraryDestinationSchema"
+      },
+      "LibrarySourceSchema": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "library",
+            "title": "Kind",
+            "default": "library"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Account Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "account_id"
+        ],
+        "title": "LibrarySourceSchema"
+      },
+      "LinkKind": {
+        "type": "string",
+        "enum": [
+          "playlist",
+          "library"
+        ],
+        "title": "LinkKind"
+      },
+      "LinkSchema": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "link",
+            "title": "Kind",
+            "default": "link"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "LinkSchema",
+        "description": "Сырая ссылка от пользователя (или текст «Поделиться» со ссылкой внутри) —\nсервер сам разберёт, плейлист это или медиатека (ResolvePlaylistLinkUseCase)."
+      },
+      "LoginRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 320,
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "format": "password",
+            "title": "Password",
+            "writeOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequest"
+      },
+      "MatchResultSchema": {
+        "properties": {
+          "target_platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "target_external_id": {
+            "type": "string",
+            "title": "Target External Id"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "restriction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restriction"
+          }
+        },
+        "type": "object",
+        "required": [
+          "target_platform",
+          "target_external_id",
+          "method",
+          "score"
+        ],
+        "title": "MatchResultSchema"
+      },
+      "NewPlaylistSchema": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "new",
+            "title": "Kind",
+            "default": "new"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "title"
+        ],
+        "title": "NewPlaylistSchema"
+      },
+      "Platform": {
+        "type": "string",
+        "enum": [
+          "spotify",
+          "yandex",
+          "vk",
+          "soundcloud",
+          "ytmusic"
+        ],
+        "title": "Platform"
+      },
+      "PlatformStatusSchema": {
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "external_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External User Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "state",
+          "device_id",
+          "external_user_id"
+        ],
+        "title": "PlatformStatusSchema"
+      },
+      "PlaylistSourceSchema": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "playlist",
+            "title": "Kind",
+            "default": "playlist"
+          },
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "external_id": {
+            "type": "string",
+            "title": "External Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "external_id"
+        ],
+        "title": "PlaylistSourceSchema"
+      },
+      "ResolveItemRequest": {
+        "properties": {
+          "chosen_platform": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Platform"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "chosen_external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chosen External Id"
+          }
+        },
+        "type": "object",
+        "title": "ResolveItemRequest"
+      },
+      "ResolveLinkRequest": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "ResolveLinkRequest"
+      },
+      "ResolvedLinkResponse": {
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/LinkKind"
+          },
+          "external_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Id"
+          },
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "track_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Track Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "kind",
+          "external_id",
+          "account_id",
+          "title",
+          "track_count"
+        ],
+        "title": "ResolvedLinkResponse"
+      },
+      "SessionState": {
+        "type": "string",
+        "enum": [
+          "ok",
+          "logged_out",
+          "captcha",
+          "no_permission"
+        ],
+        "title": "SessionState",
+        "description": "Состояние площадки в браузере, о котором сообщает расширение."
+      },
+      "StartPairingRequest": {
+        "properties": {
+          "device_name": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Device Name"
+          },
+          "browser": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Browser"
+          },
+          "version": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "device_name",
+          "browser",
+          "version"
+        ],
+        "title": "StartPairingRequest"
+      },
+      "StartPairingResponse": {
+        "properties": {
+          "pairing_id": {
+            "type": "string",
+            "title": "Pairing Id"
+          },
+          "user_code": {
+            "type": "string",
+            "title": "User Code"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          },
+          "interval": {
+            "type": "integer",
+            "title": "Interval"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pairing_id",
+          "user_code",
+          "expires_in",
+          "interval"
+        ],
+        "title": "StartPairingResponse"
+      },
+      "StartTransferRequest": {
+        "properties": {
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PlaylistSourceSchema"
+              },
+              {
+                "$ref": "#/components/schemas/LibrarySourceSchema"
+              },
+              {
+                "$ref": "#/components/schemas/LinkSchema"
+              }
+            ],
+            "title": "Source",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "library": "#/components/schemas/LibrarySourceSchema",
+                "link": "#/components/schemas/LinkSchema",
+                "playlist": "#/components/schemas/PlaylistSourceSchema"
+              }
+            }
+          },
+          "destination": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExistingPlaylistSchema"
+              },
+              {
+                "$ref": "#/components/schemas/NewPlaylistSchema"
+              },
+              {
+                "$ref": "#/components/schemas/LibraryDestinationSchema"
+              },
+              {
+                "$ref": "#/components/schemas/LinkSchema"
+              }
+            ],
+            "title": "Destination",
+            "discriminator": {
+              "propertyName": "kind",
+              "mapping": {
+                "existing": "#/components/schemas/ExistingPlaylistSchema",
+                "library": "#/components/schemas/LibraryDestinationSchema",
+                "link": "#/components/schemas/LinkSchema",
+                "new": "#/components/schemas/NewPlaylistSchema"
+              }
+            }
+          },
+          "recognize_audio": {
+            "type": "boolean",
+            "title": "Recognize Audio",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "destination"
+        ],
+        "title": "StartTransferRequest"
+      },
+      "TrackCandidateSchema": {
+        "properties": {
+          "platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "external_id": {
+            "type": "string",
+            "title": "External Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "artist": {
+            "type": "string",
+            "title": "Artist"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "isrc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isrc"
+          },
+          "artists": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Artists",
+            "default": []
+          },
+          "cover_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Url"
+          },
+          "uploader": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploader"
+          },
+          "rights_holder": {
+            "type": "boolean",
+            "title": "Rights Holder",
+            "default": false
+          },
+          "restriction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restriction"
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform",
+          "external_id",
+          "title",
+          "artist"
+        ],
+        "title": "TrackCandidateSchema"
+      },
+      "TransferHistoryPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TransferSummaryResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "TransferHistoryPage"
+      },
+      "TransferItemResponse": {
+        "properties": {
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "source_platform": {
+            "$ref": "#/components/schemas/Platform"
+          },
+          "source_external_id": {
+            "type": "string",
+            "title": "Source External Id"
+          },
+          "source_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Title"
+          },
+          "source_artist": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Artist"
+          },
+          "source_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Duration Ms"
+          },
+          "match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatchResultSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/TrackCandidateSchema"
+            },
+            "type": "array",
+            "title": "Candidates"
+          },
+          "recognition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ItemRecognitionSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "position",
+          "status",
+          "source_platform",
+          "source_external_id",
+          "match",
+          "candidates"
+        ],
+        "title": "TransferItemResponse"
+      },
+      "TransferItemStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "matched",
+          "uncertain",
+          "not_found",
+          "added",
+          "failed",
+          "skipped"
+        ],
+        "title": "TransferItemStatus"
+      },
+      "TransferItemsPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TransferItemResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_after"
+        ],
+        "title": "TransferItemsPage"
+      },
+      "TransferProgressSchema": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending"
+          },
+          "matched": {
+            "type": "integer",
+            "title": "Matched"
+          },
+          "uncertain": {
+            "type": "integer",
+            "title": "Uncertain"
+          },
+          "not_found": {
+            "type": "integer",
+            "title": "Not Found"
+          },
+          "added": {
+            "type": "integer",
+            "title": "Added"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "default": 0
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eta Seconds"
+          },
+          "resume_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume At"
+          },
+          "pause_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pause Reason"
+          },
+          "recognizing": {
+            "type": "integer",
+            "title": "Recognizing",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "total",
+          "pending",
+          "matched",
+          "uncertain",
+          "not_found",
+          "added",
+          "failed",
+          "eta_seconds"
+        ],
+        "title": "TransferProgressSchema"
+      },
+      "TransferResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaylistSourceSchema"
+              },
+              {
+                "$ref": "#/components/schemas/LibrarySourceSchema"
+              }
+            ],
+            "title": "Source"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExistingPlaylistSchema"
+              },
+              {
+                "$ref": "#/components/schemas/NewPlaylistSchema"
+              },
+              {
+                "$ref": "#/components/schemas/LibraryDestinationSchema"
+              }
+            ],
+            "title": "Destination"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TransferItemResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TransferProgressSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolved_targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resolved Targets",
+            "default": []
+          },
+          "source_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Title"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "match_methods": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Match Methods",
+            "default": {}
+          },
+          "recognize_audio": {
+            "type": "boolean",
+            "title": "Recognize Audio",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "status",
+          "source",
+          "destination",
+          "items"
+        ],
+        "title": "TransferResponse"
+      },
+      "TransferSummaryResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaylistSourceSchema"
+              },
+              {
+                "$ref": "#/components/schemas/LibrarySourceSchema"
+              }
+            ],
+            "title": "Source"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExistingPlaylistSchema"
+              },
+              {
+                "$ref": "#/components/schemas/NewPlaylistSchema"
+              },
+              {
+                "$ref": "#/components/schemas/LibraryDestinationSchema"
+              }
+            ],
+            "title": "Destination"
+          },
+          "source_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Title"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "matched": {
+            "type": "integer",
+            "title": "Matched"
+          },
+          "uncertain": {
+            "type": "integer",
+            "title": "Uncertain"
+          },
+          "not_found": {
+            "type": "integer",
+            "title": "Not Found"
+          },
+          "added": {
+            "type": "integer",
+            "title": "Added"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped"
+          },
+          "resolved_targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resolved Targets"
+          },
+          "resume_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume At"
+          },
+          "pause_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pause Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "source",
+          "destination",
+          "source_title",
+          "total",
+          "matched",
+          "uncertain",
+          "not_found",
+          "added",
+          "failed",
+          "skipped",
+          "resolved_targets",
+          "resume_at",
+          "pause_reason",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TransferSummaryResponse"
+      },
+      "Transport": {
+        "type": "string",
+        "enum": [
+          "official",
+          "unofficial",
+          "extension"
+        ],
+        "title": "Transport",
+        "description": "Через что идёт доступ к площадке от имени подключённого аккаунта."
+      },
+      "UserResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "created_at"
+        ],
+        "title": "UserResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

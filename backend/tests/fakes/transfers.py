@@ -5,9 +5,16 @@ from types import TracebackType
 from typing import Any
 from uuid import UUID
 
-from syncplaylists.modules.transfers.application.ports import ClientPause, ProgressSample
+from syncplaylists.modules.transfers.application.ports import (
+    ClientPause,
+    ProgressSample,
+    TransferCursor,
+    TransferSummary,
+)
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
+    ItemRecognition,
+    RecognitionState,
     TransferItemStatus,
     TransferProgress,
     TransferStatus,
@@ -94,6 +101,11 @@ class FakeTransferRepository:
             recent_processed_at=tuple(times),
             resume_at=stored.resume_at,
             pause_reason=stored.pause_reason,
+            recognizing=sum(
+                1
+                for i in stored.items
+                if i.recognition is not None and i.recognition.state is RecognitionState.QUEUED
+            ),
         )
 
     async def get_for_update(self, transfer_id: UUID) -> Transfer | None:
@@ -127,6 +139,7 @@ class FakeTransferRepository:
         target.status = item.status
         target.match = item.match
         target.candidates = item.candidates
+        target.recognition = item.recognition
         self.processed_at.setdefault(item.transfer_id, []).append(datetime.now(UTC))
         self.item_outcome_calls += 1
         return TransferProgress.from_statuses(i.status for i in stored.items)
@@ -218,6 +231,103 @@ class FakeTransferRepository:
     async def pending_positions(self, transfer_id: UUID) -> list[int]:
         stored = self._storage[transfer_id]
         return [i.position for i in stored.items if i.status is TransferItemStatus.PENDING]
+
+    async def save_item_awaiting_recognition(self, item: TransferItem) -> bool:
+        target = self._stored_item(item)
+        if target.status is not TransferItemStatus.PENDING or target.recognition is not None:
+            return False
+        target.candidates = item.candidates
+        target.recognition = item.recognition
+        return True
+
+    async def save_recognition_ready(self, item: TransferItem) -> bool:
+        target = self._stored_item(item)
+        if target.recognition is None or target.recognition.state is not RecognitionState.QUEUED:
+            return False
+        target.recognition = item.recognition
+        return True
+
+    async def start_recognition_phase(
+        self, transfer_id: UUID, deadline: datetime
+    ) -> tuple[datetime, bool]:
+        stored = self._storage[transfer_id]
+        if stored.recognition_deadline_at is not None:
+            return stored.recognition_deadline_at, False
+        stored.recognition_deadline_at = deadline
+        return deadline, True
+
+    async def expire_recognition(self, transfer_id: UUID, note: str) -> list[int]:
+        positions = []
+        for item in self._storage[transfer_id].items:
+            recognition = item.recognition
+            if (
+                item.status is TransferItemStatus.PENDING
+                and recognition is not None
+                and recognition.state is RecognitionState.QUEUED
+            ):
+                item.recognition = ItemRecognition(
+                    RecognitionState.READY, recognition.text_status, note, None
+                )
+                positions.append(item.position)
+        return positions
+
+    def _stored_item(self, item: TransferItem) -> TransferItem:
+        stored = self._storage[item.transfer_id]
+        return next(i for i in stored.items if i.position == item.position)
+
+    async def list_summaries(
+        self, user_id: UUID, before: TransferCursor | None, limit: int
+    ) -> list[TransferSummary]:
+        summaries = [
+            TransferSummary(
+                id=t.id,
+                status=t.status,
+                source=t.source,
+                destination=t.destination,
+                source_title=t.source_title,
+                progress=TransferProgress.from_statuses(i.status for i in t.items),
+                resolved_targets=t.resolved_targets,
+                created_at=t.created_at or datetime.now(UTC),
+                updated_at=self._updated_at.get(t.id, datetime.now(UTC)),
+                resume_at=t.resume_at,
+                pause_reason=t.pause_reason,
+            )
+            for t in self._storage.values()
+            if t.user_id == user_id
+        ]
+        summaries.sort(key=lambda s: (s.created_at, s.id), reverse=True)
+        if before is not None:
+            summaries = [
+                s for s in summaries if (s.created_at, s.id) < (before.created_at, before.id)
+            ]
+        return summaries[:limit]
+
+    async def list_items(
+        self,
+        transfer_id: UUID,
+        statuses: Sequence[TransferItemStatus],
+        after_position: int | None,
+        limit: int,
+    ) -> list[TransferItem]:
+        stored = self._storage.get(transfer_id)
+        items = sorted(stored.items, key=lambda i: i.position) if stored else []
+        return [
+            dataclasses.replace(i)
+            for i in items
+            if (not statuses or i.status in statuses)
+            and (after_position is None or i.position > after_position)
+        ][:limit]
+
+    async def match_method_counts(self, transfer_id: UUID) -> dict[str, int]:
+        stored = self._storage.get(transfer_id)
+        counts: dict[str, int] = {}
+        for item in stored.items if stored else []:
+            if item.match is not None and item.status in (
+                TransferItemStatus.MATCHED,
+                TransferItemStatus.ADDED,
+            ):
+                counts[item.match.method] = counts.get(item.match.method, 0) + 1
+        return counts
 
     async def find_overdue_paused(self, due_before: datetime) -> list[UUID]:
         return [

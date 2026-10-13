@@ -1,3 +1,4 @@
+from syncplaylists.modules.matching.domain.audio import AudioMatcher
 from syncplaylists.modules.matching.domain.normalization import TrackNormalizer
 from syncplaylists.modules.matching.domain.pipeline import MatchingPipeline
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
@@ -22,3 +23,7 @@ class DefaultMatchingPipelineFactory:
     def create(self, target: AccountAccess) -> MatchingPipeline:
         gateway = self._gateway_factory.for_account(target)
         return build_default_pipeline(gateway, self._track_matches, self._normalizer, self._scorer)
+
+    def create_audio(self, target: AccountAccess) -> AudioMatcher:
+        gateway = self._gateway_factory.for_account(target)
+        return AudioMatcher(gateway, self._normalizer, self._scorer)

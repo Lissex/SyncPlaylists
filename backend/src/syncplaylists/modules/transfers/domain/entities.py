@@ -18,15 +18,19 @@ from syncplaylists.modules.transfers.domain.events import (
     TransferWritingStarted,
 )
 from syncplaylists.modules.transfers.domain.value_objects import (
+    RETRYABLE_NOTES,
+    ItemRecognition,
     MatchResult,
+    RecognitionState,
     TrackDestination,
     TrackSource,
     TransferItemStatus,
     TransferProgress,
     TransferStatus,
+    destination_platform,
 )
 from syncplaylists.shared_kernel.domain.base import AggregateRoot, Entity
-from syncplaylists.shared_kernel.domain.search import TrackCandidate
+from syncplaylists.shared_kernel.domain.search import RecognizedTrack, TrackCandidate
 from syncplaylists.shared_kernel.domain.value_objects import (
     ExternalTrackRef,
     MatchScore,
@@ -43,6 +47,32 @@ _UNRESOLVED_ITEM_STATUSES = (
     TransferItemStatus.UNCERTAIN,
     TransferItemStatus.NOT_FOUND,
 )
+# Статусы item в завершённом переносе: записан, не записан из-за сбоя, пропущен
+# пользователем, не найден на площадке назначения.
+_FINAL_ITEM_STATUSES = (
+    TransferItemStatus.ADDED,
+    TransferItemStatus.FAILED,
+    TransferItemStatus.SKIPPED,
+    TransferItemStatus.NOT_FOUND,
+)
+# MatchResult.method ручного выбора на ревью.
+MANUAL_METHOD = "manual"
+
+
+def _awaits_decision(item: "TransferItem") -> bool:
+    """Item можно (пере)решить на ревью: сомнительный, ненайденный, уже пропущенный
+    или уже выбранный вручную. Найденное автоматически ревью не трогает."""
+    if item.status in (
+        TransferItemStatus.UNCERTAIN,
+        TransferItemStatus.NOT_FOUND,
+        TransferItemStatus.SKIPPED,
+    ):
+        return True
+    return (
+        item.status is TransferItemStatus.MATCHED
+        and item.match is not None
+        and item.match.method == MANUAL_METHOD
+    )
 
 
 @dataclass(eq=False, slots=True)
@@ -53,6 +83,8 @@ class TransferItem(Entity):
     status: TransferItemStatus = TransferItemStatus.PENDING
     match: MatchResult | None = None
     candidates: tuple[TrackCandidate, ...] = ()
+    # Распознавание по звуку (этап 6): None — трек не распознавался.
+    recognition: ItemRecognition | None = None
 
     # Переходы одного item из PENDING. Вызываются и агрегатом (Transfer.record_*), и
     # run_match напрямую — там item сохраняется точечно, без загрузки всего переноса
@@ -83,6 +115,83 @@ class TransferItem(Entity):
         self._ensure_pending()
         self.status = TransferItemStatus.FAILED
 
+    # Распознавание по звуку (этап 6). Текст не нашёл трек уверенно — item остаётся
+    # PENDING (перенос не уходит в ревью раньше времени), пока не отработает звук.
+
+    def await_recognition(
+        self, text_status: TransferItemStatus, candidates: tuple[TrackCandidate, ...]
+    ) -> None:
+        self._ensure_pending()
+        if self.recognition is not None:
+            raise InvalidTransferTransitionError(f"TransferItem {self.position} уже распознавался")
+        self.candidates = candidates
+        self.recognition = ItemRecognition(RecognitionState.QUEUED, text_status)
+
+    def recognition_ready(self, note: str | None, heard: RecognizedTrack | None) -> None:
+        """Распознавание закончено (узнано, не узнано или не получилось) — дальше поиск на
+        цели (run_match или повтор на ревью)."""
+        recognition = self._recognition_in(RecognitionState.QUEUED)
+        self.recognition = ItemRecognition(
+            RecognitionState.READY, recognition.text_status, note, heard
+        )
+
+    def apply_text_result(self, note: str | None = None) -> None:
+        """Звук не помог — итог текстового поиска."""
+        self._ensure_pending()
+        self._resolve_by_text(note)
+
+    def apply_audio_outcome(
+        self,
+        status: TransferItemStatus,
+        match: MatchResult | None,
+        candidates: tuple[TrackCandidate, ...],
+        note: str,
+    ) -> None:
+        self._ensure_pending()
+        self._resolve_by_audio(status, match, candidates, note)
+
+    def _resolve_by_text(self, note: str | None) -> None:
+        recognition = self._recognition_in(RecognitionState.READY)
+        self.status = recognition.text_status
+        self.match = None
+        self._finish_recognition(note or recognition.note)
+
+    def _resolve_by_audio(
+        self,
+        status: TransferItemStatus,
+        match: MatchResult | None,
+        candidates: tuple[TrackCandidate, ...],
+        note: str,
+    ) -> None:
+        recognition = self._recognition_in(RecognitionState.READY)
+        # Кандидаты по звуку — первыми, затем текстовые без повторов.
+        known = {c.ref for c in candidates}
+        merged = candidates + tuple(c for c in self.candidates if c.ref not in known)
+        if status is TransferItemStatus.MATCHED:
+            if match is None:
+                raise InvalidTransferTransitionError("MATCHED без найденного трека")
+            self.status, self.match = status, match
+        else:
+            # Звук не ухудшает итог текста: UNCERTAIN текста остаётся UNCERTAIN.
+            uncertain = TransferItemStatus.UNCERTAIN
+            self.status = uncertain if uncertain in (status, recognition.text_status) else status
+            self.match = None
+        self.candidates = merged
+        self._finish_recognition(note)
+
+    def _finish_recognition(self, note: str | None) -> None:
+        assert self.recognition is not None
+        self.recognition = ItemRecognition(
+            RecognitionState.FINAL, self.recognition.text_status, note, self.recognition.heard
+        )
+
+    def _recognition_in(self, state: RecognitionState) -> ItemRecognition:
+        if self.recognition is None or self.recognition.state is not state:
+            raise InvalidTransferTransitionError(
+                f"TransferItem {self.position}: распознавание не в состоянии {state}"
+            )
+        return self.recognition
+
 
 @dataclass(eq=False, slots=True)
 class Transfer(AggregateRoot):
@@ -103,6 +212,16 @@ class Transfer(AggregateRoot):
     # Источник или назначение подключены через браузерное расширение: задачи переноса
     # идут в отдельную очередь, запись — пачками. Решается один раз при старте.
     via_client: bool = False
+    # Название источника на момент старта (плейлист «Летний вайб») — для истории и
+    # отчёта; у медиатеки и у источников без названия — None.
+    source_title: str | None = None
+    # Когда перенос создан; None — ещё не сохранён (время ставит БД).
+    created_at: datetime | None = None
+    # «Распознавать по звуку» (этап 6): выбор пользователя при старте, по умолчанию да.
+    recognize_audio: bool = True
+    # Потолок фазы распознавания: ставится при первом треке на распознавание; после него
+    # ждущие треки получают текстовый итог (NOTE_TIMEOUT).
+    recognition_deadline_at: datetime | None = None
     items: list[TransferItem] = field(default_factory=list)
 
     def _ensure_status(self, *allowed: TransferStatus) -> None:
@@ -305,20 +424,29 @@ class Transfer(AggregateRoot):
     def resolve_item(
         self, position: int, chosen_ref: ExternalTrackRef | None, now: datetime
     ) -> None:
+        """Ручное решение на ревью: выбранный кандидат (или любой трек площадки
+        назначения) → MATCHED (method="manual"), None → SKIPPED. Пока перенос в REVIEW,
+        решение можно поменять (передумал: выбрать другой кандидат или вернуть пропущенный).
+        Запись не начинается сама — только явным begin_writing()."""
         self._ensure_status(TransferStatus.REVIEW)
         item = self._item(position)
-        if item.status not in (TransferItemStatus.UNCERTAIN, TransferItemStatus.NOT_FOUND):
+        if not _awaits_decision(item):
             raise InvalidTransferTransitionError(
                 f"TransferItem {position} не ожидает ручного решения (статус {item.status})"
             )
         if chosen_ref is None:
-            item.status = TransferItemStatus.FAILED
+            item.status = TransferItemStatus.SKIPPED
+            item.match = None
             return
+        if chosen_ref.platform is not destination_platform(self.destination):
+            raise InvalidTransferTransitionError(
+                f"Трек {chosen_ref} не с площадки назначения переноса"
+            )
         chosen = next((c for c in item.candidates if c.ref == chosen_ref), None)
         restriction = chosen.restriction.value if chosen and chosen.restriction else None
         result = MatchResult(
             target_ref=chosen_ref,
-            method="manual",
+            method=MANUAL_METHOD,
             score=MatchScore(1.0),
             restriction=restriction,
         )
@@ -328,13 +456,83 @@ class Transfer(AggregateRoot):
             TrackMatched(occurred_at=now, transfer_id=self.id, position=position, match=result)
         )
 
+    def request_recognition_retry(self, position: int) -> None:
+        """«Ещё раз по звуку» на ревью — только после временной неудачи (сеть, потолок
+        фазы): «не узнан» и «нет звука» повтор не исправит."""
+        self._ensure_status(TransferStatus.REVIEW)
+        item = self._item(position)
+        recognition = item.recognition
+        if (
+            item.status not in (TransferItemStatus.UNCERTAIN, TransferItemStatus.NOT_FOUND)
+            or recognition is None
+            or recognition.state is not RecognitionState.FINAL
+            or recognition.note not in RETRYABLE_NOTES
+        ):
+            raise InvalidTransferTransitionError(
+                f"TransferItem {position}: повтор распознавания недоступен"
+            )
+        item.recognition = ItemRecognition(RecognitionState.QUEUED, recognition.text_status)
+
+    def apply_retried_recognition(
+        self,
+        position: int,
+        status: TransferItemStatus,
+        match: MatchResult | None,
+        candidates: tuple[TrackCandidate, ...],
+        note: str,
+        now: datetime,
+    ) -> None:
+        """Итог повторного распознавания на ревью: статус item меняется между UNCERTAIN,
+        NOT_FOUND и MATCHED (счётчики пересчитывает полное сохранение)."""
+        self._ensure_status(TransferStatus.REVIEW)
+        item = self._item(position)
+        item._resolve_by_audio(status, match, candidates, note)
+        self._record_review_outcome(item, now)
+
+    def apply_retried_text_result(self, position: int, note: str | None, now: datetime) -> None:
+        self._ensure_status(TransferStatus.REVIEW)
+        item = self._item(position)
+        item._resolve_by_text(note)
+        self._record_review_outcome(item, now)
+
+    def _record_review_outcome(self, item: TransferItem, now: datetime) -> None:
+        event: TrackMatched | TrackNeedsReview | TrackNotFound
+        if item.status is TransferItemStatus.MATCHED:
+            assert item.match is not None
+            event = TrackMatched(
+                occurred_at=now, transfer_id=self.id, position=item.position, match=item.match
+            )
+        elif item.status is TransferItemStatus.UNCERTAIN:
+            event = TrackNeedsReview(
+                occurred_at=now,
+                transfer_id=self.id,
+                position=item.position,
+                candidates=item.candidates,
+            )
+        else:
+            event = TrackNotFound(
+                occurred_at=now,
+                transfer_id=self.id,
+                position=item.position,
+                candidates=item.candidates,
+            )
+        self.record_event(event)
+
     def has_unresolved_items(self) -> bool:
         return any(item.status in _UNRESOLVED_ITEM_STATUSES for item in self.items)
 
     def begin_writing(self, now: datetime) -> None:
+        """RUNNING → WRITING, когда решать нечего; REVIEW → WRITING — только по явной
+        команде пользователя («Записать»). Не решённые на ревью сомнительные треки
+        пропускаются (SKIPPED), ненайденные остаются NOT_FOUND — в отчёте они разные."""
         self._ensure_status(TransferStatus.RUNNING, TransferStatus.REVIEW)
-        if self.has_unresolved_items():
+        if self.status is TransferStatus.RUNNING and self.has_unresolved_items():
             raise InvalidTransferTransitionError("есть нерешённые items")
+        if any(item.status is TransferItemStatus.PENDING for item in self.items):
+            raise InvalidTransferTransitionError("есть необработанные items")
+        for item in self.items:
+            if item.status is TransferItemStatus.UNCERTAIN:
+                item.status = TransferItemStatus.SKIPPED
         self.status = TransferStatus.WRITING
         self.record_event(TransferWritingStarted(occurred_at=now, transfer_id=self.id))
 
@@ -354,21 +552,19 @@ class Transfer(AggregateRoot):
 
     def complete(self, now: datetime) -> None:
         self._ensure_status(TransferStatus.WRITING)
-        if any(
-            item.status not in (TransferItemStatus.ADDED, TransferItemStatus.FAILED)
-            for item in self.items
-        ):
+        if any(item.status not in _FINAL_ITEM_STATUSES for item in self.items):
             raise InvalidTransferTransitionError("есть items без финального статуса записи")
         self.status = TransferStatus.DONE
-        added = sum(1 for item in self.items if item.status is TransferItemStatus.ADDED)
-        failed = sum(1 for item in self.items if item.status is TransferItemStatus.FAILED)
+        progress = TransferProgress.from_statuses(item.status for item in self.items)
         self.record_event(
             TransferCompleted(
                 occurred_at=now,
                 transfer_id=self.id,
-                total=len(self.items),
-                added=added,
-                failed=failed,
+                total=progress.total,
+                added=progress.added,
+                failed=progress.failed,
+                skipped=progress.skipped,
+                not_found=progress.not_found,
             )
         )
 

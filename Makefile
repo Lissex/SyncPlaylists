@@ -16,7 +16,7 @@ EMAIL ?=
 MAX ?= 10
 LIBRARY ?= 0
 
-.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud e2e-yandex e2e-vk test test-integration test-live lint check ext-install ext-build ext-build-firefox ext-test
+.PHONY: help up down migrate logs ps e2e e2e-extension e2e-soundcloud e2e-yandex e2e-vk test test-integration test-audio test-live lint check ext-install ext-build ext-build-firefox ext-test fe-install fe-dev fe-build fe-test fe-gen-api
 
 help: ## Список команд
 	@[Console]::OutputEncoding = [Text.Encoding]::UTF8; Select-String -Path Makefile -Pattern '^([a-z0-9-]+):.*## (.*)$$' | ForEach-Object { '  make {0,-18} {1}' -f $$_.Matches[0].Groups[1].Value, $$_.Matches[0].Groups[2].Value }
@@ -52,10 +52,13 @@ e2e-vk: ## Ручной e2e 4c-5 (плейлист → VK через расши�
 	./scripts/e2e-vk-extension.ps1 -Email '$(EMAIL)' -Link '$(LINK)' -Title '$(TITLE)' -MaxTracks $(MAX) $(if $(filter 1,$(LIBRARY)),-ToLibrary,) $(if $(filter 1,$(ACCEPT)),-AcceptUncertain,)
 
 test: ## Unit-тесты и тесты адаптеров без Docker
-	Set-Location backend; uv run pytest tests/unit tests/integration/platforms
+	Set-Location backend; uv run pytest tests/unit tests/integration/platforms tests/integration/recognizers
 
 test-integration: ## Интеграционные тесты (testcontainers, нужен Docker)
 	Set-Location backend; uv run pytest tests/integration
+
+test-audio: ## Аудио-тесты (ffmpeg) — только в контейнере
+	docker compose run --rm --no-deps -v "$${PWD}/backend/tests:/app/tests" api pytest -m audio -p no:cacheprovider
 
 test-live: ## Live-тесты на токене из .env (меняют аккаунт — см. tests/live)
 	Set-Location backend; uv run pytest -m live -v -s
@@ -75,4 +78,19 @@ ext-build-firefox: ## Расширение: сборка Firefox → extension/.
 ext-test: ## Расширение: типы, формат, vitest
 	Set-Location extension; pnpm typecheck; if ($$?) { pnpm format:check }; if ($$?) { pnpm test }
 
-check: lint test ext-test ## lint + тесты без Docker (бэкенд и расширение)
+fe-install: ## Фронтенд: установить зависимости (pnpm)
+	Set-Location frontend; pnpm install
+
+fe-dev: ## Фронтенд: dev-сервер http://localhost:5173 (/api → localhost:8000)
+	Set-Location frontend; pnpm dev
+
+fe-build: ## Фронтенд: сборка → frontend/dist
+	Set-Location frontend; pnpm build
+
+fe-test: ## Фронтенд: типы, ESLint (слои FSD), формат, vitest
+	Set-Location frontend; pnpm check
+
+fe-gen-api: ## Фронтенд: типы API из OpenAPI бэкенда (без Docker)
+	Set-Location frontend; pnpm gen:api
+
+check: lint test ext-test fe-test ## lint + тесты без Docker (бэкенд, расширение, фронтенд)

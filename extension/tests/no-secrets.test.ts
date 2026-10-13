@@ -221,7 +221,7 @@ describe("канарейка SoundCloud: настоящая функция ст�
       onTask: (task) => void router.handle(task),
     });
     const router = new TaskRouter({
-      registry: buildRegistry({ apiBase: "http://localhost:8000", diagnostics: false }),
+      registry: buildRegistry(),
       journal: new Journal(),
       outbox: new Outbox(),
       hasPermission: async () => true,
@@ -319,7 +319,7 @@ describe("канарейка Яндекса: настоящая функция �
       onTask: (task) => void router.handle(task),
     });
     const router = new TaskRouter({
-      registry: buildRegistry({ apiBase: "http://localhost:8000", diagnostics: false }),
+      registry: buildRegistry(),
       journal: new Journal(),
       outbox: new Outbox(),
       hasPermission: async () => true,
@@ -414,7 +414,7 @@ describe("канарейка VK: веб-токен страницы уходит
       onTask: (task) => void router.handle(task),
     });
     const router = new TaskRouter({
-      registry: buildRegistry({ apiBase: "http://localhost:8000", diagnostics: false }),
+      registry: buildRegistry(),
       journal: new Journal(),
       outbox: new Outbox(),
       hasPermission: async () => true,

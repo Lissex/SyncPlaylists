@@ -1,16 +1,19 @@
 from pydantic import BaseModel
 
 from syncplaylists.modules.catalog.application.ports import PlatformTrackRepository
+from syncplaylists.modules.transfers.application.ports import TransferSummary
 from syncplaylists.modules.transfers.domain.entities import Transfer, TransferItem
 from syncplaylists.modules.transfers.domain.value_objects import (
     ExistingPlaylist,
     FileFormat,
     FileSource,
+    ItemRecognition,
     LibraryDestination,
     LibrarySource,
     MatchResult,
     NewPlaylist,
     PlaylistSource,
+    RecognitionState,
     TrackDestination,
     TrackSource,
     TransferItemStatus,
@@ -18,7 +21,11 @@ from syncplaylists.modules.transfers.domain.value_objects import (
     TransferStatus,
 )
 from syncplaylists.modules.transfers.infrastructure.orm import TransferItemOrm, TransferOrm
-from syncplaylists.shared_kernel.domain.search import TrackCandidate, TrackRestriction
+from syncplaylists.shared_kernel.domain.search import (
+    RecognizedTrack,
+    TrackCandidate,
+    TrackRestriction,
+)
 from syncplaylists.shared_kernel.domain.value_objects import (
     ISRC,
     Duration,
@@ -175,6 +182,76 @@ def _columns_to_resolved_targets(orm: TransferOrm) -> tuple[PlaylistRef, ...]:
     return tuple(PlaylistRef(platform, external_id) for external_id in orm.resolved_target_ids)
 
 
+class _HeardDTO(BaseModel):
+    """Снимок распознанного (RecognizedTrack) в transfer_items.recognition."""
+
+    title: str
+    artist: str
+    provider: str
+    isrc: str | None = None
+    provider_ref: str | None = None
+    exact: bool = False
+    offset_ms: int | None = None
+    time_skew: float | None = None
+    frequency_skew: float | None = None
+
+    @classmethod
+    def from_domain(cls, heard: RecognizedTrack) -> "_HeardDTO":
+        return cls(
+            title=heard.title,
+            artist=heard.artist,
+            provider=heard.provider,
+            isrc=heard.isrc.value if heard.isrc else None,
+            provider_ref=heard.provider_ref,
+            exact=heard.exact,
+            offset_ms=heard.offset_ms,
+            time_skew=heard.time_skew,
+            frequency_skew=heard.frequency_skew,
+        )
+
+    def to_domain(self) -> RecognizedTrack:
+        return RecognizedTrack(
+            title=self.title,
+            artist=self.artist,
+            provider=self.provider,
+            isrc=ISRC(self.isrc) if self.isrc else None,
+            provider_ref=self.provider_ref,
+            exact=self.exact,
+            offset_ms=self.offset_ms,
+            time_skew=self.time_skew,
+            frequency_skew=self.frequency_skew,
+        )
+
+
+class _RecognitionDTO(BaseModel):
+    text_status: str
+    note: str | None = None
+    heard: _HeardDTO | None = None
+
+
+def recognition_columns(recognition: ItemRecognition | None) -> dict[str, object]:
+    if recognition is None:
+        return {"recognition_state": None, "recognition": None}
+    payload = _RecognitionDTO(
+        text_status=recognition.text_status.value,
+        note=recognition.note,
+        heard=_HeardDTO.from_domain(recognition.heard) if recognition.heard else None,
+    )
+    return {"recognition_state": recognition.state.value, "recognition": payload.model_dump()}
+
+
+def _recognition_to_domain(orm: TransferItemOrm) -> ItemRecognition | None:
+    if orm.recognition_state is None or orm.recognition is None:
+        return None
+    payload = _RecognitionDTO.model_validate(orm.recognition)
+    return ItemRecognition(
+        state=RecognitionState(orm.recognition_state),
+        text_status=TransferItemStatus(payload.text_status),
+        note=payload.note,
+        heard=payload.heard.to_domain() if payload.heard else None,
+    )
+
+
 def item_result_columns(item: TransferItem) -> dict[str, object]:
     """Изменяемая часть transfer_items — то, что пишет результат сопоставления."""
     return {
@@ -185,7 +262,37 @@ def item_result_columns(item: TransferItem) -> dict[str, object]:
         "match_score": item.match.score.value if item.match else None,
         "match_restriction": item.match.restriction if item.match else None,
         "candidates": [_TrackCandidateDTO.from_domain(c).model_dump() for c in item.candidates],
+        **recognition_columns(item.recognition),
     }
+
+
+def progress_from_orm(orm: TransferOrm) -> TransferProgress:
+    return TransferProgress(
+        total=orm.total,
+        pending=orm.pending,
+        matched=orm.matched,
+        uncertain=orm.uncertain,
+        not_found=orm.not_found,
+        added=orm.added,
+        failed=orm.failed,
+        skipped=orm.skipped,
+    )
+
+
+def transfer_summary_from_orm(orm: TransferOrm) -> TransferSummary:
+    return TransferSummary(
+        id=orm.id,
+        status=TransferStatus(orm.status),
+        source=_columns_to_source(orm),
+        destination=_columns_to_destination(orm),
+        source_title=orm.source_title,
+        progress=progress_from_orm(orm),
+        resolved_targets=_columns_to_resolved_targets(orm),
+        created_at=orm.created_at,
+        updated_at=orm.updated_at,
+        resume_at=orm.resume_at,
+        pause_reason=orm.pause_reason,
+    )
 
 
 def progress_columns(progress: TransferProgress) -> dict[str, int]:
@@ -197,6 +304,7 @@ def progress_columns(progress: TransferProgress) -> dict[str, int]:
         "not_found": progress.not_found,
         "added": progress.added,
         "failed": progress.failed,
+        "skipped": progress.skipped,
     }
 
 
@@ -240,6 +348,7 @@ async def item_to_domain(
         status=TransferItemStatus(orm.status),
         match=match,
         candidates=tuple(_TrackCandidateDTO(**c).to_domain() for c in orm.candidates),
+        recognition=_recognition_to_domain(orm),
     )
 
 
@@ -255,6 +364,12 @@ async def transfer_to_orm(
         paused_from=transfer.paused_from.value if transfer.paused_from else None,
         pause_reason=transfer.pause_reason,
         via_client=transfer.via_client,
+        source_title=transfer.source_title,
+        recognize_audio=transfer.recognize_audio,
+        recognition_deadline_at=transfer.recognition_deadline_at,
+        # created_at не передаём, пока его нет: иначе merge запишет NULL поверх
+        # server_default.
+        **({"created_at": transfer.created_at} if transfer.created_at else {}),
         items=items,
         **progress_columns(TransferProgress.from_statuses(i.status for i in transfer.items)),
         **_source_to_columns(transfer.source),
@@ -278,6 +393,10 @@ async def transfer_to_domain(
         paused_from=TransferStatus(orm.paused_from) if orm.paused_from else None,
         pause_reason=orm.pause_reason,
         via_client=orm.via_client,
+        source_title=orm.source_title,
+        created_at=orm.created_at,
+        recognize_audio=orm.recognize_audio,
+        recognition_deadline_at=orm.recognition_deadline_at,
         items=items,
     )
 
@@ -295,5 +414,9 @@ def transfer_header_to_domain(orm: TransferOrm) -> Transfer:
         paused_from=TransferStatus(orm.paused_from) if orm.paused_from else None,
         pause_reason=orm.pause_reason,
         via_client=orm.via_client,
+        source_title=orm.source_title,
+        created_at=orm.created_at,
+        recognize_audio=orm.recognize_audio,
+        recognition_deadline_at=orm.recognition_deadline_at,
         items=[],
     )

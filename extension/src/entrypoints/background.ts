@@ -29,7 +29,7 @@ import {
 } from "../background/state";
 import { TabPool, type PooledTab, type TabsApi } from "../background/tabs";
 import { type ConnectionState, type SocketLike, WsClient } from "../background/ws-client";
-import { API_BASE, DIAGNOSTICS, PAIR_URL, WS_URL } from "../config";
+import { API_BASE, PAIR_URL, WS_URL } from "../config";
 import { apiOrigin } from "../manifest";
 import { type PopupRequest, type PopupSnapshot, popupRequest } from "../messages";
 import { PLATFORMS, platformInfo, type PlatformInfo, type TargetInfo } from "../platforms";
@@ -45,7 +45,7 @@ export default defineBackground(() => {
   const api = new Api(API_BASE);
   const journal = new Journal();
   const outbox = new Outbox();
-  const registry = buildRegistry({ apiBase: API_BASE, diagnostics: DIAGNOSTICS });
+  const registry = buildRegistry();
   let lastError: string | null = null;
 
   const tabsApi: TabsApi = {

@@ -77,6 +77,8 @@ class TransferCompleted(DomainEvent):
     total: int
     added: int
     failed: int
+    skipped: int = 0
+    not_found: int = 0
 
 
 @dataclass(frozen=True, slots=True)

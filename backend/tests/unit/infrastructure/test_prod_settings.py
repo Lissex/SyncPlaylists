@@ -16,7 +16,7 @@ _SAFE_EXTENSION: dict[str, Any] = {"allowed_extension_ids": ["abcdefghijklmnopab
 
 
 def _settings(env: str, extension: dict[str, Any]) -> Settings:
-    # Без .env: локальный dev-.env (EXTENSION__DEV_PAGE_ENABLED=true) не должен подмешиваться.
+    # Без .env: локальные dev-настройки разработчика не должны подмешиваться.
     return Settings(_env_file=None, **{**_BASE, "env": env, "extension": extension})
 
 
@@ -28,8 +28,6 @@ def test_prod_with_safe_extension_settings_starts() -> None:
     ("extension", "problem"),
     [
         ({}, "EXTENSION__ALLOWED_EXTENSION_IDS"),
-        ({**_SAFE_EXTENSION, "dev_page_enabled": True}, "EXTENSION__DEV_PAGE_ENABLED"),
-        ({**_SAFE_EXTENSION, "diagnostics_enabled": True}, "EXTENSION__DIAGNOSTICS_ENABLED"),
     ],
 )
 def test_prod_refuses_dev_extension_settings(extension: dict[str, Any], problem: str) -> None:
@@ -37,6 +35,6 @@ def test_prod_refuses_dev_extension_settings(extension: dict[str, Any], problem:
         _settings("prod", extension)
 
 
-def test_dev_allows_dev_extension_settings() -> None:
-    settings = _settings("dev", {"dev_page_enabled": True, "diagnostics_enabled": True})
+def test_dev_allows_empty_extension_allowlist() -> None:
+    settings = _settings("dev", {})
     assert settings.extension.allowed_extension_ids == []

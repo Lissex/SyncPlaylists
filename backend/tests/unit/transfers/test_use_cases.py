@@ -240,7 +240,7 @@ async def test_match_transfer_item_is_idempotent_on_redelivery() -> None:
     assert env.task_queue.enqueued == [("run_write", (transfer.id,))]  # не задвоилось
 
 
-async def test_resolve_uncertain_item_triggers_write_when_last_unresolved() -> None:
+async def test_resolving_last_uncertain_item_waits_for_explicit_write() -> None:
     env = Env()
     source = PlaylistSource(ref=PlaylistRef(Platform.VK, "src-playlist"))
     destination = ExistingPlaylist(ref=PlaylistRef(Platform.SPOTIFY, "dst-playlist"))
@@ -252,13 +252,14 @@ async def test_resolve_uncertain_item_triggers_write_when_last_unresolved() -> N
     transfer.enter_review()
     await env.seed_transfer(transfer)
 
-    use_case = ResolveUncertainItemUseCase(env.uow, env.transfers, env.task_queue)
+    use_case = ResolveUncertainItemUseCase(env.uow, env.transfers)
     await use_case.execute(env.user_id, transfer.id, 0, _SPOTIFY_MATCH_1.ref)
 
     stored = await env.transfers.get(transfer.id)
     assert stored is not None
-    assert stored.status is TransferStatus.WRITING
-    assert env.task_queue.enqueued == [("run_write", (transfer.id,))]
+    assert stored.status is TransferStatus.REVIEW
+    assert stored.items[0].status is TransferItemStatus.MATCHED
+    assert env.task_queue.enqueued == []
 
 
 async def test_write_transfer_adds_matched_items_and_completes() -> None:
@@ -328,7 +329,7 @@ async def test_get_transfer_returns_dto() -> None:
     transfer = Transfer(id=uuid4(), user_id=env.user_id, source=source, destination=destination)
     await env.seed_transfer(transfer)
 
-    use_case = GetTransferUseCase(env.transfers)
+    use_case = GetTransferUseCase(env.transfers, env.platform_tracks)
     dto = await use_case.execute(env.user_id, transfer.id)
 
     assert dto is not None
@@ -338,7 +339,7 @@ async def test_get_transfer_returns_dto() -> None:
 
 async def test_get_transfer_returns_none_for_unknown_id() -> None:
     env = Env()
-    use_case = GetTransferUseCase(env.transfers)
+    use_case = GetTransferUseCase(env.transfers, env.platform_tracks)
 
     assert await use_case.execute(env.user_id, uuid4()) is None
 
@@ -465,7 +466,10 @@ async def test_get_transfer_hides_foreign_transfer() -> None:
     transfer = Transfer(id=uuid4(), user_id=env.user_id, source=source, destination=destination)
     await env.seed_transfer(transfer)
 
-    assert await GetTransferUseCase(env.transfers).execute(uuid4(), transfer.id) is None
+    assert (
+        await GetTransferUseCase(env.transfers, env.platform_tracks).execute(uuid4(), transfer.id)
+        is None
+    )
 
 
 async def test_resolve_item_of_foreign_transfer_is_not_found() -> None:
@@ -474,7 +478,7 @@ async def test_resolve_item_of_foreign_transfer_is_not_found() -> None:
     destination = ExistingPlaylist(ref=PlaylistRef(Platform.SPOTIFY, "dst-playlist"))
     transfer = Transfer(id=uuid4(), user_id=env.user_id, source=source, destination=destination)
     await env.seed_transfer(transfer)
-    use_case = ResolveUncertainItemUseCase(env.uow, env.transfers, env.task_queue)
+    use_case = ResolveUncertainItemUseCase(env.uow, env.transfers)
 
     with pytest.raises(TransferNotFoundError):
         await use_case.execute(uuid4(), transfer.id, 0, None)

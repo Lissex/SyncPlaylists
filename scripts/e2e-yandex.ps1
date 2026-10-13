@@ -200,12 +200,14 @@ if ($transfer.status -eq "review") {
       Api POST "/transfers/$transferId/items/$($item.position)/resolve" $body | Out-Null
     }
     Step "Запись"
+    Api POST "/transfers/$transferId/write" | Out-Null
     $transfer = Wait-Transfer $transferId @("review", "writing", "paused_quota")
   } else {
     Step "Перенос ждёт ручного решения ($($uncertain.Count) uncertain)"
     Write-Host "Принять всех первых кандидатов и дописать плейлист — перезапустите с -AcceptUncertain"
     Write-Host "(make e2e ... ACCEPT=1) на новом переносе, либо решите вручную:"
     Write-Host "  POST $Api/transfers/$transferId/items/<#>/resolve  {chosen_platform, chosen_external_id} или {}"
+    Write-Host "  затем POST $Api/transfers/$transferId/write — запись начинается только по ней"
   }
 }
 

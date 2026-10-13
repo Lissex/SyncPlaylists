@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -51,6 +52,7 @@ class TransferOrm(Base):
     target_playlist_id: Mapped[str | None] = mapped_column(String, nullable=True)
     new_playlist_title: Mapped[str | None] = mapped_column(String, nullable=True)
     new_playlist_description: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_title: Mapped[str | None] = mapped_column(String, nullable=True)
     destination_account_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("connected_accounts.id", ondelete="RESTRICT"), nullable=True
     )
@@ -74,6 +76,13 @@ class TransferOrm(Base):
     via_client: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # Распознавание по звуку (этап 6): выбор пользователя и потолок фазы распознавания.
+    recognize_audio: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    recognition_deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Счётчики items (TransferProgress). run_match меняет их атомарно
     # (`SET matched = matched + 1`), полное сохранение агрегата — пересчитывает из items.
@@ -84,6 +93,7 @@ class TransferOrm(Base):
     not_found: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     added: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     failed: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    skipped: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -98,6 +108,8 @@ class TransferOrm(Base):
 
     __table_args__ = (
         CheckConstraint(f"status IN ({_TRANSFER_STATUS_SQL})", name="ck_transfers_status"),
+        # История переносов пользователя: новые первыми, keyset по (created_at, id).
+        Index("ix_transfers_user_id_created_at", "user_id", "created_at"),
     )
 
 
@@ -133,5 +145,10 @@ class TransferItemOrm(Base):
     # Когда item вышел из PENDING (результат run_match) — по последним таким отметкам
     # оценивается оставшееся время переноса. Ставит БД в save_item_outcome.
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Распознавание по звуку (этап 6): queued | ready | final (NULL — не распознавался) —
+    # отдельной колонкой для условных UPDATE; подробности (текстовый итог, причина,
+    # снимок услышанного) — в recognition (jsonb).
+    recognition_state: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    recognition: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
 
     transfer: Mapped[TransferOrm] = relationship(back_populates="items")

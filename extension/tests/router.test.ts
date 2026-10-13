@@ -261,29 +261,3 @@ describe("роутер задач", () => {
     ]);
   });
 });
-
-describe("diagnostics.echo", () => {
-  it("echo возвращает nonce и страницу; ответ проходит схему", async () => {
-    const registry = buildRegistry({ apiBase: "http://localhost:8000", diagnostics: true });
-    const def = registry.get("diagnostics.echo")!;
-    // Функция страницы читает document/location — подставляем «страницу».
-    vi.stubGlobal("document", { title: "SyncPlaylists — проверка связи" });
-    vi.stubGlobal("location", { pathname: "/extension/diagnostics/page" });
-    const { router, sent } = setup({
-      registry,
-      runInTarget: async (_target, main, args) => (main as (a: unknown) => unknown)(args),
-    });
-
-    await router.handle(task({ op: def.op, args: { nonce: "n1" }, idempotency_key: null }));
-
-    expect(def.target.tabUrl).toBe("http://localhost:8000/extension/diagnostics/page");
-    expect(sent[0]).toMatchObject({
-      ok: true,
-      data: {
-        nonce: "n1",
-        page_title: "SyncPlaylists — проверка связи",
-        path: "/extension/diagnostics/page",
-      },
-    });
-  });
-});

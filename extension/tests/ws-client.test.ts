@@ -92,7 +92,7 @@ describe("WebSocket-клиент", () => {
     socket.receive({
       type: "task",
       task_id: "t1",
-      op: "diagnostics.echo",
+      op: "soundcloud.whoami",
       args: { nonce: "n" },
       deadline: 1,
       idempotency_key: null,

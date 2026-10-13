@@ -36,16 +36,8 @@ describe("манифест", () => {
     expect(manifest.minimum_chrome_version).toBeUndefined();
   });
 
-  it("тестовая операция не попадает в сборку без WXT_DIAGNOSTICS", () => {
-    const prod = [...buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: false }).keys()];
-    const dev = [...buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: true }).keys()];
-
-    expect(prod).not.toContain("diagnostics.echo");
-    expect(dev).toEqual(["diagnostics.echo", ...prod]);
-  });
-
   it("реестр — только операции включаемых площадок, на их сайтах", () => {
-    const registry = buildRegistry({ apiBase: OPTIONS.apiBase, diagnostics: false });
+    const registry = buildRegistry();
     const soundcloud = [
       "whoami",
       "liked_tracks_page",

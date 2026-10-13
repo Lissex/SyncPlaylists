@@ -1,0 +1,5 @@
+# Скрипты установки зависимостей не запускаем: msw копирует service worker (не нужен —
+# в тестах msw работает в Node), unrs-resolver берёт готовый бинарник из optional-пакета.
+allowBuilds:
+  msw: false
+  unrs-resolver: false

@@ -1,5 +1,5 @@
-from collections.abc import AsyncIterator
-from datetime import timedelta
+from collections.abc import AsyncIterator, Sequence
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from arq.connections import ArqRedis, create_pool
@@ -18,11 +18,13 @@ from syncplaylists.infrastructure.http.url_expander import HttpxUrlExpander
 from syncplaylists.infrastructure.queue.arq_queue import ArqTaskQueue
 from syncplaylists.infrastructure.ratelimit.redis_fixed_window import RedisFixedWindowLimiter
 from syncplaylists.infrastructure.ratelimit.redis_token_bucket import (
+    RedisServiceThrottle,
     RedisTokenBucketLimiter,
     TokenBucketLimits,
 )
 from syncplaylists.infrastructure.ratelimit.redis_write_guard import RedisWriteGuard
 from syncplaylists.infrastructure.security.aes_gcm import AesGcmTokenCipher
+from syncplaylists.integrations.platforms.audio import AudioSourceBuilder, PlatformAudioSources
 from syncplaylists.integrations.platforms.extension.gateway import (
     ExtensionGatewayBuilder,
     ExtensionPlatformTraits,
@@ -32,12 +34,14 @@ from syncplaylists.integrations.platforms.fake.factory import (
     build_fake_gateway,
 )
 from syncplaylists.integrations.platforms.fake.oauth import FakeOAuthProvider
+from syncplaylists.integrations.platforms.media import MediaFetcher
 from syncplaylists.integrations.platforms.registry import (
     DictProfileRegistry,
     GatewayBuilder,
     PlatformGatewayFactory,
 )
 from syncplaylists.integrations.platforms.search_cache import CachedSearchGateway, TextCache
+from syncplaylists.integrations.platforms.soundcloud import audio as soundcloud_audio
 from syncplaylists.integrations.platforms.soundcloud.client_id import ClientIdProvider
 from syncplaylists.integrations.platforms.soundcloud.factory import (
     OfficialApp,
@@ -51,12 +55,17 @@ from syncplaylists.integrations.platforms.soundcloud.factory import (
 from syncplaylists.integrations.platforms.soundcloud.tokens import TokenEndpoint
 from syncplaylists.integrations.platforms.vk.factory import VkExtensionGatewayBuilder
 from syncplaylists.integrations.platforms.vk.gateway import VkLimits
+from syncplaylists.integrations.platforms.yandex import audio as yandex_audio
 from syncplaylists.integrations.platforms.yandex.factory import (
     YandexClientFactory,
     YandexExtensionGatewayBuilder,
     YandexGatewayBuilder,
     YandexProfileFetcher,
 )
+from syncplaylists.integrations.recognizers import acrcloud, shazam
+from syncplaylists.integrations.recognizers.acrcloud import AcrCloudRecognizer
+from syncplaylists.integrations.recognizers.ffmpeg import FfmpegTrimmer
+from syncplaylists.integrations.recognizers.shazam import CoreShazamSigner, ShazamRecognizer
 from syncplaylists.modules.accounts.application.access import (
     AccountAccessService,
     AccountCredentialsRefresher,
@@ -97,35 +106,29 @@ from syncplaylists.modules.catalog.infrastructure.repository import (
     SqlCanonicalTrackRepository,
     SqlPlatformTrackRepository,
 )
-from syncplaylists.modules.extension.application.diagnostics import (
-    GetProbeUseCase,
-    RunProbeUseCase,
-    StartProbeUseCase,
-)
 from syncplaylists.modules.extension.application.ports import (
     AttemptLimiter as ExtensionAttemptLimiter,
 )
 from syncplaylists.modules.extension.application.ports import (
     ClientPausedPlatforms,
-    DeviceCaller,
     ExtensionChannel,
     ExtensionDeviceRepository,
     ExtensionHub,
+    ExtensionPresenceReader,
     PairingStore,
-    ProbeStore,
 )
 from syncplaylists.modules.extension.application.use_cases import (
     AuthenticateDeviceUseCase,
     ClaimPairingUseCase,
     ConfirmPairingUseCase,
     ConnectPlatformViaExtensionUseCase,
+    GetExtensionStatusUseCase,
     ListDevicesUseCase,
     PairingConfig,
     RevokeDeviceUseCase,
     StartPairingUseCase,
 )
 from syncplaylists.modules.extension.infrastructure.pairing_store import RedisPairingStore
-from syncplaylists.modules.extension.infrastructure.probe_store import RedisProbeStore
 from syncplaylists.modules.extension.infrastructure.redis_channel import RedisExtensionChannel
 from syncplaylists.modules.extension.infrastructure.repository import (
     SqlExtensionDeviceRepository,
@@ -157,27 +160,55 @@ from syncplaylists.modules.matching.domain.normalization import TrackNormalizer
 from syncplaylists.modules.matching.domain.ports import TrackMatchRepository
 from syncplaylists.modules.matching.domain.scoring import MatchScorer
 from syncplaylists.modules.matching.infrastructure.repository import SqlTrackMatchRepository
+from syncplaylists.modules.recognition.application.eligibility import RecognitionEligibility
+from syncplaylists.modules.recognition.application.ports import (
+    AudioRecognizer,
+    AudioSource,
+    AudioSourceRegistry,
+    AudioTrimmer,
+    RecognitionLock,
+    RecognitionRepository,
+    RecognizerThrottle,
+)
+from syncplaylists.modules.recognition.application.use_cases import (
+    GetRecognitionQuery,
+    RecognitionLimits,
+    RecognizeSourceTrackUseCase,
+)
+from syncplaylists.modules.recognition.domain.policy import RecognitionPolicy
+from syncplaylists.modules.recognition.infrastructure.lock import RedisRecognitionLock
+from syncplaylists.modules.recognition.infrastructure.repository import (
+    SqlRecognitionRepository,
+)
 from syncplaylists.modules.transfers.application.links import ResolvePlaylistLinkUseCase
 from syncplaylists.modules.transfers.application.ports import TransferRepository
 from syncplaylists.modules.transfers.application.use_cases import (
     ClientPausedPlatformsUseCase,
+    ExpireRecognitionUseCase,
     FailTransferItemUseCase,
     FailTransferUseCase,
     GetTransferProgressUseCase,
     GetTransferUseCase,
+    ListTransferItemsUseCase,
+    ListTransfersUseCase,
     MatchTransferItemUseCase,
     PauseTransferForClientUseCase,
     PauseTransferForQuotaUseCase,
     ProcessTransferUseCase,
+    RecognizeTransferItemUseCase,
+    RematchByAudioUseCase,
     ResolveUncertainItemUseCase,
     ResumeClientPausedTransfersUseCase,
     ResumeTransferUseCase,
+    RetryItemRecognitionUseCase,
     StartTransferUseCase,
+    StartWritingUseCase,
     SweepStaleTransfersUseCase,
     WriteTransferUseCase,
 )
 from syncplaylists.modules.transfers.infrastructure.repository import SqlTransferRepository
 from syncplaylists.shared_kernel.application.ports import (
+    AccountAccess,
     AccountAccessProvider,
     CredentialsRefresher,
     EventPublisher,
@@ -266,6 +297,7 @@ class RedisProvider(Provider):
             {
                 TaskLane.DEFAULT: settings.queue.default_queue_name,
                 TaskLane.CLIENT: settings.queue.client_queue_name,
+                TaskLane.RECOGNIZE: settings.queue.recognize_queue_name,
             },
         )
 
@@ -288,12 +320,10 @@ class RedisProvider(Provider):
         return channel
 
     @provide
-    def get_device_caller(self, channel: RedisExtensionChannel) -> DeviceCaller:
+    def get_extension_presence_reader(
+        self, channel: RedisExtensionChannel
+    ) -> ExtensionPresenceReader:
         return channel
-
-    @provide
-    def get_probe_store(self, redis: Redis) -> ProbeStore:
-        return RedisProbeStore(redis)
 
 
 class GatewayProvider(Provider):
@@ -562,6 +592,178 @@ class MatchingProvider(Provider):
         return DefaultMatchingPipelineFactory(gateway_factory, track_matches, normalizer, scorer)
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _limits(rate: RateLimitSettings) -> TokenBucketLimits:
+    return TokenBucketLimits(
+        capacity=rate.capacity,
+        refill_per_second=rate.refill_per_second,
+        max_wait_seconds=rate.max_wait_seconds,
+    )
+
+
+class RecognitionProvider(Provider):
+    """Распознавание по звуку (этап 6). Источники звука — по площадкам (6-3), цепочка
+    распознавателей — Shazam, затем ACRCloud, если задан его проект."""
+
+    @provide(scope=Scope.APP)
+    def get_throttle(self, redis: Redis, settings: Settings) -> RecognizerThrottle:
+        recognition = settings.recognition
+        limits = {shazam.PROVIDER: _limits(recognition.shazam.rate_limit)}
+        if recognition.acrcloud is not None:
+            limits[acrcloud.PROVIDER] = _limits(recognition.acrcloud.rate_limit)
+        return RedisServiceThrottle(redis, limits)
+
+    @provide(scope=Scope.APP)
+    def get_recognizers(
+        self, http: httpx.AsyncClient, throttle: RecognizerThrottle, settings: Settings
+    ) -> Sequence[AudioRecognizer]:
+        recognition = settings.recognition
+        recognizers: list[AudioRecognizer] = []
+        if recognition.shazam.enabled:
+            recognizers.append(
+                ShazamRecognizer(
+                    http,
+                    CoreShazamSigner(recognition.shazam.signature_seconds),
+                    throttle,
+                    timeout_seconds=recognition.shazam.timeout_seconds,
+                    cooldown_seconds=recognition.shazam.cooldown_seconds,
+                )
+            )
+        if recognition.acrcloud is not None:
+            recognizers.append(
+                AcrCloudRecognizer(
+                    http,
+                    throttle,
+                    host=recognition.acrcloud.host,
+                    access_key=recognition.acrcloud.access_key,
+                    access_secret=recognition.acrcloud.access_secret.get_secret_value(),
+                    timeout_seconds=recognition.acrcloud.timeout_seconds,
+                )
+            )
+        return recognizers
+
+    @provide(scope=Scope.APP)
+    def get_trimmer(self, settings: Settings) -> AudioTrimmer:
+        return FfmpegTrimmer(
+            temp_dir=settings.recognition.temp_dir,
+            timeout_seconds=settings.recognition.ffmpeg_timeout_seconds,
+        )
+
+    @provide(scope=Scope.APP)
+    def get_audio_sources(
+        self,
+        http: httpx.AsyncClient,
+        soundcloud_apis: SoundCloudApiFactory,
+        yandex_clients: YandexClientFactory,
+        limiter: PlatformRateLimiter,
+        settings: Settings,
+    ) -> AudioSourceRegistry:
+        """Какие площадки отдают звук (ARCHITECTURE.md, 9 и 11j): SoundCloud — анонимно,
+        Яндекс — по токену аккаунта. VK (HLS частично зашифрован) и Spotify (DRM) — нет.
+        Площадки на фейке (platforms.fake) звука не отдают."""
+        recognition = settings.recognition
+        fake = set(settings.platforms.fake)
+
+        def media(hosts: tuple[str, ...], timeout: float) -> MediaFetcher:
+            return MediaFetcher(
+                http,
+                allowed_hosts=hosts,
+                timeout_seconds=timeout,
+                max_bytes=recognition.max_fragment_bytes,
+            )
+
+        soundcloud_media = media(
+            soundcloud_audio.ALLOWED_HOSTS, settings.platforms.soundcloud.request_timeout_seconds
+        )
+        yandex_media = media(
+            yandex_audio.ALLOWED_HOSTS, settings.platforms.yandex.request_timeout_seconds
+        )
+
+        def soundcloud(access: AccountAccess | None) -> AudioSource | None:
+            account_id = access.account_id if access is not None else None
+            return soundcloud_audio.SoundCloudAudioSource(
+                soundcloud_apis.anonymous_transport(account_id), soundcloud_media
+            )
+
+        def yandex(access: AccountAccess | None) -> AudioSource | None:
+            if access is None or access.credentials is None:
+                return None  # через расширение звук Яндекса пока не берём (долг 6-3)
+            token = access.credentials.access_token
+            return yandex_audio.YandexAudioSource(
+                yandex_clients.client(token, access.account_id),
+                token,
+                yandex_media,
+                limiter=limiter,
+                account_id=access.account_id,
+            )
+
+        builders: dict[Platform, AudioSourceBuilder] = {}
+        if Platform.SOUNDCLOUD not in fake:
+            builders[Platform.SOUNDCLOUD] = soundcloud
+        if Platform.YANDEX not in fake:
+            builders[Platform.YANDEX] = yandex
+        return PlatformAudioSources(builders)
+
+    @provide(scope=Scope.APP)
+    def get_lock(self, redis: Redis, settings: Settings) -> RecognitionLock:
+        return RedisRecognitionLock(redis, settings.recognition.lock_ttl_seconds)
+
+    @provide(scope=Scope.REQUEST)
+    def get_repository(
+        self, session: AsyncSession, platform_tracks: PlatformTrackRepository
+    ) -> RecognitionRepository:
+        return SqlRecognitionRepository(session, platform_tracks)
+
+    @provide(scope=Scope.REQUEST)
+    def get_recognize_source_track(
+        self,
+        sources: AudioSourceRegistry,
+        trimmer: AudioTrimmer,
+        recognizers: Sequence[AudioRecognizer],
+        repository: RecognitionRepository,
+        lock: RecognitionLock,
+        ensure_platform_track: EnsurePlatformTrackUseCase,
+        settings: Settings,
+    ) -> RecognizeSourceTrackUseCase:
+        recognition = settings.recognition
+        return RecognizeSourceTrackUseCase(
+            sources,
+            trimmer,
+            recognizers,
+            repository,
+            lock,
+            ensure_platform_track,
+            RecognitionLimits(
+                fragment_ms=recognition.fragment_seconds * 1000,
+                no_match_ttl=timedelta(days=recognition.no_match_ttl_days),
+                no_audio_ttl=timedelta(days=recognition.no_audio_ttl_days),
+            ),
+            clock=_now,
+        )
+
+    @provide(scope=Scope.REQUEST)
+    def get_recognition_query(self, repository: RecognitionRepository) -> GetRecognitionQuery:
+        return GetRecognitionQuery(repository, clock=_now)
+
+    @provide(scope=Scope.APP)
+    def get_eligibility(
+        self,
+        sources: AudioSourceRegistry,
+        recognizers: Sequence[AudioRecognizer],
+        settings: Settings,
+    ) -> RecognitionEligibility:
+        recognition = settings.recognition
+        policy = RecognitionPolicy(
+            audio_platforms=frozenset(p for p in Platform if sources.supports(p)),
+            min_track_ms=recognition.min_track_seconds * 1000,
+        )
+        # Распознавать нечем — не держим треки в ожидании.
+        return RecognitionEligibility(policy, enabled=recognition.enabled and bool(recognizers))
+
+
 class SecurityProvider(Provider):
     scope = Scope.APP
 
@@ -794,18 +996,10 @@ class ExtensionProvider(Provider):
         return ListDevicesUseCase(devices)
 
     @provide(scope=Scope.REQUEST)
-    def get_start_probe(
-        self, devices: ExtensionDeviceRepository, store: ProbeStore, task_queue: TaskQueue
-    ) -> StartProbeUseCase:
-        return StartProbeUseCase(devices, store, task_queue)
-
-    @provide(scope=Scope.REQUEST)
-    def get_run_probe(self, caller: DeviceCaller, store: ProbeStore) -> RunProbeUseCase:
-        return RunProbeUseCase(caller, store)
-
-    @provide(scope=Scope.REQUEST)
-    def get_get_probe(self, store: ProbeStore) -> GetProbeUseCase:
-        return GetProbeUseCase(store)
+    def get_extension_status(
+        self, devices: ExtensionDeviceRepository, presence: ExtensionPresenceReader
+    ) -> GetExtensionStatusUseCase:
+        return GetExtensionStatusUseCase(devices, presence)
 
     @provide(scope=Scope.REQUEST)
     def get_revoke_device(
@@ -887,6 +1081,8 @@ class TransfersProvider(Provider):
         pipeline_factory: MatchingPipelineFactory,
         task_queue: TaskQueue,
         accounts: AccountAccessProvider,
+        eligibility: RecognitionEligibility,
+        settings: Settings,
     ) -> MatchTransferItemUseCase:
         return MatchTransferItemUseCase(
             uow,
@@ -896,6 +1092,55 @@ class TransfersProvider(Provider):
             ensure_platform_track,
             pipeline_factory,
             task_queue,
+            accounts,
+            eligibility,
+            timedelta(minutes=settings.recognition.transfer_phase_limit_minutes),
+        )
+
+    @provide
+    def get_recognize_transfer_item(
+        self,
+        uow: UnitOfWork,
+        transfers: TransferRepository,
+        platform_tracks: PlatformTrackRepository,
+        accounts: AccountAccessProvider,
+        recognize: RecognizeSourceTrackUseCase,
+        task_queue: TaskQueue,
+    ) -> RecognizeTransferItemUseCase:
+        return RecognizeTransferItemUseCase(
+            uow, transfers, platform_tracks, accounts, recognize, task_queue
+        )
+
+    @provide
+    def get_expire_recognition(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> ExpireRecognitionUseCase:
+        return ExpireRecognitionUseCase(uow, transfers, task_queue)
+
+    @provide
+    def get_retry_item_recognition(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> RetryItemRecognitionUseCase:
+        return RetryItemRecognitionUseCase(uow, transfers, task_queue)
+
+    @provide
+    def get_rematch_by_audio(
+        self,
+        uow: UnitOfWork,
+        transfers: TransferRepository,
+        platform_tracks: PlatformTrackRepository,
+        track_matches: TrackMatchRepository,
+        ensure_platform_track: EnsurePlatformTrackUseCase,
+        pipeline_factory: MatchingPipelineFactory,
+        accounts: AccountAccessProvider,
+    ) -> RematchByAudioUseCase:
+        return RematchByAudioUseCase(
+            uow,
+            transfers,
+            platform_tracks,
+            track_matches,
+            ensure_platform_track,
+            pipeline_factory,
             accounts,
         )
 
@@ -907,9 +1152,15 @@ class TransfersProvider(Provider):
 
     @provide
     def get_resolve_uncertain_item(
-        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+        self, uow: UnitOfWork, transfers: TransferRepository
     ) -> ResolveUncertainItemUseCase:
-        return ResolveUncertainItemUseCase(uow, transfers, task_queue)
+        return ResolveUncertainItemUseCase(uow, transfers)
+
+    @provide
+    def get_start_writing(
+        self, uow: UnitOfWork, transfers: TransferRepository, task_queue: TaskQueue
+    ) -> StartWritingUseCase:
+        return StartWritingUseCase(uow, transfers, task_queue)
 
     @provide
     def get_write_transfer(
@@ -960,8 +1211,20 @@ class TransfersProvider(Provider):
         return ClientPausedPlatformsUseCase(transfers)
 
     @provide
-    def get_get_transfer(self, transfers: TransferRepository) -> GetTransferUseCase:
-        return GetTransferUseCase(transfers)
+    def get_get_transfer(
+        self, transfers: TransferRepository, platform_tracks: PlatformTrackRepository
+    ) -> GetTransferUseCase:
+        return GetTransferUseCase(transfers, platform_tracks)
+
+    @provide
+    def get_list_transfer_items(
+        self, transfers: TransferRepository, platform_tracks: PlatformTrackRepository
+    ) -> ListTransferItemsUseCase:
+        return ListTransferItemsUseCase(transfers, platform_tracks)
+
+    @provide
+    def get_list_transfers(self, transfers: TransferRepository) -> ListTransfersUseCase:
+        return ListTransfersUseCase(transfers)
 
     @provide
     def get_transfer_progress(self, transfers: TransferRepository) -> GetTransferProgressUseCase:
@@ -986,5 +1249,6 @@ def make_container(settings: Settings) -> AsyncContainer:
         ExtensionProvider(),
         CatalogProvider(),
         MatchingProvider(),
+        RecognitionProvider(),
         TransfersProvider(),
     )

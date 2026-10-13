@@ -5,6 +5,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from syncplaylists.shared_kernel.domain.base import ValueObject
+from syncplaylists.shared_kernel.domain.search import RecognizedTrack
 from syncplaylists.shared_kernel.domain.value_objects import (
     ExternalTrackRef,
     MatchScore,
@@ -37,6 +38,9 @@ class TransferItemStatus(StrEnum):
     NOT_FOUND = "not_found"
     ADDED = "added"
     FAILED = "failed"
+    # Пользователь на ревью отказался от трека («Пропустить») или начал запись, не решив
+    # его, — не ошибка: в отчёте отдельной строкой от FAILED (сбой сопоставления/записи).
+    SKIPPED = "skipped"
 
 
 class FileFormat(StrEnum):
@@ -117,6 +121,38 @@ class MatchResult(ValueObject):
     restriction: str | None = None
 
 
+class RecognitionState(StrEnum):
+    """Где трек в распознавании по звуку (этап 6, ARCHITECTURE.md 11j)."""
+
+    QUEUED = "queued"  # ждёт worker-recognize
+    READY = "ready"  # распознавание закончено — ждёт поиска на цели
+    FINAL = "final"  # итог применён к треку
+
+
+# Причины итога распознавания (ItemRecognition.note). Кроме этих — вердикты поиска по
+# звуку из matching (exact, altered, text_mismatch, not_on_target), строкой.
+NOTE_NO_MATCH = "no_match"  # распознаватели не узнали
+NOTE_NO_AUDIO = "no_audio"  # у площадки нет звука трека (шифрование, нет потока)
+NOTE_UNAVAILABLE = "unavailable"  # сейчас не получилось (сеть, нет доступа, сбой)
+NOTE_TIMEOUT = "timeout"  # не уложились в потолок фазы распознавания переноса
+# «Ещё раз по звуку» имеет смысл только после временной неудачи.
+RETRYABLE_NOTES = frozenset({NOTE_UNAVAILABLE, NOTE_TIMEOUT})
+
+
+@dataclass(frozen=True, slots=True)
+class ItemRecognition(ValueObject):
+    state: RecognitionState
+    # Итог текстового поиска (UNCERTAIN | NOT_FOUND) — остаётся, если звук не поможет.
+    text_status: "TransferItemStatus"
+    note: str | None = None
+    # Снимок распознанного (для поиска на цели и для подсказки в ревью).
+    heard: RecognizedTrack | None = None
+
+    def __post_init__(self) -> None:
+        if self.text_status not in (TransferItemStatus.UNCERTAIN, TransferItemStatus.NOT_FOUND):
+            raise ValueError(f"Распознавание после текстового итога {self.text_status}")
+
+
 @dataclass(frozen=True, slots=True)
 class TransferProgress(ValueObject):
     """Счётчики items переноса. В БД — колонки transfers, которые run_match обновляет
@@ -130,6 +166,7 @@ class TransferProgress(ValueObject):
     not_found: int = 0
     added: int = 0
     failed: int = 0
+    skipped: int = 0
 
     @classmethod
     def from_statuses(cls, statuses: Iterable[TransferItemStatus]) -> "TransferProgress":
@@ -142,6 +179,7 @@ class TransferProgress(ValueObject):
             not_found=counts[TransferItemStatus.NOT_FOUND],
             added=counts[TransferItemStatus.ADDED],
             failed=counts[TransferItemStatus.FAILED],
+            skipped=counts[TransferItemStatus.SKIPPED],
         )
 
     def status_after_matching(self) -> TransferStatus | None:
